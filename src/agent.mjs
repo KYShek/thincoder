@@ -13,6 +13,44 @@ import { join } from "node:path"
 
 const DEFAULT_MAX_TURNS = 50
 
+/**
+ * 修复断头 tool_calls：assistant 消息带了 tool_calls 但后面缺对应的 tool 结果
+ * （进程在工具执行中途被杀、会话中断等）。为每个缺失的 tool_call_id 补一条
+ * 中断占位消息，否则 API 会整单拒绝（invalid_request_error）。
+ * 返回修复后的新数组；无问题时返回原数组。
+ */
+export function repairHistory(history) {
+  const out = []
+  let dirty = false
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i]
+    out.push(m)
+    if (m.role !== "assistant" || !m.tool_calls?.length) continue
+
+    // 收集紧随其后（下一个非 tool 消息之前）的 tool 结果 id
+    const answered = new Set()
+    let j = i + 1
+    while (j < history.length && history[j].role === "tool") {
+      answered.add(history[j].tool_call_id)
+      out.push(history[j])
+      j++
+    }
+    i = j - 1 // 外层 for 会再 +1
+
+    for (const tc of m.tool_calls) {
+      if (!answered.has(tc.id)) {
+        dirty = true
+        out.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: "[Tool execution was interrupted: session ended before the result was recorded]",
+        })
+      }
+    }
+  }
+  return dirty ? out : history
+}
+
 const VALID_TASK_STATUS = new Set(["pending", "in_progress", "done"])
 
 /**
@@ -155,6 +193,8 @@ export function createAgent({ provider, tools, config, cwd, memory = null }) {
 export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {}) {
   const maxTurns = agent.config?.agent?.maxTurns ?? DEFAULT_MAX_TURNS
   const threshold = agent.config?.agent?.compactThreshold ?? 100_000
+  // 先修复历史（恢复的会话可能有中断的 tool_calls），再追加新输入
+  agent.history = repairHistory(agent.history)
   agent.history.push({ role: "user", content: input })
 
   // task 工具随主循环注入（内建能力）；subagent 只在顶层注入（禁止递归）

@@ -499,3 +499,29 @@ test("bash: 流式输出实时透传（onOutput 分块到达）", async () => {
   // 流式特征：至少收到过数据块，且与最终返回内容一致
   assert.ok(chunks.length >= 1)
 })
+
+// ---------------------------------------------------------------- 断头 tool_calls 修复
+
+test("repairHistory: 为缺失结果的 tool_calls 补中断占位", async () => {
+  const { repairHistory } = await import("../src/agent.mjs")
+  const history = [
+    { role: "user", content: "干活" },
+    { role: "assistant", content: null, tool_calls: [
+      { id: "c1", type: "function", function: { name: "read", arguments: "{}" } },
+      { id: "c2", type: "function", function: { name: "bash", arguments: "{}" } },
+    ] },
+    { role: "tool", tool_call_id: "c1", content: "ok" },
+    // c2 的结果缺失（进程被杀）
+    { role: "user", content: "继续" },
+  ]
+  const repaired = repairHistory(history)
+  assert.notEqual(repaired, history) // 发生了变化
+  // c2 被补上中断占位
+  const patch = repaired.find((m) => m.role === "tool" && m.tool_call_id === "c2")
+  assert.match(patch.content, /interrupted/)
+  // 顺序：assistant → tool(c1) → tool(c2 占位) → user
+  const roles = repaired.map((m) => m.role)
+  assert.deepEqual(roles, ["user", "assistant", "tool", "tool", "user"])
+  // 完整的历史原样返回（引用相等）
+  assert.equal(repairHistory([{ role: "user", content: "x" }]).length, 1)
+})
