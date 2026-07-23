@@ -30,8 +30,10 @@ const ansi = {
 }
 
 const C = {
-  user: ansi.fg(4), // blue
-  assistant: ansi.fg(2), // green
+  user: ansi.fg(4), // blue（标签）
+  assistant: ansi.fg(2), // green（标签）
+  text: ansi.fg(7), // white（对话正文）
+  reason: `${ESC}[2m${ESC}[3m`, // dim + italic（思考流）
   tool: ansi.fg(6), // cyan
   error: ansi.fg(1), // red
   dim: ansi.gray,
@@ -300,7 +302,7 @@ export async function startTUI(agent, opts = {}) {
   const ensureAssistantLabel = () => {
     if (!assistantLabeled) {
       assistantLabeled = true
-      pushLabel(`❯ ThinCoder`, ansi.bold + C.assistant)
+      pushLabel(`❯ ThinCoder:`, ansi.bold + C.assistant)
     }
   }
 
@@ -352,13 +354,13 @@ export async function startTUI(agent, opts = {}) {
     // 思考流（暗色）在正文流之前
     if (state.reasoning) {
       for (const wrapped of wrapText(state.reasoning, cols - 1)) {
-        convLines.push({ text: wrapped, color: C.dim })
+        convLines.push({ text: wrapped, color: C.reason })
       }
     }
     if (state.streaming) {
       for (const line of formatTables(state.streaming, cols - 1)) {
         for (const wrapped of wrapText(line, cols - 1)) {
-          convLines.push({ text: wrapped, color: C.assistant })
+          convLines.push({ text: wrapped, color: C.text })
         }
       }
     }
@@ -462,8 +464,8 @@ export async function startTUI(agent, opts = {}) {
       return
     }
 
-    pushLabel(`❯ You`, ansi.bold + C.user)
-    pushLine(text, C.user)
+    pushLabel(`❯ You:`, ansi.bold + C.user)
+    pushLine(text, C.text)
 
     assistantLabeled = false
     state.processing = true
@@ -540,11 +542,11 @@ export async function startTUI(agent, opts = {}) {
 
   function flushStream() {
     if (state.reasoning) {
-      pushLine(state.reasoning, C.dim)
+      pushLine(state.reasoning, C.reason)
       state.reasoning = ""
     }
     if (state.streaming) {
-      pushLine(state.streaming, C.assistant)
+      pushLine(state.streaming, C.text)
       state.streaming = ""
     }
   }
@@ -831,11 +833,11 @@ export async function startTUI(agent, opts = {}) {
   if (opts.restored?.history?.length) {
     for (const m of opts.restored.history) {
       if (m.role === "user") {
-        pushLabel(`❯ You`, ansi.bold + C.user)
-        if (typeof m.content === "string" && m.content) pushLine(m.content, C.user)
+        pushLabel(`❯ You:`, ansi.bold + C.user)
+        if (typeof m.content === "string" && m.content) pushLine(m.content, C.text)
       } else if (m.role === "assistant") {
-        pushLabel(`❯ ThinCoder`, ansi.bold + C.assistant)
-        if (typeof m.content === "string" && m.content) pushLine(m.content, C.assistant)
+        pushLabel(`❯ ThinCoder:`, ansi.bold + C.assistant)
+        if (typeof m.content === "string" && m.content) pushLine(m.content, C.text)
         for (const tc of m.tool_calls ?? []) {
           pushLine(`  [tool] ${tc.function?.name ?? "?"}`, C.tool)
         }
