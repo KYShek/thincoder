@@ -5,6 +5,7 @@
  */
 
 import { emitKeypressEvents } from "node:readline"
+import { PassThrough } from "node:stream"
 import { basename } from "node:path"
 import { runAgent } from "./agent.mjs"
 
@@ -163,9 +164,42 @@ export async function startTUI(agent, opts = {}) {
     status: "Ready",
   }
 
-  emitKeypressEvents(process.stdin)
+  // 输入流先过一道滤网：鼠标序列（滚轮）在这里拦截处理，剥净后才交给 keypress 解析，
+  // 防止序列残片（如 "64;72;42M"）漏进输入框
+  const keyStream = new PassThrough()
+  let mousePending = "" // 跨 chunk 的不完整鼠标序列尾部
+  let lastRenderedScroll = 0
+  emitKeypressEvents(keyStream)
   process.stdin.setRawMode(true)
   process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn)
+
+  process.stdin.on("data", (chunk) => {
+    let text = mousePending + chunk.toString("utf8")
+    mousePending = ""
+
+    // 滚轮：\x1b[<64;…M 上滚，\x1b[<65;…M 下滚（每次 3 行）
+    for (const m of text.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)) {
+      if (Number(m[1]) === 64) {
+        state.scroll += 3
+      } else if (Number(m[1]) === 65) {
+        state.scroll = Math.max(0, state.scroll - 3)
+      }
+    }
+
+    // 剥掉完整鼠标序列；不完整的尾部留到下一块数据再拼
+    text = text.replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, "")
+    const tail = text.match(/\x1b\[<[\d;]*$/)
+    if (tail) {
+      mousePending = tail[0]
+      text = text.slice(0, -tail[0].length)
+    }
+
+    if (state.scroll !== lastRenderedScroll) {
+      lastRenderedScroll = state.scroll
+      render()
+    }
+    if (text) keyStream.write(text)
+  })
 
   const cleanup = () => {
     process.stdin.setRawMode(false)
@@ -487,26 +521,8 @@ export async function startTUI(agent, opts = {}) {
 
   // ---------------------------------------------------------- 键盘 / 鼠标
 
-  // 鼠标滚轮：SGR 序列 \x1b[<64;…M = 上滚，\x1b[<65;…M = 下滚（每次 3 行）
-  process.stdin.on("data", (chunk) => {
-    const text = chunk.toString("utf8")
-    if (!text.includes(`${ESC}[<`)) return
-    for (const m of text.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)) {
-      const button = Number(m[1])
-      if (button === 64) {
-        state.scroll += 3
-        render()
-      } else if (button === 65) {
-        state.scroll = Math.max(0, state.scroll - 3)
-        render()
-      }
-    }
-  })
-
-  process.stdin.on("keypress", (str, key = {}) => {
-    // 鼠标/CSI 序列已由 data 监听器处理，这里忽略，防止 escape 字符混进输入框
-    if (str && str.includes(ESC)) return
-
+  // keypress 挂在过滤后的 keyStream 上：鼠标序列已在上游滤网中处理并剥除
+  keyStream.on("keypress", (str, key = {}) => {
     // 权限确认态：只认 y/n
     if (state.permission) {
       const answer = (str || "").toLowerCase()
