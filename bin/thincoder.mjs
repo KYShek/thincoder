@@ -12,7 +12,7 @@ import { createInterface } from "node:readline"
 import { execSync } from "node:child_process"
 import { join } from "node:path"
 import { createAgent, runAgent } from "../src/agent.mjs"
-import { loadConfig } from "../src/config.mjs"
+import { loadConfig, configDir } from "../src/config.mjs"
 import { createMemory, memoryTools, put, remove, search, list, syncDir } from "../src/memory.mjs"
 import { createProvider } from "../src/provider.mjs"
 import { builtinTools } from "../src/tools.mjs"
@@ -28,13 +28,14 @@ Usage:
   thincoder memory search <query>              Search memory
   thincoder memory put --type=<t> --title=<t> --content=<c> [--tags=<t>]
   thincoder memory remove <id>                 Remove an entry
+  thincoder sync              Sync team memory repo (pull --rebase + reindex)
   thincoder --help          Show this help
 
 Config: ~/.thincoder/config.json (provider.baseURL / provider.apiKey / provider.model)
 Env:    THINCODER_API_KEY, THINCODER_BASE_URL, THINCODER_MODEL
 `
 
-/** 组装一个带记忆的 agent（同步 Project 层索引后返回） */
+/** 组装一个带记忆的 agent（同步各层索引后返回） */
 async function makeAgent() {
   const config = loadConfig()
   const provider = createProvider(config.provider)
@@ -50,13 +51,28 @@ async function makeAgent() {
     memory.projectOrigin = join(cwd, config.memory.projectDir)
     await syncDir(memory, { layer: "project", dir: memory.projectOrigin })
   }
+  // Team 层（可选）：首次自动 clone；启动只索引本地目录，拉取远端走显式 thincoder sync
+  const team = teamConfig(config)
+  if (team) {
+    const { ensureClone } = await import("../src/gitmem.mjs")
+    await ensureClone(team)
+    await syncDir(memory, { layer: "team", dir: team.dir })
+  }
   return createAgent({
     provider,
-    tools: [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor() })],
+    tools: [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team })],
     config,
     cwd,
     memory,
   })
+}
+
+/** 读取 team 配置并补全默认目录；未配置返回 null */
+function teamConfig(config) {
+  const team = config.memory?.team
+  if (!team?.repo) return null
+  const name = team.name ?? "default"
+  return { name, repo: team.repo, dir: team.dir ?? join(configDir, "teams", name) }
 }
 
 /** 条目作者：git config user.name 兜底 unknown */
@@ -108,6 +124,29 @@ switch (command) {
       memory.projectOrigin = join(process.cwd(), config.memory.projectDir)
     }
     await memoryCommand(memory, args)
+    break
+  }
+
+  case "sync": {
+    const config = loadConfig()
+    const team = teamConfig(config)
+    if (!team) {
+      console.error("Team memory not configured. Set memory.team in ~/.thincoder/config.json:")
+      console.error('  "team": { "name": "myteam", "repo": "git@github.com:org/team-memory.git" }')
+      process.exit(1)
+    }
+    const memory = createMemory({ dbPath: config.memory.dbPath })
+    const { ensureClone, pullTeam } = await import("../src/gitmem.mjs")
+    try {
+      const cloned = await ensureClone(team)
+      if (cloned) console.log(`Cloned team repo to ${team.dir}`)
+      await pullTeam(team.dir)
+      const stats = await syncDir(memory, { layer: "team", dir: team.dir })
+      console.log(`Synced. Index: +${stats.added} ~${stats.updated} -${stats.removed}`)
+    } catch (error) {
+      console.error(`[error] ${error.message}`)
+      process.exit(1)
+    }
     break
   }
 

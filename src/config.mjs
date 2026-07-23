@@ -22,6 +22,7 @@ const DEFAULTS = {
   memory: {
     dbPath: join(configDir, "memory.db"),
     projectDir: ".thincoder/memory",
+    team: null,
   },
   embedding: {
     baseURL: "https://api.siliconflow.cn/v1",

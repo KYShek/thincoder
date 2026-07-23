@@ -212,3 +212,67 @@ test("hybrid: 向量通道 + RRF + 惰性 embedding", async () => {
     server.close()
   }
 })
+
+// ---------------------------------------------------------------- team 层（本地裸仓库模拟远端）
+
+test("team 层: 双 clone 同步 + 冲突诚实报错", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { ensureClone, pullTeam, commitAndPush } = await import("../src/gitmem.mjs")
+  const { writeFileSync, readFileSync } = await import("node:fs")
+
+  const base = mkdtempSync(join(tmpdir(), "thincoder-team-"))
+  const remote = join(base, "remote.git")
+  const dirA = join(base, "a")
+  const dirB = join(base, "b")
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" })
+
+  try {
+    // 远端裸仓库 + 两个成员的 clone
+    execFileSync("git", ["init", "--bare", remote], { encoding: "utf8" })
+    await ensureClone({ repo: remote, dir: dirA })
+    await ensureClone({ repo: remote, dir: dirB })
+    for (const d of [dirA, dirB]) {
+      git(d, "config", "user.name", "tester")
+      git(d, "config", "user.email", "t@t.dev")
+    }
+    // A 先推一个初始提交（空仓库无法 rebase）
+    writeFileSync(join(dirA, "README.md"), "# team memory\n")
+    git(dirA, "add", ".")
+    git(dirA, "commit", "-m", "init")
+    git(dirA, "push", "-u", "origin", "master")
+
+    // A 写入一条团队记忆并推送
+    const memA = freshMemory()
+    const file1 = await putMarkdown(memA, {
+      layer: "team", dir: dirA, type: "rule", title: "提交规范",
+      content: "commit message 用英文，动词开头", tags: ["git"], author: "A",
+    })
+    await commitAndPush(dirA, file1, "memory: [rule] 提交规范")
+
+    // B 同步：应拉到 A 的条目并可检索
+    const memB = freshMemory()
+    await pullTeam(dirB)
+    const stats = await syncDir(memB, { layer: "team", dir: dirB })
+    assert.equal(stats.added, 1)
+    const found = await search(memB, "提交规范")
+    assert.equal(found.length, 1)
+    assert.equal(found[0].layer, "team")
+    assert.equal(found[0].author, "A")
+
+    // 冲突场景：A 改条目推上去，B 也改同一条目（本地提交），B 再 pull 必须诚实报错
+    const fileA = readFileSync(join(dirA, file1), "utf8").replace("动词开头", "动词开头，英文小写")
+    writeFileSync(join(dirA, file1), fileA)
+    await commitAndPush(dirA, file1, "memory: update 提交规范")
+    const fileB = readFileSync(join(dirB, file1), "utf8").replace("动词开头", "中文动词开头")
+    writeFileSync(join(dirB, file1), fileB)
+    git(dirB, "add", file1)
+    git(dirB, "commit", "-m", "memory: conflicting update")
+
+    await assert.rejects(() => pullTeam(dirB), /冲突/)
+    // rebase 已中止：B 仓库不处于冲突状态
+    const status = git(dirB, "status", "--porcelain")
+    assert.ok(!status.split("\n").some((l) => l.startsWith("UU")))
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})

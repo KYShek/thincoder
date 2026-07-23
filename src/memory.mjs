@@ -248,7 +248,7 @@ function ftsSearch(memory, ftsQuery, limit) {
   const originFilter = memory.projectOrigin ? `AND (f.layer = 'team' OR f.origin = ?)` : ""
   const originParams = memory.projectOrigin ? [ftsQuery, memory.projectOrigin, limit] : [ftsQuery, limit]
   const files = memory.db.prepare(`
-    SELECT f.layer, f.path, f.type, f.title, f.content, f.tags, bm25(files_fts) AS rank
+    SELECT f.layer, f.path, f.type, f.title, f.content, f.tags, f.author, bm25(files_fts) AS rank
     FROM files_fts JOIN files f ON f.rowid = files_fts.rowid
     WHERE files_fts MATCH ? ${originFilter}
     ORDER BY rank LIMIT ?
@@ -265,7 +265,7 @@ function fetchEntry(memory, uid) {
     const r = memory.db.prepare(`SELECT id, type, title, content, tags FROM entries WHERE id = ?`).get(Number(key))
     return r ? { ...r, layer, id: uid } : null
   }
-  const r = memory.db.prepare(`SELECT type, title, content, tags FROM files WHERE layer = ? AND path = ?`).get(layer, key)
+  const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND path = ?`).get(layer, key)
   return r ? { ...r, layer, id: uid } : null
 }
 
@@ -329,14 +329,21 @@ export async function syncDir(memory, { layer, dir }) {
     memory.db.prepare(`SELECT path, mtime_ms FROM files WHERE layer = ?`).all(layer).map((r) => [r.path, r.mtime_ms]),
   )
 
-  let added = 0, updated = 0
+  let added = 0, updated = 0, skipped = 0
   for (const filename of names) {
     const mtimeMs = Math.floor((await stat(join(dir, filename))).mtimeMs)
     const old = indexed.get(filename)
-    if (old === undefined) added++
-    else if (old !== mtimeMs) updated++
-    else continue
-    await indexMarkdownFile(memory, { layer, dir, filename, mtimeMs })
+    const isNew = old === undefined
+    if (!isNew && old === mtimeMs) continue
+    try {
+      await indexMarkdownFile(memory, { layer, dir, filename, mtimeMs })
+    } catch {
+      skipped++ // 无 frontmatter 的非条目文件（README 等）跳过，不入索引
+      indexed.delete(filename)
+      continue
+    }
+    if (isNew) added++
+    else updated++
     indexed.delete(filename)
   }
 
@@ -346,7 +353,7 @@ export async function syncDir(memory, { layer, dir }) {
     memory.db.prepare(`DELETE FROM files WHERE layer = ? AND path = ?`).run(layer, stale)
     removed++
   }
-  return { added, updated, removed }
+  return { added, updated, removed, skipped }
 }
 
 /** 解析单个 .md 并 upsert 进 files 表 */
@@ -407,7 +414,7 @@ function buildFtsQuery(query) {
 /**
  * 生成记忆相关的两个 agent 工具（遵循 tools.mjs 的工具形状）。
  * memory_put 是有副作用工具（需权限确认），memory_search 只读。
- * opts: { cwd, projectDir, teamConfigured } —— 决定 scope=project/team 时的行为
+ * opts: { cwd, projectDir, author, team: { dir, name } | null }
  */
 export function memoryTools(memory, opts = {}) {
   const projectDir = opts.projectDir ? join(opts.cwd ?? process.cwd(), opts.projectDir) : null
@@ -447,7 +454,22 @@ export function memoryTools(memory, opts = {}) {
           })
           return `Saved to project memory (${filename}): [${args.type}] ${args.title}\nNote: file written to the repo; commit it yourself when ready.`
         }
-        throw new Error("team scope not configured: set memory.team in ~/.thincoder/config.json (available in v2)")
+        // team：写文件 + 索引 + commit + push（team 仓库是 ThinCoder 自管设施，可以自动提交）
+        if (!opts.team?.dir) {
+          throw new Error("team scope not configured: set memory.team in ~/.thincoder/config.json")
+        }
+        const filename = await putMarkdown(memory, {
+          layer: "team",
+          dir: opts.team.dir,
+          type: args.type,
+          title: args.title,
+          content: args.content,
+          tags: (args.tags ?? "").split(/\s+/).filter(Boolean),
+          author: opts.author ?? "unknown",
+        })
+        const { commitAndPush } = await import("./gitmem.mjs")
+        await commitAndPush(opts.team.dir, filename, `memory: [${args.type}] ${args.title}`)
+        return `Saved to team memory and pushed (${filename}): [${args.type}] ${args.title}`
       },
     },
     {
