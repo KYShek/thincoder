@@ -9,7 +9,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { stringWidth, wrapText } from "../src/tui.mjs"
-import { createMemory, put, search, list, remove } from "../src/memory.mjs"
+import { createMemory, put, search, list, remove, putMarkdown, syncDir } from "../src/memory.mjs"
+import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
 import { builtinTools } from "../src/tools.mjs"
 
 // ---------------------------------------------------------------- tui 纯函数
@@ -41,10 +42,11 @@ test("memory: put / search / list / remove 全流程", async () => {
   // 中文双字词命中（unicode61 + CJK 逐字方案的核心场景）
   const r1 = await search(m, "分号")
   assert.equal(r1.length, 1)
-  assert.equal(r1[0].id, id1)
+  assert.equal(r1[0].id, `personal:${id1}`)
+  assert.equal(r1[0].layer, "personal")
 
   const r2 = await search(m, "VPS")
-  assert.equal(r2[0].id, id2)
+  assert.equal(r2[0].id, `personal:${id2}`)
 
   // OR 语义：一词命中即可
   const r3 = await search(m, "分号 Caddy")
@@ -88,6 +90,72 @@ test("tools: write / read / edit / glob / grep", async () => {
 
     const grepOut = await byName.grep.execute({ pattern: "mjs" }, ctx)
     assert.match(grepOut, /a\.txt:2:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- markdown
+
+test("markdown: serialize → parse 往返一致", () => {
+  const meta = { type: "rule", title: "错误处理规范", tags: ["golang", "error"], author: "liwei" }
+  const md = serializeEntry(meta, "所有错误必须 wrap 上下文。\n\n第二段。")
+  const { meta: parsed, content } = parseEntry(md)
+  assert.equal(parsed.type, "rule")
+  assert.equal(parsed.title, "错误处理规范")
+  assert.deepEqual(parsed.tags, ["golang", "error"])
+  assert.equal(parsed.author, "liwei")
+  assert.equal(content, "所有错误必须 wrap 上下文。\n\n第二段。")
+})
+
+test("markdown: 缺 frontmatter / 非法 type 抛错", () => {
+  assert.throws(() => parseEntry("没有 frontmatter"))
+  assert.throws(() => parseEntry("---\ntype: bogus\ntitle: x\n---\n内容"))
+})
+
+test("markdown: slugify 与文件名", () => {
+  assert.equal(slugify("Go 错误处理! 规范"), "go-错误处理-规范")
+  assert.match(entryFilename("测试"), /^\d{8}-测试-[a-z0-9]{4}\.md$/)
+})
+
+// ---------------------------------------------------------------- project 层
+
+test("project 层：putMarkdown → syncDir → 合并检索", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-proj-"))
+  const m = freshMemory()
+  try {
+    const memDir = join(dir, ".thincoder", "memory")
+    const filename = await putMarkdown(m, {
+      layer: "project",
+      dir: memDir,
+      type: "knowledge",
+      title: "部署架构",
+      content: "生产环境在单台 VPS，Caddy 反向代理",
+      tags: ["deploy"],
+      author: "tester",
+    })
+    assert.match(filename, /部署架构/)
+
+    // personal 层也放一条，验证合并
+    await put(m, { type: "rule", title: "代码风格", content: "不加分号，不用 TypeScript" })
+
+    const results = await search(m, "VPS 部署")
+    assert.equal(results.length, 1)
+    assert.equal(results[0].layer, "project")
+    assert.equal(results[0].title, "部署架构")
+
+    const merged = await search(m, "分号")
+    assert.equal(merged[0].layer, "personal")
+
+    // syncDir：手工删文件后应移出索引
+    const { unlink, writeFile: wf } = await import("node:fs/promises")
+    await unlink(join(memDir, filename))
+    await wf(join(memDir, "20260724-新条目-ab12.md"), serializeEntry({ type: "decision", title: "新决策", tags: [], author: "t" }, "内容"))
+    const stats = await syncDir(m, { layer: "project", dir: memDir })
+    assert.equal(stats.removed, 1)
+    assert.equal(stats.added, 1)
+    const after = await search(m, "VPS")
+    assert.equal(after.length, 0)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

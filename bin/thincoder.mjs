@@ -9,9 +9,11 @@
  */
 
 import { createInterface } from "node:readline"
+import { execSync } from "node:child_process"
+import { join } from "node:path"
 import { createAgent, runAgent } from "../src/agent.mjs"
 import { loadConfig } from "../src/config.mjs"
-import { createMemory, memoryTools, put, remove, search, list } from "../src/memory.mjs"
+import { createMemory, memoryTools, put, remove, search, list, syncDir } from "../src/memory.mjs"
 import { createProvider } from "../src/provider.mjs"
 import { builtinTools } from "../src/tools.mjs"
 
@@ -32,18 +34,32 @@ Config: ~/.thincoder/config.json (provider.baseURL / provider.apiKey / provider.
 Env:    THINCODER_API_KEY, THINCODER_BASE_URL, THINCODER_MODEL
 `
 
-/** 组装一个带记忆的 agent */
-function makeAgent() {
+/** 组装一个带记忆的 agent（同步 Project 层索引后返回） */
+async function makeAgent() {
   const config = loadConfig()
   const provider = createProvider(config.provider)
   const memory = createMemory({ dbPath: config.memory.dbPath })
+  const cwd = process.cwd()
+  // Project 层：启动时同步 .thincoder/memory/ 目录到索引（有就同步，没有就跳过）
+  if (config.memory.projectDir) {
+    await syncDir(memory, { layer: "project", dir: join(cwd, config.memory.projectDir) })
+  }
   return createAgent({
     provider,
-    tools: [...builtinTools, ...memoryTools(memory)],
+    tools: [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor() })],
     config,
-    cwd: process.cwd(),
+    cwd,
     memory,
   })
+}
+
+/** 条目作者：git config user.name 兜底 unknown */
+function gitAuthor() {
+  try {
+    return execSync("git config user.name", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown"
+  } catch {
+    return "unknown"
+  }
 }
 
 switch (command) {
@@ -54,7 +70,7 @@ switch (command) {
       process.exit(1)
     }
 
-    const agent = makeAgent()
+    const agent = await makeAgent()
     try {
       await runAgent(agent, prompt, {
         onToken: (text) => process.stdout.write(text),
@@ -84,7 +100,7 @@ switch (command) {
 
   case "tui":
   case undefined: {
-    const agent = makeAgent()
+    const agent = await makeAgent()
     const { startTUI } = await import("../src/tui.mjs")
     try {
       await startTUI(agent)

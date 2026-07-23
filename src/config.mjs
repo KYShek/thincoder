@@ -21,6 +21,7 @@ const DEFAULTS = {
   },
   memory: {
     dbPath: join(configDir, "memory.db"),
+    projectDir: ".thincoder/memory",
   },
 }
 
