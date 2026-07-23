@@ -39,10 +39,16 @@ async function makeAgent() {
   const config = loadConfig()
   const provider = createProvider(config.provider)
   const memory = createMemory({ dbPath: config.memory.dbPath })
+  // 向量检索：配了 embedding 就启用（惰性生成向量，首次搜索时补算）
+  if (config.embedding?.apiKey) {
+    const { createEmbedder } = await import("../src/embedding.mjs")
+    memory.embedder = createEmbedder(config.embedding)
+  }
   const cwd = process.cwd()
   // Project 层：启动时同步 .thincoder/memory/ 目录到索引（有就同步，没有就跳过）
   if (config.memory.projectDir) {
-    await syncDir(memory, { layer: "project", dir: join(cwd, config.memory.projectDir) })
+    memory.projectOrigin = join(cwd, config.memory.projectDir)
+    await syncDir(memory, { layer: "project", dir: memory.projectOrigin })
   }
   return createAgent({
     provider,
@@ -94,6 +100,13 @@ switch (command) {
   case "memory": {
     const config = loadConfig()
     const memory = createMemory({ dbPath: config.memory.dbPath })
+    if (config.embedding?.apiKey) {
+      const { createEmbedder } = await import("../src/embedding.mjs")
+      memory.embedder = createEmbedder(config.embedding)
+    }
+    if (config.memory.projectDir) {
+      memory.projectOrigin = join(process.cwd(), config.memory.projectDir)
+    }
     await memoryCommand(memory, args)
     break
   }

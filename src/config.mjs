@@ -23,6 +23,10 @@ const DEFAULTS = {
     dbPath: join(configDir, "memory.db"),
     projectDir: ".thincoder/memory",
   },
+  embedding: {
+    baseURL: "https://api.siliconflow.cn/v1",
+    model: "BAAI/bge-m3",
+  },
 }
 
 /**
@@ -41,6 +45,7 @@ export function loadConfig() {
     provider: { ...DEFAULTS.provider, ...config.provider },
     agent: { ...DEFAULTS.agent, ...config.agent },
     memory: { ...DEFAULTS.memory, ...config.memory },
+    embedding: { ...DEFAULTS.embedding, ...config.embedding },
   }
 
   if (!merged.provider.apiKey) {
@@ -49,6 +54,9 @@ export function loadConfig() {
   }
   if (process.env.THINCODER_BASE_URL) merged.provider.baseURL = process.env.THINCODER_BASE_URL
   if (process.env.THINCODER_MODEL) merged.provider.model = process.env.THINCODER_MODEL
+  if (!merged.embedding.apiKey) {
+    merged.embedding.apiKey = process.env.SILICONFLOW_API_KEY || process.env.THINCODER_EMBEDDING_API_KEY
+  }
 
   return merged
 }

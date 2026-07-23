@@ -160,3 +160,55 @@ test("project 层：putMarkdown → syncDir → 合并检索", async () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------- 混合检索（本地 mock embedding 服务）
+
+test("hybrid: 向量通道 + RRF + 惰性 embedding", async () => {
+  const { createServer } = await import("node:http")
+  const { createEmbedder } = await import("../src/embedding.mjs")
+  const DIM = 8
+  // 确定性向量：含"风格"/"规范"的词共享第 0 维（模拟语义相近）
+  const vecFor = (text) => {
+    const v = new Array(DIM).fill(0)
+    if (text.includes("风格")) v[0] = 1
+    if (text.includes("规范")) v[0] += 0.9
+    if (text.includes("部署")) v[1] = 1
+    if (text.includes("编程")) v[0] += 0.3
+    return v
+  }
+  const server = createServer((req, res) => {
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      const { input } = JSON.parse(body)
+      const texts = Array.isArray(input) ? input : [input]
+      res.setHeader("content-type", "application/json")
+      res.end(JSON.stringify({ data: texts.map((t, i) => ({ embedding: vecFor(t), index: i })) }))
+    })
+  })
+  await new Promise((r) => server.listen(0, "127.0.0.1", r))
+  try {
+    const port = server.address().port
+    const m = freshMemory()
+    m.embedder = createEmbedder({ baseURL: `http://127.0.0.1:${port}/v1`, apiKey: "x", model: "mock" })
+    const id1 = await put(m, { type: "rule", title: "代码风格", content: "不加分号" })
+    await put(m, { type: "knowledge", title: "部署流程", content: "打 tag 即可" })
+
+    // "编程规范" 与 "代码风格" 零字面重合：FTS 不中，向量必须命中。
+    // 断言 top-2 而非第一——CJK 逐字 OR 的固有噪声：诱饵"部署流程"因共享单字
+    // "程"获得 FTS 排名，低维 mock 向量下 RRF 可能让它压过纯向量命中。
+    // 真实 bge-m3（1024 维）语义区分度足够，真实 API 验证为第一名。
+    const results = await search(m, "编程规范")
+    assert.ok(results.length > 0)
+    assert.ok(
+      results.slice(0, 2).some((r) => r.id === `personal:${id1}`),
+      "向量命中应进 top-2",
+    )
+
+    // 惰性生成：向量已落库
+    const stored = m.db.prepare("SELECT embedding IS NOT NULL AS has FROM entries WHERE id = ?").get(id1)
+    assert.equal(stored.has, 1)
+  } finally {
+    server.close()
+  }
+})
