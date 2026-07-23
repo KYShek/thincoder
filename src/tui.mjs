@@ -226,6 +226,9 @@ export async function startTUI(agent, opts = {}) {
     processing: false,
     permission: null, // { name, args, resolve }
     tasks: [], // task 工具的任务列表（状态栏显示进度）
+    reasoning: "", // 思考流缓冲（暗色展示）
+    currentTool: null, // 正在执行的工具名（状态栏显示）
+    processingStarted: 0, // 本轮处理开始时间（状态栏计时）
     status: "Ready",
   }
 
@@ -345,6 +348,12 @@ export async function startTUI(agent, opts = {}) {
         }
       }
     }
+    // 思考流（暗色）在正文流之前
+    if (state.reasoning) {
+      for (const wrapped of wrapText(state.reasoning, cols - 1)) {
+        convLines.push({ text: wrapped, color: C.dim })
+      }
+    }
     if (state.streaming) {
       for (const line of formatTables(state.streaming, cols - 1)) {
         for (const wrapped of wrapText(line, cols - 1)) {
@@ -402,7 +411,10 @@ export async function startTUI(agent, opts = {}) {
       const taskHint = state.tasks.length > 0
         ? ` │ ▶${state.tasks.filter((t) => t.status === "done").length}/${state.tasks.length}`
         : ""
-      statusLine = ` ${state.status}${taskHint}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
+      const elapsed = state.processing ? ` ${Math.floor((Date.now() - state.processingStarted) / 1000)}s` : ""
+      const toolHint = state.currentTool ? ` ${state.currentTool}…` : ""
+      const statusText = state.processing ? `${state.status}${toolHint}${elapsed}` : state.status
+      statusLine = ` ${statusText}${taskHint}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
     }
     const autoBanner = agent.autoApprove ? `${C.warn} AUTO${ansi.reset}${ansi.dim}│` : ""
     out.push(`${ansi.dim}${autoBanner}${statusLine}${ansi.reset}${ansi.clearLine}`)
@@ -449,6 +461,13 @@ export async function startTUI(agent, opts = {}) {
     state.processing = true
     state.status = "Processing..."
     state.streaming = ""
+    state.reasoning = ""
+    state.currentTool = null
+    state.processingStarted = Date.now()
+    // 处理中每秒刷新一次状态栏（运行计时）
+    const ticker = setInterval(() => {
+      if (state.processing) render()
+    }, 1000)
     render()
 
     try {
@@ -458,13 +477,19 @@ export async function startTUI(agent, opts = {}) {
           state.streaming += t
           scheduleRender() // token 洪流限流，防闪屏
         },
-        onReasoning: () => {}, // 思考流 v1 不展示
+        onReasoning: (t) => {
+          ensureAssistantLabel()
+          state.reasoning += t
+          scheduleRender()
+        },
         onToolCall: (name, args) => {
           flushStream()
           ensureAssistantLabel()
+          state.currentTool = name
           pushLine(`  [tool] ${name} ${summarize(args)}`, C.tool)
         },
         onToolResult: (name, result) => {
+          state.currentTool = null
           const first = result.split("\n")[0]
           pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
         },
@@ -480,6 +505,8 @@ export async function startTUI(agent, opts = {}) {
     } catch (error) {
       flushStream()
       pushLine(`[error] ${error.message}`, C.error)
+    } finally {
+      clearInterval(ticker)
     }
 
     state.processing = false
@@ -494,6 +521,10 @@ export async function startTUI(agent, opts = {}) {
   }
 
   function flushStream() {
+    if (state.reasoning) {
+      pushLine(state.reasoning, C.dim)
+      state.reasoning = ""
+    }
     if (state.streaming) {
       pushLine(state.streaming, C.assistant)
       state.streaming = ""
