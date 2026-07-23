@@ -348,4 +348,96 @@ function stripTags(html) {
     .trim()
 }
 
-export const builtinTools = [readTool, writeTool, editTool, bashTool, globTool, grepTool, websearchTool]
+// ---------------------------------------------------------------- ls
+
+const lsTool = {
+  name: "ls",
+  description:
+    "List directory contents with type, size, and modification time. Directories listed first. Use to see what a directory contains (glob only matches files).",
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Directory path (default cwd)" },
+    },
+  },
+  readonly: true,
+  async execute(args, ctx) {
+    const abs = resolve(ctx.cwd, args.path ?? ".")
+    const entries = await readdir(abs, { withFileTypes: true })
+    const rows = await Promise.all(
+      entries.slice(0, 500).map(async (e) => {
+        const s = await stat(join(abs, e.name)).catch(() => null)
+        const isDir = e.isDirectory()
+        return {
+          dir: isDir,
+          name: e.name + (isDir ? "/" : ""),
+          size: s?.size ?? 0,
+          mtime: s ? s.mtime.toISOString().slice(0, 16).replace("T", " ") : "?",
+        }
+      }),
+    )
+    rows.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1))
+    if (rows.length === 0) return "(empty directory)"
+    const out = rows.map((r) => `${r.dir ? "d" : "-"}  ${r.name.padEnd(40)} ${String(r.size).padStart(10)}  ${r.mtime}`)
+    return truncate(out.join("\n"))
+  },
+}
+
+// ---------------------------------------------------------------- fetch
+
+const fetchTool = {
+  name: "fetch",
+  description:
+    "Fetch a URL and return its content as text (HTML pages are stripped to readable text). Use after websearch to read full documents.",
+  parameters: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "http/https URL" },
+    },
+    required: ["url"],
+  },
+  readonly: true,
+  async execute(args) {
+    if (!/^https?:\/\//.test(args.url)) throw new Error("url must start with http:// or https://")
+    let response
+    try {
+      response = await fetch(args.url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(20_000),
+      })
+    } catch (error) {
+      throw new Error(`fetch failed: ${error.cause?.code ?? error.message}`)
+    }
+    if (!response.ok) throw new Error(`fetch failed: HTTP ${response.status}`)
+
+    const contentType = response.headers.get("content-type") ?? ""
+    const body = await response.text()
+    if (!contentType.includes("text/html")) return truncate(body)
+    return truncate(htmlToText(body))
+  },
+}
+
+/** HTML → 粗文本：去脚本样式、块级标签换行、剥标签、解码实体、压缩空行 */
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
+    .replace(/<\/(p|div|li|ul|ol|h[1-6]|tr|table|section|article|header|footer|blockquote|pre)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "- ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#0*(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&nbsp;|&ensp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n\s*\n+/g, "\n\n")
+    .trim()
+}
+
+export const builtinTools = [readTool, writeTool, editTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]

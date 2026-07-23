@@ -13,7 +13,7 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 ## 特性
 
 - **Agent 主循环**：LLM ↔ 工具调用循环，直到任务完成（上限 50 轮防失控）
-- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch`，全部零依赖实现
+- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch`，全部零依赖实现
 - **两段式工具调度**：权限确认串行（一个一个问），只读工具并行执行，有副作用工具串行
 - **流式 TUI**：裸 ANSI 实现（无 UI 库），对话流 / 流式输出 / 权限确认 / 翻页 / 输入历史 / 斜杠命令
 - **上下文压缩**：对话超阈值时自动摘要（保留最早 2 条 + 最近 10 条，中间 LLM 摘要）
@@ -118,7 +118,7 @@ bin/thincoder.mjs   命令入口（tui / chat / memory / sync / distill）
 src/
   provider.mjs      LLM 调用（fetch, SSE 流式, 重试）
   embedding.mjs     向量嵌入（OpenAI 兼容 /v1/embeddings）
-  tools.mjs         7 个内置工具 + readonly 调度标记
+  tools.mjs         9 个内置工具 + readonly 调度标记
   agent.mjs         主循环 + 两段式工具执行 + 记忆注入
   context.mjs       token 粗估 + 历史压缩
   memory.mjs        记忆核心：三层合并检索（FTS5 + 向量 + RRF）

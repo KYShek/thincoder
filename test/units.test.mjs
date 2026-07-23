@@ -345,3 +345,43 @@ test("websearch: 解析结果块（本地 mock Bing）", async () => {
     server.close()
   }
 })
+
+// ---------------------------------------------------------------- ls / fetch
+
+test("ls: 目录列表（目录在前，含大小时间）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-ls-"))
+  try {
+    const { writeFile, mkdir } = await import("node:fs/promises")
+    await mkdir(join(dir, "src"))
+    await writeFile(join(dir, "a.txt"), "hello")
+    const ls = builtinTools.find((t) => t.name === "ls")
+    const out = await ls.execute({ path: dir }, { cwd: dir })
+    const lines = out.split("\n")
+    assert.match(lines[0], /^d  src\//) // 目录在前
+    assert.match(lines[1], /^-  a\.txt\s+5\s/) // 文件带大小
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("fetch: HTML 转文本（本地 mock）", async () => {
+  const { createServer } = await import("node:http")
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "text/html; charset=utf-8")
+    res.end(`<html><head><style>body{color:red}</style><script>var x=1</script></head>
+      <body><h1>标题</h1><p>第一段&nbsp;文字</p><ul><li>条目一</li><li>条目二</li></ul></body></html>`)
+  })
+  await new Promise((r) => server.listen(0, "127.0.0.1", r))
+  try {
+    const port = server.address().port
+    const fetchTool = builtinTools.find((t) => t.name === "fetch")
+    const out = await fetchTool.execute({ url: `http://127.0.0.1:${port}/` }, {})
+    assert.match(out, /标题/)
+    assert.match(out, /第一段 文字/)
+    assert.match(out, /- 条目一/)
+    assert.ok(!out.includes("var x=1")) // script 已剥除
+    assert.ok(!out.includes("color:red")) // style 已剥除
+  } finally {
+    server.close()
+  }
+})
