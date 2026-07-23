@@ -16,6 +16,8 @@ const ansi = {
   showCursor: `${ESC}[?25h`,
   altBuffer: `${ESC}[?1049h`,
   mainBuffer: `${ESC}[?1049l`,
+  mouseOn: `${ESC}[?1000h${ESC}[?1006h`, // 基本鼠标 + SGR 扩展坐标（滚轮上报）
+  mouseOff: `${ESC}[?1000l${ESC}[?1006l`,
   home: `${ESC}[H`,
   clearLine: `${ESC}[K`,
   reset: `${ESC}[0m`,
@@ -163,11 +165,11 @@ export async function startTUI(agent, opts = {}) {
 
   emitKeypressEvents(process.stdin)
   process.stdin.setRawMode(true)
-  process.stdout.write(ansi.altBuffer + ansi.hideCursor)
+  process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn)
 
   const cleanup = () => {
     process.stdin.setRawMode(false)
-    process.stdout.write(ansi.mainBuffer + ansi.showCursor + ansi.reset)
+    process.stdout.write(ansi.mouseOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
   }
   process.on("exit", cleanup)
 
@@ -275,7 +277,7 @@ export async function startTUI(agent, opts = {}) {
         ? ` ${matches.map((c) => `${c.name} ${c.desc}`).join("  │  ")}`
         : ` 未知命令（/help 查看可用命令）`
     } else {
-      statusLine = ` ${state.status}${scrollHint} │ Enter: send │ /: commands │ PgUp/PgDn: scroll │ Ctrl+C: exit`
+      statusLine = ` ${state.status}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
     }
     out.push(`${ansi.dim}${statusLine}${ansi.reset}${ansi.clearLine}`)
 
@@ -483,9 +485,28 @@ export async function startTUI(agent, opts = {}) {
     }
   }
 
-  // ---------------------------------------------------------- 键盘
+  // ---------------------------------------------------------- 键盘 / 鼠标
+
+  // 鼠标滚轮：SGR 序列 \x1b[<64;…M = 上滚，\x1b[<65;…M = 下滚（每次 3 行）
+  process.stdin.on("data", (chunk) => {
+    const text = chunk.toString("utf8")
+    if (!text.includes(`${ESC}[<`)) return
+    for (const m of text.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)) {
+      const button = Number(m[1])
+      if (button === 64) {
+        state.scroll += 3
+        render()
+      } else if (button === 65) {
+        state.scroll = Math.max(0, state.scroll - 3)
+        render()
+      }
+    }
+  })
 
   process.stdin.on("keypress", (str, key = {}) => {
+    // 鼠标/CSI 序列已由 data 监听器处理，这里忽略，防止 escape 字符混进输入框
+    if (str && str.includes(ESC)) return
+
     // 权限确认态：只认 y/n
     if (state.permission) {
       const answer = (str || "").toLowerCase()
