@@ -29,6 +29,7 @@ Usage:
   thincoder memory put --type=<t> --title=<t> --content=<c> [--tags=<t>]
   thincoder memory remove <id>                 Remove an entry
   thincoder sync              Sync team memory repo (pull --rebase + reindex)
+  thincoder reindex           Rebuild the local index from markdown sources
   thincoder distill <file> [--yes] [--scope=<s>]
                             Extract knowledge candidates from a session
                             transcript file; confirm each before saving
@@ -206,6 +207,28 @@ switch (command) {
       saved++
     }
     console.log(`\nDistilled ${saved}/${candidates.length} entries.`)
+    break
+  }
+
+  case "reindex": {
+    const config = loadConfig()
+    const memory = createMemory({ dbPath: config.memory.dbPath })
+    // files 层（project/team 的 markdown 索引）全量重建；索引是易失品，真相在 markdown
+    memory.db.prepare(`DELETE FROM files`).run()
+    const cwd = process.cwd()
+    let total = { added: 0, removed: 0 }
+    if (config.memory.projectDir) {
+      const s = await syncDir(memory, { layer: "project", dir: join(cwd, config.memory.projectDir) })
+      total.added += s.added
+    }
+    const team = teamConfig(config)
+    if (team) {
+      const { ensureClone } = await import("../src/gitmem.mjs")
+      await ensureClone(team)
+      const s = await syncDir(memory, { layer: "team", dir: team.dir })
+      total.added += s.added
+    }
+    console.log(`Reindexed ${total.added} markdown entries (project${team ? " + team" : ""}). Vectors will be lazily regenerated on next search.`)
     break
   }
 
