@@ -270,7 +270,12 @@ async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth =
     if (item.error) return { ...item, result: `Error: ${item.error}` }
     if (item.denied) return { ...item, result: "Error: permission denied by user" }
     try {
-      const result = await item.tool.execute(item.args, { cwd: agent.cwd, agent, depth })
+      const result = await item.tool.execute(item.args, {
+        cwd: agent.cwd,
+        agent,
+        depth,
+        onOutput: (chunk) => callbacks.onToolOutput?.(item.toolCall.name, chunk),
+      })
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result: String(result) }
     } catch (error) {

@@ -4,12 +4,9 @@
  * readonly 标记供 agent 调度：只读工具可并行，有副作用工具串行。
  */
 
-import { exec } from "node:child_process"
+import { spawn } from "node:child_process"
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { promisify } from "node:util"
-
-const execAsync = promisify(exec)
 
 const MAX_READ_LINES = 2000
 const MAX_OUTPUT_CHARS = 50_000
@@ -141,20 +138,45 @@ const bashTool = {
   },
   readonly: false,
   async execute(args, ctx) {
-    try {
-      const { stdout, stderr } = await execAsync(args.command, {
+    return new Promise((resolve) => {
+      const child = spawn(args.command, {
         cwd: ctx.cwd,
-        timeout: args.timeout ?? BASH_TIMEOUT_MS,
-        maxBuffer: 10 * 1024 * 1024,
+        shell: true,
         windowsHide: true,
       })
-      const out = [stdout, stderr].filter(Boolean).join("\n")
-      return truncate(out || "(no output)")
-    } catch (error) {
-      // exec 失败（非零退出/超时）也返回输出，让 LLM 看到现场
-      const out = [error.stdout, error.stderr].filter(Boolean).join("\n")
-      return truncate(`Command failed: ${error.message}\n${out}`.trim())
-    }
+      // Windows cmd 中文输出是 GBK：按平台解码，流式模式处理跨 chunk 的多字节字符
+      const decoder = new TextDecoder(process.platform === "win32" ? "gbk" : "utf8")
+      let out = ""
+      let truncatedNote = ""
+      const onData = (d) => {
+        const s = decoder.decode(d, { stream: true })
+        // 输出实时透传给 UI；本地缓冲超 2MB 后停止累积（防内存爆炸）
+        ctx.onOutput?.(s)
+        if (out.length < 2_000_000) {
+          out += s
+        } else if (!truncatedNote) {
+          truncatedNote = "\n... (output exceeded 2MB, remainder discarded)"
+        }
+      }
+      child.stdout.on("data", onData)
+      child.stderr.on("data", onData)
+
+      const timer = setTimeout(() => child.kill(), args.timeout ?? BASH_TIMEOUT_MS)
+      child.on("error", (error) => {
+        clearTimeout(timer)
+        resolve(truncate(`Command failed: ${error.message}\n${out}`))
+      })
+      child.on("close", (code, signal) => {
+        clearTimeout(timer)
+        out += decoder.decode() // flush 解码器尾部
+        const suffix = signal
+          ? "\n(killed: timeout)"
+          : code !== 0
+            ? `\n(exit code ${code})`
+            : ""
+        resolve(truncate((out.trim() || "(no output)") + suffix + truncatedNote))
+      })
+    })
   },
 }
 

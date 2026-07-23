@@ -227,6 +227,7 @@ export async function startTUI(agent, opts = {}) {
     permission: null, // { name, args, resolve }
     tasks: [], // task 工具的任务列表（状态栏显示进度）
     reasoning: "", // 思考流缓冲（暗色展示）
+    toolStream: "", // 当前工具的实时输出（暗色展示，bash 流式）
     currentTool: null, // 正在执行的工具名（状态栏显示）
     processingStarted: 0, // 本轮处理开始时间（状态栏计时）
     status: "Ready",
@@ -361,6 +362,13 @@ export async function startTUI(agent, opts = {}) {
         }
       }
     }
+    // 工具实时输出（暗色，只保留末尾防刷屏）
+    if (state.toolStream) {
+      const tail = state.toolStream.slice(-4000)
+      for (const wrapped of wrapText(tail, cols - 1)) {
+        convLines.push({ text: wrapped, color: C.dim })
+      }
+    }
 
     const maxScroll = Math.max(0, convLines.length - convH)
     state.scroll = Math.min(state.scroll, maxScroll)
@@ -490,8 +498,18 @@ export async function startTUI(agent, opts = {}) {
         },
         onToolResult: (name, result) => {
           state.currentTool = null
+          if (state.toolStream) {
+            // 实时输出落盘为历史行（保留末尾 4000 字符），并清掉临时缓冲
+            const tail = state.toolStream.trimEnd().slice(-4000)
+            if (tail) pushLine(tail, C.dim)
+            state.toolStream = ""
+          }
           const first = result.split("\n")[0]
           pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
+        },
+        onToolOutput: (name, chunk) => {
+          state.toolStream += chunk
+          scheduleRender()
         },
         onPermissionRequest: (name, args) => askPermission(name, args),
         onTaskUpdate: (items) => {

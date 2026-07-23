@@ -109,6 +109,7 @@ switch (command) {
           const preview = result.length > 200 ? result.slice(0, 200) + "..." : result
           console.error(`[done] ${name} -> ${preview.split("\n")[0]}`)
         },
+        onToolOutput: (name, chunk) => process.stderr.write(chunk),
         onPermissionRequest: (name, toolArgs) => (agent.autoApprove ? true : askPermission(name, toolArgs)),
       })
       process.stdout.write("\n")

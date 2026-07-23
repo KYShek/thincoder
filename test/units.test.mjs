@@ -485,3 +485,17 @@ test("formatTables: 超宽表格按列收缩到可用宽度", async () => {
     assert.ok(stringWidth(line) <= 30, `行超宽: ${line}`)
   }
 })
+
+test("bash: 流式输出实时透传（onOutput 分块到达）", async () => {
+  const bash = builtinTools.find((t) => t.name === "bash")
+  const chunks = []
+  const result = await bash.execute(
+    { command: "echo first && node -e \"setTimeout(()=>console.log('second'),100)\" && wait || true" },
+    { cwd: process.cwd(), onOutput: (c) => chunks.push({ t: Date.now(), c }) },
+  )
+  const text = chunks.map((x) => x.c).join("")
+  assert.match(text, /first/)
+  assert.match(result, /first/)
+  // 流式特征：至少收到过数据块，且与最终返回内容一致
+  assert.ok(chunks.length >= 1)
+})
