@@ -161,6 +161,7 @@ export async function startTUI(agent, opts = {}) {
     scroll: 0, // 从底部向上的滚动行数
     processing: false,
     permission: null, // { name, args, resolve }
+    tasks: [], // task 工具的任务列表（状态栏显示进度）
     status: "Ready",
   }
 
@@ -324,7 +325,10 @@ export async function startTUI(agent, opts = {}) {
         ? ` ${matches.map((c) => `${c.name} ${c.desc}`).join("  │  ")}`
         : ` 未知命令（/help 查看可用命令）`
     } else {
-      statusLine = ` ${state.status}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
+      const taskHint = state.tasks.length > 0
+        ? ` │ ▶${state.tasks.filter((t) => t.status === "done").length}/${state.tasks.length}`
+        : ""
+      statusLine = ` ${state.status}${taskHint}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
     }
     out.push(`${ansi.dim}${statusLine}${ansi.reset}${ansi.clearLine}`)
 
@@ -390,6 +394,12 @@ export async function startTUI(agent, opts = {}) {
           pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
         },
         onPermissionRequest: (name, args) => askPermission(name, args),
+        onTaskUpdate: (items) => {
+          state.tasks = items
+          const done = items.filter((i) => i.status === "done").length
+          pushLine(`  [task] ${done}/${items.length}`, C.dim)
+          render()
+        },
       })
       flushStream()
     } catch (error) {

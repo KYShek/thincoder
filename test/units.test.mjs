@@ -385,3 +385,25 @@ test("fetch: HTML 转文本（本地 mock）", async () => {
     server.close()
   }
 })
+
+// ---------------------------------------------------------------- task 工具
+
+test("task: 更新 agent 任务列表并触发回调", async () => {
+  const { taskTool } = await import("../src/agent.mjs")
+  const agent = { tasks: [], _onTaskUpdate: null }
+  let notified = null
+  agent._onTaskUpdate = (items) => (notified = items)
+  const out = await taskTool.execute(
+    { items: [
+      { title: "读代码", status: "done" },
+      { title: "写实现", status: "in_progress" },
+      { title: "跑测试", status: "pending" },
+      { title: "非法状态", status: "bogus" },
+    ] },
+    { agent },
+  )
+  assert.equal(agent.tasks.length, 4)
+  assert.equal(agent.tasks[3].status, "pending") // 非法状态回退 pending
+  assert.equal(out, "Task list updated: 1/4 done")
+  assert.equal(notified.length, 4)
+})

@@ -13,6 +13,46 @@ import { join } from "node:path"
 
 const DEFAULT_MAX_TURNS = 50
 
+const VALID_TASK_STATUS = new Set(["pending", "in_progress", "done"])
+
+/**
+ * task 工具：多步任务规划与进度跟踪（Claude Code 的 todo 模式）。
+ * 每次调用整体替换列表；只改 agent 内部状态、不碰外部世界，故 readonly。
+ * 通过 ctx.agent 访问调用方 agent（由 runAgent 注入）。
+ */
+export const taskTool = {
+  name: "task",  description:
+    "Plan and track a task list for complex multi-step work. Replaces the entire list on each call. Use for requests needing 3+ steps: break work into items, keep exactly one in_progress, mark done as you complete each. Statuses: pending | in_progress | done.",
+  parameters: {
+    type: "object",
+    properties: {
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            status: { type: "string", enum: ["pending", "in_progress", "done"] },
+          },
+          required: ["title", "status"],
+        },
+      },
+    },
+    required: ["items"],
+  },
+  readonly: true,
+  async execute(args, ctx) {
+    const items = (args.items ?? []).map((it) => ({
+      title: String(it.title ?? "").slice(0, 200),
+      status: VALID_TASK_STATUS.has(it.status) ? it.status : "pending",
+    }))
+    ctx.agent.tasks = items
+    ctx.agent._onTaskUpdate?.(items)
+    const done = items.filter((i) => i.status === "done").length
+    return `Task list updated: ${done}/${items.length} done`
+  },
+}
+
 /** 项目指令文件候选（按优先级拼接所有存在的） */
 const INSTRUCTION_FILES = ["AGENTS.md", "agents.md", "PROJECT_RULES.md", "project_rules.md", ".thincoder/rules.md"]
 const MAX_INSTRUCTION_CHARS = 8000
@@ -39,6 +79,7 @@ Rules:
 - When you need multiple independent pieces of information (e.g. reading several files), make all independent tool calls in the SAME response so they can run in parallel.
 - Be concise in your final answers. Report what you did, not what you plan to do.
 - If the request is ambiguous at a decision that matters, stop and ask in your reply instead of guessing—but ask at most once, then proceed with the most reasonable interpretation.
+- For complex multi-step requests (3+ steps), use the task tool to plan and track progress; keep exactly one item in_progress.
 - Never fabricate file contents or command outputs; only trust tool results.
 - You have long-term memory via memory_put/memory_search. When you learn a durable fact about this project (convention, decision, debugging insight), save it with memory_put. Relevant memories may be injected below—use them.`
 
@@ -54,6 +95,7 @@ export function createAgent({ provider, tools, config, cwd, memory = null }) {
     cwd,
     memory,
     history: [], // OpenAI 格式的对话历史（不含 system）
+    tasks: [], // task 工具维护的任务列表
   }
 }
 
@@ -71,8 +113,11 @@ export async function runAgent(agent, input, callbacks = {}) {
   const threshold = agent.config?.agent?.compactThreshold ?? 100_000
   agent.history.push({ role: "user", content: input })
 
-  const toolSchemas = agent.tools.map(toOpenAISchema)
-  const toolByName = new Map(agent.tools.map((t) => [t.name, t]))
+  // task 工具随主循环注入（不在 agent.tools 里，它是循环的内建能力）
+  const tools = [...agent.tools, taskTool]
+  const toolSchemas = tools.map(toOpenAISchema)
+  const toolByName = new Map(tools.map((t) => [t.name, t]))
+  agent._onTaskUpdate = callbacks.onTaskUpdate
 
   // 记忆注入：按用户输入检索相关记忆，附加到 system prompt
   let systemPrompt = SYSTEM_PROMPT
@@ -182,7 +227,7 @@ async function executeToolCalls(agent, toolByName, toolCalls, callbacks) {
     if (item.error) return { ...item, result: `Error: ${item.error}` }
     if (item.denied) return { ...item, result: "Error: permission denied by user" }
     try {
-      const result = await item.tool.execute(item.args, { cwd: agent.cwd })
+      const result = await item.tool.execute(item.args, { cwd: agent.cwd, agent })
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result: String(result) }
     } catch (error) {
