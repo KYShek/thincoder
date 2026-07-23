@@ -432,3 +432,19 @@ test("session: 保存/恢复/清空 往返", async () => {
   clearSession(cwd)
   assert.equal(loadSession(cwd).history.length, 0)
 })
+
+// ---------------------------------------------------------------- 模型上下文窗口 / 阈值推导
+
+test("config: 上下文窗口映射与压缩阈值推导", async () => {
+  const { contextWindowForModel, resolveCompactThreshold } = await import("../src/config.mjs")
+  assert.equal(contextWindowForModel("deepseek-v4-pro"), 1_000_000)
+  assert.equal(contextWindowForModel("deepseek-v4-flash"), 256_000)
+  assert.equal(contextWindowForModel("DeepSeek-V4-Pro"), 1_000_000) // 大小写不敏感
+  assert.equal(contextWindowForModel("unknown-model-xyz"), 128_000) // 未知兜底
+
+  // 显式配置优先
+  assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
+  // 未配置时按模型推导（窗口 * 0.6）
+  assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 600000, auto: true })
+  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 38400, auto: true })
+})

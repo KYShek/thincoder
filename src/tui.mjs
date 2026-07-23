@@ -514,8 +514,16 @@ export async function startTUI(agent, opts = {}) {
           }
         } else {
           agent.provider.model = arg
+          // 阈值是自动推导的则跟着新模型走；用户显式配置过的不动
+          let thresholdNote = ""
+          if (agent.config?.agent?.compactThresholdAuto) {
+            const { resolveCompactThreshold } = await import("./config.mjs")
+            const { value } = resolveCompactThreshold(null, arg)
+            agent.config.agent.compactThreshold = value
+            thresholdNote = `，压缩阈值随模型调整为 ${value}`
+          }
           pushLabel(`❯ Model`, ansi.bold + C.tool)
-          pushLine(`已切换到 ${arg}（仅本次会话）`, C.tool)
+          pushLine(`已切换到 ${arg}（仅本次会话）${thresholdNote}`, C.tool)
         }
         return
       }
@@ -524,7 +532,8 @@ export async function startTUI(agent, opts = {}) {
         pushLine(`provider: ${agent.provider.baseURL} | model: ${agent.provider.model}`, C.dim)
         pushLine(`apiKey: ${maskKey(agent.provider.apiKey)}`, C.dim)
         const ac = agent.config?.agent ?? {}
-        pushLine(`agent: maxTurns=${ac.maxTurns ?? 50} | compactThreshold=${ac.compactThreshold ?? 100000}`, C.dim)
+        const thresholdNote = `${ac.compactThreshold ?? 100000}${ac.compactThresholdAuto ? " (auto，随模型)" : ""}`
+        pushLine(`agent: maxTurns=${ac.maxTurns ?? 50} | compactThreshold=${thresholdNote}`, C.dim)
         pushLine(`memory: ${agent.memory ? "enabled" : "disabled"}${agent.memory?.embedder ? " + vector" : " (FTS only)"}`, C.dim)
         return
       }
