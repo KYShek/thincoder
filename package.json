@@ -1,7 +1,8 @@
 {
   "name": "thincoder",
   "version": "0.1.0",
-  "description": "Thin coding agent - few dependencies, no build step, Node.js native",
+  "description": "Thin coding agent - zero dependencies, no build step, Node.js native. Sharp code, zero bloat.",
+  "keywords": ["ai", "agent", "coding", "cli", "llm", "deepseek", "openai", "tui"],
   "type": "module",
   "bin": {
     "thincoder": "./bin/thincoder.mjs"
@@ -9,8 +10,19 @@
   "engines": {
     "node": ">=22"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://gitee.com/shanghai-xinbo/thincoder.git"
+  },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepublishOnly": "node --test"
   },
   "license": "MIT"
 }
