@@ -177,6 +177,22 @@ export async function startTUI(agent, opts = {}) {
     render()
   }
 
+  /** 消息块标签：空行 + 标签行。用户/助手消息之间留出呼吸空间 */
+  const pushLabel = (text, color) => {
+    if (state.lines.length > 0) state.lines.push({ text: "", color: C.dim })
+    state.lines.push({ text, color })
+    render()
+  }
+
+  // 每轮对话只打一次助手标签（首个 token 或首个工具调用时）
+  let assistantLabeled = false
+  const ensureAssistantLabel = () => {
+    if (!assistantLabeled) {
+      assistantLabeled = true
+      pushLabel(`❯ ThinCoder`, ansi.bold + C.assistant)
+    }
+  }
+
   // ---------------------------------------------------------- 渲染
 
   function render() {
@@ -283,9 +299,10 @@ export async function startTUI(agent, opts = {}) {
       return
     }
 
-    pushLine(`╭ You`, C.user)
+    pushLabel(`❯ You`, ansi.bold + C.user)
     pushLine(text, C.user)
 
+    assistantLabeled = false
     state.processing = true
     state.status = "Processing..."
     state.streaming = ""
@@ -294,17 +311,19 @@ export async function startTUI(agent, opts = {}) {
     try {
       await runAgent(agent, text, {
         onToken: (t) => {
+          ensureAssistantLabel()
           state.streaming += t
           render()
         },
         onReasoning: () => {}, // 思考流 v1 不展示
         onToolCall: (name, args) => {
           flushStream()
-          pushLine(`[tool] ${name} ${summarize(args)}`, C.tool)
+          ensureAssistantLabel()
+          pushLine(`  [tool] ${name} ${summarize(args)}`, C.tool)
         },
         onToolResult: (name, result) => {
           const first = result.split("\n")[0]
-          pushLine(`[done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
+          pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
         },
         onPermissionRequest: (name, args) => askPermission(name, args),
       })
