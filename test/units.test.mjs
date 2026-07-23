@@ -448,3 +448,40 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
   assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 600000, auto: true })
   assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 38400, auto: true })
 })
+
+// ---------------------------------------------------------------- markdown 表格重排
+
+test("formatTables: CJK 表格按显示宽度对齐", async () => {
+  const { formatTables, stringWidth } = await import("../src/tui.mjs")
+  const md = [
+    "前文不是表格",
+    "| 工具 | 需要确认 | 作用 |",
+    "|---|---|---|",
+    "| write | ✗ | 写文件 |",
+    "| memory_search | ✓ | 记忆检索 |",
+    "后文",
+  ].join("\n")
+  const out = formatTables(md, 60)
+  assert.equal(out[0], "前文不是表格")
+  assert.equal(out.at(-1), "后文")
+  const tableLines = out.slice(1, -1)
+  // 表头、分隔线、数据行全部等显示宽度（CJK 不错位）
+  const widths = new Set(tableLines.map(stringWidth))
+  assert.equal(widths.size, 1)
+  assert.match(tableLines[0], /工具/)
+  assert.match(tableLines[1], /^├/)
+  assert.match(tableLines[2], /write/)
+})
+
+test("formatTables: 超宽表格按列收缩到可用宽度", async () => {
+  const { formatTables, stringWidth } = await import("../src/tui.mjs")
+  const md = [
+    "| 标题 | 非常非常非常非常非常长的一列内容 |",
+    "|---|---|",
+    "| a | b |",
+  ].join("\n")
+  const out = formatTables(md, 30)
+  for (const line of out) {
+    assert.ok(stringWidth(line) <= 30, `行超宽: ${line}`)
+  }
+})

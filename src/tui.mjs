@@ -83,6 +83,69 @@ function sliceByWidth(text, maxWidth) {
   return out
 }
 
+/** 按显示宽度右补空格 */
+function padByWidth(text, width) {
+  return text + " ".repeat(Math.max(0, width - stringWidth(text)))
+}
+
+// ---------------------------------------------------------------- markdown 表格重排
+
+const isTableRow = (line) => (line.match(/\|/g) ?? []).length >= 2
+const isTableSeparator = (line) => /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes("-")
+
+/**
+ * 识别文本中的 markdown 表格块，按显示宽度重排（修 CJK 错位）。
+ * width 为可用显示宽度；过宽的表格按列收缩。非表格行原样保留。
+ */
+export function formatTables(text, width) {
+  const lines = text.split("\n")
+  const out = []
+  let i = 0
+  while (i < lines.length) {
+    if (isTableRow(lines[i]) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const block = [lines[i], lines[i + 1]]
+      i += 2
+      while (i < lines.length && isTableRow(lines[i])) {
+        block.push(lines[i])
+        i++
+      }
+      out.push(...renderTable(block, width))
+    } else {
+      out.push(lines[i])
+      i++
+    }
+  }
+  return out
+}
+
+function renderTable(block, width) {
+  const rows = block.map((line) =>
+    line
+      .replace(/^\s*\|/, "")
+      .replace(/\|\s*$/, "")
+      .split("|")
+      .map((c) => c.trim()),
+  )
+  const colCount = Math.max(...rows.map((r) => r.length))
+  for (const r of rows) while (r.length < colCount) r.push("")
+
+  // 列宽：先按内容，超宽则从最宽列开始收缩（收缩到至少 3）
+  const widths = Array.from({ length: colCount }, (_, c) =>
+    Math.max(3, ...rows.map((r) => stringWidth(r[c] ?? ""))),
+  )
+  const borders = colCount * 3 + 1 // " │ " 分隔 + 首尾 |
+  while (widths.reduce((a, b) => a + b, 0) + borders > width && Math.max(...widths) > 3) {
+    const widest = widths.indexOf(Math.max(...widths))
+    widths[widest]--
+  }
+
+  const fmtRow = (cells) =>
+    "│ " + cells.map((c, i) => padByWidth(sliceByWidth(c, widths[i]), widths[i])).join(" │ ") + " │"
+  const separator = "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤"
+
+  return [fmtRow(rows[0]), separator, ...rows.slice(2).map(fmtRow)]
+}
+
 /** 输入区布局：把输入缓冲折行，同时算出光标的 (行, 列) 位置（显示宽度） */
 export function layoutInput(chars, cursor, width) {
   const PROMPT = "▸ "
@@ -273,16 +336,20 @@ export async function startTUI(agent, opts = {}) {
     const statusH = 1
     const convH = Math.max(1, rows - headerH - inputBoxH - statusH)
 
-    // 对话区内容行（含流式缓冲）
+    // 对话区内容行（含流式缓冲）；markdown 表格先按显示宽度重排
     const convLines = []
     for (const l of state.lines) {
-      for (const wrapped of wrapText(l.text, cols - 1)) {
-        convLines.push({ text: wrapped, color: l.color })
+      for (const line of formatTables(l.text, cols - 1)) {
+        for (const wrapped of wrapText(line, cols - 1)) {
+          convLines.push({ text: wrapped, color: l.color })
+        }
       }
     }
     if (state.streaming) {
-      for (const wrapped of wrapText(state.streaming, cols - 1)) {
-        convLines.push({ text: wrapped, color: C.assistant })
+      for (const line of formatTables(state.streaming, cols - 1)) {
+        for (const wrapped of wrapText(line, cols - 1)) {
+          convLines.push({ text: wrapped, color: C.assistant })
+        }
       }
     }
 
