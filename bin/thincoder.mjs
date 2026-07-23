@@ -29,6 +29,9 @@ Usage:
   thincoder memory put --type=<t> --title=<t> --content=<c> [--tags=<t>]
   thincoder memory remove <id>                 Remove an entry
   thincoder sync              Sync team memory repo (pull --rebase + reindex)
+  thincoder distill <file> [--yes] [--scope=<s>]
+                            Extract knowledge candidates from a session
+                            transcript file; confirm each before saving
   thincoder --help          Show this help
 
 Config: ~/.thincoder/config.json (provider.baseURL / provider.apiKey / provider.model)
@@ -150,12 +153,73 @@ switch (command) {
     break
   }
 
+  case "distill": {
+    const flags = {}
+    const positional = []
+    for (const a of args) {
+      const m = a.match(/^--([\w-]+)(?:=(.*))?$/)
+      if (m) flags[m[1]] = m[2] ?? true
+      else positional.push(a)
+    }
+    const file = positional[0]
+    if (!file) {
+      console.error("Usage: thincoder distill <transcript-file> [--yes] [--scope=personal|project|team]")
+      process.exit(1)
+    }
+    const { readFile } = await import("node:fs/promises")
+    const transcript = await readFile(file, "utf8")
+
+    const config = loadConfig()
+    const provider = createProvider(config.provider)
+    const memory = createMemory({ dbPath: config.memory.dbPath })
+    const team = teamConfig(config)
+    const { extractCandidates, saveCandidate } = await import("../src/distill.mjs")
+
+    console.error("[distill] extracting candidates...")
+    const candidates = await extractCandidates(provider, transcript)
+    if (candidates.length === 0) {
+      console.log("No distillable knowledge found in this session.")
+      break
+    }
+
+    const opts = {
+      projectDir: config.memory.projectDir ? join(process.cwd(), config.memory.projectDir) : null,
+      team,
+      author: gitAuthor(),
+    }
+    let saved = 0
+    for (const c of candidates) {
+      if (flags.scope) c.scope = flags.scope
+      console.log(`\n--- candidate ---`)
+      console.log(`[${c.type}] ${c.title}  (scope: ${c.scope})`)
+      console.log(c.content)
+      if (c.type === "rule") {
+        console.log("(rule 类知识通常建议手动撰写；确认提取吗？)")
+      }
+      const accept = flags.yes ? true : await askPermission("distill-save", { title: c.title })
+      if (!accept) {
+        console.log("skipped")
+        continue
+      }
+      const where = await saveCandidate(memory, c, opts)
+      console.log(`saved -> ${where}`)
+      saved++
+    }
+    console.log(`\nDistilled ${saved}/${candidates.length} entries.`)
+    break
+  }
+
   case "tui":
   case undefined: {
     const agent = await makeAgent()
+    const config = loadConfig()
     const { startTUI } = await import("../src/tui.mjs")
     try {
-      await startTUI(agent)
+      await startTUI(agent, {
+        projectDir: config.memory.projectDir ? join(process.cwd(), config.memory.projectDir) : null,
+        team: teamConfig(config),
+        author: gitAuthor(),
+      })
     } catch (error) {
       console.error(`[error] ${error.message}`)
       process.exit(1)

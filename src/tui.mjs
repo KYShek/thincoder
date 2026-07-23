@@ -103,11 +103,14 @@ export function wrapText(text, width) {
 /**
  * 启动 TUI，接管终端直到退出。
  * agent: createAgent 的返回值
+ * opts: { projectDir?, team?, author? } —— /distill 写入 project/team 层时用
  */
-export async function startTUI(agent) {
+export async function startTUI(agent, opts = {}) {
   if (!process.stdin.isTTY) {
     throw new Error("TUI requires a TTY; use 'thincoder chat' for non-interactive use")
   }
+
+  const distillOpts = opts
 
   const state = {
     lines: [], // 对话区行：{ text, color }
@@ -220,6 +223,12 @@ export async function startTUI(agent) {
     state.historyIndex = -1
     state.scroll = 0
 
+    // 斜杠命令：本地处理，不进入 agent
+    if (text.startsWith("/")) {
+      await handleSlash(text)
+      return
+    }
+
     pushLine(`╭ You`, C.user)
     pushLine(text, C.user)
 
@@ -269,6 +278,73 @@ export async function startTUI(agent) {
       state.status = `Waiting: ${name}`
       render()
     })
+  }
+
+  // ---------------------------------------------------------- 斜杠命令
+
+  async function handleSlash(text) {
+    const [cmd] = text.split(/\s+/)
+    switch (cmd) {
+      case "/clear":
+        state.lines = []
+        state.streaming = ""
+        render()
+        return
+      case "/exit":
+        cleanup()
+        process.exit(0)
+        return
+      case "/distill":
+        await runDistill()
+        return
+      case "/help":
+        pushLine("/distill 从当前会话提取知识  /clear 清屏  /exit 退出", C.dim)
+        return
+      default:
+        pushLine(`Unknown command: ${cmd}（/help 查看可用命令）`, C.error)
+        return
+    }
+  }
+
+  /** /distill：从当前会话提取候选，逐条 y/n 确认后入库 */
+  async function runDistill() {
+    if (agent.history.length === 0) {
+      pushLine("[distill] 当前会话为空，没有可提取的内容", C.dim)
+      return
+    }
+    state.processing = true
+    state.status = "Distilling..."
+    render()
+    try {
+      const { extractCandidates, historyToTranscript, saveCandidate } = await import("./distill.mjs")
+      pushLine("[distill] 正在分析会话...", C.tool)
+      const candidates = await extractCandidates(agent.provider, historyToTranscript(agent.history))
+      if (candidates.length === 0) {
+        pushLine("[distill] 本次会话没有值得沉淀的知识", C.dim)
+        return
+      }
+      let saved = 0
+      for (const c of candidates) {
+        pushLine(`── 候选 [${c.type}] ${c.title} (scope: ${c.scope ?? "personal"})`, C.warn)
+        for (const line of c.content.split("\n").slice(0, 6)) pushLine(`   ${line}`, C.dim)
+        if (c.type === "rule") pushLine("   (rule 类建议手动撰写；确认提取请按 y)", C.warn)
+        const accept = await askPermission("distill-save", { title: c.title })
+        if (!accept) {
+          pushLine("   skipped", C.dim)
+          continue
+        }
+        const where = await saveCandidate(agent.memory, c, distillOpts)
+        pushLine(`   saved -> ${where}`, C.tool)
+        saved++
+      }
+      pushLine(`[distill] 完成：入库 ${saved}/${candidates.length} 条`, C.tool)
+    } catch (error) {
+      pushLine(`[distill] error: ${error.message}`, C.error)
+    } finally {
+      state.processing = false
+      state.status = "Ready"
+      render()
+    }
   }
 
   // ---------------------------------------------------------- 键盘
