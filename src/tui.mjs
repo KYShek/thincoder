@@ -337,7 +337,8 @@ export async function startTUI(agent, opts = {}) {
         : ""
       statusLine = ` ${state.status}${taskHint}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
     }
-    out.push(`${ansi.dim}${statusLine}${ansi.reset}${ansi.clearLine}`)
+    const autoBanner = agent.autoApprove ? `${C.warn} AUTO${ansi.reset}${ansi.dim}│` : ""
+    out.push(`${ansi.dim}${autoBanner}${statusLine}${ansi.reset}${ansi.clearLine}`)
 
     const frame = out.join("\r\n")
     if (frame !== lastFrame) {
@@ -433,6 +434,11 @@ export async function startTUI(agent, opts = {}) {
   }
 
   function askPermission(name, args) {
+    // auto 模式：完全授权，不再询问
+    if (agent.autoApprove) {
+      pushLine(`  [auto] ${name} ${summarize(args)}`, C.warn)
+      return Promise.resolve(true)
+    }
     return new Promise((resolve) => {
       state.permission = { name, args, resolve }
       state.status = `Waiting: ${name}`
@@ -446,6 +452,7 @@ export async function startTUI(agent, opts = {}) {
     { name: "/help", desc: "命令列表" },
     { name: "/model", desc: "查看/切换模型" },
     { name: "/config", desc: "查看当前配置" },
+    { name: "/auto", desc: "自动授权开关" },
     { name: "/distill", desc: "从会话提取知识" },
     { name: "/new", desc: "开始新会话" },
     { name: "/clear", desc: "清屏" },
@@ -475,6 +482,16 @@ export async function startTUI(agent, opts = {}) {
         return
       case "/distill":
         await runDistill()
+        return
+      case "/auto":
+        agent.autoApprove = !agent.autoApprove
+        pushLabel(`❯ Auto`, ansi.bold + (agent.autoApprove ? C.warn : C.tool))
+        pushLine(
+          agent.autoApprove
+            ? `AUTO 已开启：所有工具调用（含写文件/bash/子 agent）不再询问，自动执行。长任务专用，/auto 关闭。`
+            : `AUTO 已关闭：有副作用的工具调用恢复逐个确认。`,
+          agent.autoApprove ? C.warn : C.dim,
+        )
         return
       case "/model": {
         const arg = rest[0]

@@ -90,13 +90,15 @@ function gitAuthor() {
 
 switch (command) {
   case "chat": {
-    const prompt = args.join(" ").trim()
+    const auto = args.includes("--auto")
+    const prompt = args.filter((a) => a !== "--auto").join(" ").trim()
     if (!prompt) {
-      console.error('Usage: thincoder chat "<prompt>"')
+      console.error('Usage: thincoder chat [--auto] "<prompt>"')
       process.exit(1)
     }
 
     const agent = await makeAgent()
+    if (auto) agent.autoApprove = true
     try {
       await runAgent(agent, prompt, {
         onToken: (text) => process.stdout.write(text),
@@ -107,7 +109,7 @@ switch (command) {
           const preview = result.length > 200 ? result.slice(0, 200) + "..." : result
           console.error(`[done] ${name} -> ${preview.split("\n")[0]}`)
         },
-        onPermissionRequest: askPermission,
+        onPermissionRequest: (name, toolArgs) => (agent.autoApprove ? true : askPermission(name, toolArgs)),
       })
       process.stdout.write("\n")
     } catch (error) {

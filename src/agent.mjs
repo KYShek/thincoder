@@ -16,6 +16,44 @@ const DEFAULT_MAX_TURNS = 50
 const VALID_TASK_STATUS = new Set(["pending", "in_progress", "done"])
 
 /**
+ * subagent 工具：派生子 agent 处理独立子任务（隔离上下文，只带回报告）。
+ * - 一批多个 subagent 调用走并行通道（parallel: true），适合广发探索
+ * - 不递归：子 agent 的 tools 里不含 subagent（depth > 0 不注入）
+ * - 普通模式：子 agent 的有副作用工具一律拒绝（研究型用法）；
+ *   auto 模式（agent.autoApprove）：全部放行
+ */
+export const subagentTool = {
+  name: "subagent",
+  description:
+    "Spawn a sub-agent to handle an independent subtask in an isolated context. The sub-agent has the same tools (except subagent itself) and returns only its final report. Spawn MULTIPLE subagents in the SAME response for parallel research—they run concurrently. Do not give parallel subagents tasks that edit the same files.",
+  parameters: {
+    type: "object",
+    properties: {
+      task: { type: "string", description: "Self-contained task description for the sub-agent" },
+      context: { type: "string", description: "Optional background the sub-agent needs (it cannot see this conversation)" },
+    },
+    required: ["task"],
+  },
+  readonly: false,
+  parallel: true,
+  async execute(args, ctx) {
+    const parent = ctx.agent
+    const child = createAgent({
+      provider: parent.provider,
+      tools: parent.tools,
+      config: parent.config,
+      cwd: parent.cwd,
+      memory: parent.memory,
+    })
+    // 子 agent 的权限策略：auto 模式全放行；普通模式只读（拒绝写操作）
+    const childPermission = parent.autoApprove ? async () => true : async () => false
+    const input = args.context ? `背景：\n${args.context}\n\n任务：\n${args.task}` : args.task
+    const report = await runAgent(child, input, { onPermissionRequest: childPermission }, { depth: (ctx.depth ?? 0) + 1 })
+    return report.length > 4000 ? report.slice(0, 4000) + "\n... (report truncated)" : report
+  },
+}
+
+/**
  * task 工具：多步任务规划与进度跟踪（Claude Code 的 todo 模式）。
  * 每次调用整体替换列表；只改 agent 内部状态、不碰外部世界，故 readonly。
  * 通过 ctx.agent 访问调用方 agent（由 runAgent 注入）。
@@ -24,7 +62,8 @@ const VALID_TASK_STATUS = new Set(["pending", "in_progress", "done"])
  * 会让循环代码更绕，不值。
  */
 export const taskTool = {
-  name: "task",  description:
+  name: "task",
+  description:
     "Plan and track a task list for complex multi-step work. Replaces the entire list on each call. Use for requests needing 3+ steps: break work into items, keep exactly one in_progress, mark done as you complete each. Statuses: pending | in_progress | done.",
   parameters: {
     type: "object",
@@ -83,6 +122,7 @@ Rules:
 - Be concise in your final answers. Report what you did, not what you plan to do.
 - If the request is ambiguous at a decision that matters, stop and ask in your reply instead of guessing—but ask at most once, then proceed with the most reasonable interpretation.
 - For complex multi-step requests (3+ steps), use the task tool to plan and track progress; keep exactly one item in_progress.
+- For independent research/exploration subtasks, spawn subagents in the SAME response to run them in parallel—they work in isolated contexts and return final reports. Delegate breadth-first exploration; do precision edits yourself. Never assign parallel subagents tasks that edit the same files.
 - Never fabricate file contents or command outputs; only trust tool results.
 - You have long-term memory via memory_put/memory_search. When you learn a durable fact about this project (convention, decision, debugging insight), save it with memory_put. Relevant memories may be injected below—use them.`
 
@@ -111,13 +151,13 @@ export function createAgent({ provider, tools, config, cwd, memory = null }) {
  * }
  * 返回最终文本。
  */
-export async function runAgent(agent, input, callbacks = {}) {
+export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {}) {
   const maxTurns = agent.config?.agent?.maxTurns ?? DEFAULT_MAX_TURNS
   const threshold = agent.config?.agent?.compactThreshold ?? 100_000
   agent.history.push({ role: "user", content: input })
 
-  // task 工具随主循环注入（不在 agent.tools 里，它是循环的内建能力）
-  const tools = [...agent.tools, taskTool]
+  // task 工具随主循环注入（内建能力）；subagent 只在顶层注入（禁止递归）
+  const tools = [...agent.tools, taskTool, ...(depth === 0 ? [subagentTool] : [])]
   const toolSchemas = tools.map(toOpenAISchema)
   const toolByName = new Map(tools.map((t) => [t.name, t]))
   agent._onTaskUpdate = callbacks.onTaskUpdate
@@ -172,7 +212,7 @@ export async function runAgent(agent, input, callbacks = {}) {
       })),
     })
 
-    const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks)
+    const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks, depth)
 
     // 结果按 toolCallId 配对回喂（协议按 ID 不按位置，完成乱序无影响）
     for (const { toolCall, result } of results) {
@@ -193,7 +233,7 @@ export async function runAgent(agent, input, callbacks = {}) {
  * 阶段二（分类）：只读工具 Promise.all 并行；有副作用工具逐个串行
  * 返回按 toolCallId 配对的结果数组。
  */
-async function executeToolCalls(agent, toolByName, toolCalls, callbacks) {
+async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth = 0) {
   // ---- 阶段一：串行准备 ----
   const prepared = []
   for (const toolCall of toolCalls) {
@@ -230,7 +270,7 @@ async function executeToolCalls(agent, toolByName, toolCalls, callbacks) {
     if (item.error) return { ...item, result: `Error: ${item.error}` }
     if (item.denied) return { ...item, result: "Error: permission denied by user" }
     try {
-      const result = await item.tool.execute(item.args, { cwd: agent.cwd, agent })
+      const result = await item.tool.execute(item.args, { cwd: agent.cwd, agent, depth })
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result: String(result) }
     } catch (error) {
@@ -238,20 +278,20 @@ async function executeToolCalls(agent, toolByName, toolCalls, callbacks) {
     }
   }
 
-  const readonlyItems = prepared.filter((p) => p.tool?.readonly)
-  const sideEffectItems = prepared.filter((p) => !p.tool?.readonly)
+  // 并行通道：只读工具 + 显式声明 parallel 的工具（subagent）；其余串行
+  const parallelItems = prepared.filter((p) => p.tool?.readonly || p.tool?.parallel)
+  const serialItems = prepared.filter((p) => p.tool && !p.tool.readonly && !p.tool.parallel)
+  const failedItems = prepared.filter((p) => !p.tool)
 
-  // 只读工具并行
-  const readonlyResults = await Promise.all(readonlyItems.map(runOne))
-  // 有副作用工具串行
-  const sideEffectResults = []
-  for (const item of sideEffectItems) {
-    sideEffectResults.push(await runOne(item))
+  const parallelResults = await Promise.all(parallelItems.map(runOne))
+  const serialResults = []
+  for (const item of [...serialItems, ...failedItems]) {
+    serialResults.push(await runOne(item))
   }
 
   // 按原始 toolCall 顺序合并（保持历史可读性；协议层靠 ID 配对，顺序无关正确性）
   const resultByCallId = new Map()
-  for (const r of [...readonlyResults, ...sideEffectResults]) {
+  for (const r of [...parallelResults, ...serialResults]) {
     resultByCallId.set(r.toolCall.id, r)
   }
   return toolCalls.map((tc) => resultByCallId.get(tc.id))
