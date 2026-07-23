@@ -8,6 +8,7 @@ import { emitKeypressEvents } from "node:readline"
 import { PassThrough } from "node:stream"
 import { basename } from "node:path"
 import { runAgent } from "./agent.mjs"
+import { saveSession, clearSession } from "./session.mjs"
 
 // ---------------------------------------------------------------- ANSI 工具
 
@@ -203,6 +204,12 @@ export async function startTUI(agent, opts = {}) {
   })
 
   const cleanup = () => {
+    // 退出前保存会话（同步写，保证 exit 路径也能落盘）
+    try {
+      saveSession(agent)
+    } catch {
+      // 存失败不耽误退出
+    }
     process.stdin.setRawMode(false)
     process.stdout.write(ansi.mouseOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
   }
@@ -409,6 +416,12 @@ export async function startTUI(agent, opts = {}) {
 
     state.processing = false
     state.status = "Ready"
+    // 每轮结束后保存会话（崩溃也不丢）
+    try {
+      saveSession(agent)
+    } catch {
+      // 存失败不打断使用
+    }
     render()
   }
 
@@ -434,6 +447,7 @@ export async function startTUI(agent, opts = {}) {
     { name: "/model", desc: "查看/切换模型" },
     { name: "/config", desc: "查看当前配置" },
     { name: "/distill", desc: "从会话提取知识" },
+    { name: "/new", desc: "开始新会话" },
     { name: "/clear", desc: "清屏" },
     { name: "/exit", desc: "退出" },
   ]
@@ -445,6 +459,15 @@ export async function startTUI(agent, opts = {}) {
         state.lines = []
         state.streaming = ""
         render()
+        return
+      case "/new":
+        agent.history = []
+        agent.tasks = []
+        state.tasks = []
+        state.lines = []
+        state.streaming = ""
+        clearSession(agent.cwd)
+        pushLine("已开始新会话（上一会话已归档）", C.dim)
         return
       case "/exit":
         cleanup()
@@ -662,6 +685,23 @@ export async function startTUI(agent, opts = {}) {
   // 启动画面
   pushLine(`Welcome to ThinCoder. Model: ${agent.provider.model}`, C.dim)
   pushLine(`Tools: ${agent.tools.map((t) => t.name).join(", ")}`, C.dim)
+  // 恢复上次会话：重建对话区显示（tool 结果行省略，保持清爽）
+  if (opts.restored?.history?.length) {
+    for (const m of opts.restored.history) {
+      if (m.role === "user") {
+        pushLabel(`❯ You`, ansi.bold + C.user)
+        if (typeof m.content === "string" && m.content) pushLine(m.content, C.user)
+      } else if (m.role === "assistant") {
+        pushLabel(`❯ ThinCoder`, ansi.bold + C.assistant)
+        if (typeof m.content === "string" && m.content) pushLine(m.content, C.assistant)
+        for (const tc of m.tool_calls ?? []) {
+          pushLine(`  [tool] ${tc.function?.name ?? "?"}`, C.tool)
+        }
+      }
+      // tool 角色的结果行省略：调用行已足够还原现场
+    }
+    pushLabel(`── 已恢复上次会话（${opts.restored.history.length} 条消息）；/new 开始新会话 ──`, C.warn)
+  }
   render()
 }
 

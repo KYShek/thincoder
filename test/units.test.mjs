@@ -407,3 +407,28 @@ test("task: 更新 agent 任务列表并触发回调", async () => {
   assert.equal(out, "Task list updated: 1/4 done")
   assert.equal(notified.length, 4)
 })
+
+// ---------------------------------------------------------------- 会话持久化
+
+test("session: 保存/恢复/清空 往返", async () => {
+  const { saveSession, loadSession, clearSession } = await import("../src/session.mjs")
+  const cwd = join(tmpdir(), "thincoder-session-test-" + Date.now())
+  const agent = {
+    cwd,
+    provider: { model: "test-model" },
+    history: [
+      { role: "user", content: "你好" },
+      { role: "assistant", content: "在", tool_calls: [{ id: "c1", type: "function", function: { name: "ls", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "c1", content: "src/" },
+    ],
+    tasks: [{ title: "t", status: "done" }],
+  }
+  assert.equal(loadSession(cwd), null) // 不存在时 null
+  saveSession(agent)
+  const restored = loadSession(cwd)
+  assert.equal(restored.history.length, 3)
+  assert.equal(restored.history[1].tool_calls[0].function.name, "ls")
+  assert.equal(restored.tasks[0].status, "done")
+  clearSession(cwd)
+  assert.equal(loadSession(cwd).history.length, 0)
+})

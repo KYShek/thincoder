@@ -236,12 +236,20 @@ switch (command) {
   case undefined: {
     const agent = await makeAgent()
     const config = loadConfig()
+    // 恢复上次的会话（同一项目目录）
+    const { loadSession } = await import("../src/session.mjs")
+    const restored = loadSession(process.cwd())
+    if (restored) {
+      agent.history = restored.history
+      agent.tasks = restored.tasks ?? []
+    }
     const { startTUI } = await import("../src/tui.mjs")
     try {
       await startTUI(agent, {
         projectDir: config.memory.projectDir ? join(process.cwd(), config.memory.projectDir) : null,
         team: teamConfig(config),
         author: gitAuthor(),
+        restored,
       })
     } catch (error) {
       console.error(`[error] ${error.message}`)
