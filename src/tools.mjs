@@ -27,6 +27,14 @@ export function toOpenAISchema(tool) {
   }
 }
 
+/** 剥离 ANSI 转义序列（vim/less/颜色码会冲花 TUI 渲染），并把 \r 进度条改写转成换行 */
+function sanitizeOutput(s) {
+  return s
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+}
+
 function truncate(text, max = MAX_OUTPUT_CHARS) {
   if (text.length <= max) return text
   return text.slice(0, max) + `\n... (truncated, ${text.length - max} chars omitted)`
@@ -143,6 +151,18 @@ const bashTool = {
         cwd: ctx.cwd,
         shell: true,
         windowsHide: true,
+        // 无 TTY 环境：stdin 置空（vim/less 这类交互程序立刻吃到 EOF 退出，而不是干等），
+        // 并通过环境变量缴械编辑器/分页器/花哨输出
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          GIT_EDITOR: "true",
+          EDITOR: "true",
+          VISUAL: "true",
+          GIT_PAGER: "cat",
+          PAGER: "cat",
+          TERM: "dumb",
+        },
       })
       // 编码嗅探：cmd 自带消息是 GBK，git/node 等程序是 UTF-8，平台判断不了。
       // 策略：纯 ASCII 段两种编码一致，直接透传不判定；遇到高位字节才用
@@ -177,7 +197,7 @@ const bashTool = {
       let out = ""
       let truncatedNote = ""
       const onData = (d) => {
-        const s = feed(d)
+        const s = sanitizeOutput(feed(d))
         // 输出实时透传给 UI；本地缓冲超 2MB 后停止累积（防内存爆炸）
         if (s) ctx.onOutput?.(s)
         if (out.length < 2_000_000) {
@@ -196,7 +216,7 @@ const bashTool = {
       })
       child.on("close", (code, signal) => {
         clearTimeout(timer)
-        out += feed(Buffer.alloc(0), true) // 最终判定 + 冲刷解码器尾部
+        out += sanitizeOutput(feed(Buffer.alloc(0), true)) // 最终判定 + 冲刷解码器尾部
         const suffix = signal
           ? "\n(killed: timeout)"
           : code !== 0
