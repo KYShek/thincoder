@@ -102,7 +102,7 @@ export const subagentTool = {
 export const taskTool = {
   name: "task",
   description:
-    "Plan and track a task list for complex multi-step work. Replaces the entire list on each call. Use for requests needing 3+ steps: break work into items, keep exactly one in_progress, mark done as you complete each. Statuses: pending | in_progress | done.",
+    "Plan and track a task list for complex multi-step work. Replaces the entire list on each call. Use for requests needing 3+ steps: break work into items, keep exactly one in_progress, and CALL THIS TOOL AGAIN to mark each item done as soon as you complete it—a stale list is worse than none. Statuses: pending | in_progress | done.",
   parameters: {
     type: "object",
     properties: {
@@ -129,7 +129,9 @@ export const taskTool = {
     ctx.agent.tasks = items
     ctx.agent._onTaskUpdate?.(items)
     const done = items.filter((i) => i.status === "done").length
-    return `Task list updated: ${done}/${items.length} done`
+    const open = items.length - done
+    return `Task list updated: ${done}/${items.length} done` +
+      (open > 0 ? ` — ${open} item(s) still open; call task again as you complete them.` : " — all done.")
   },
 }
 
@@ -159,7 +161,7 @@ Rules:
 - When you need multiple independent pieces of information (e.g. reading several files), make all independent tool calls in the SAME response so they can run in parallel.
 - Be concise in your final answers. Report what you did, not what you plan to do.
 - If the request is ambiguous at a decision that matters, stop and ask in your reply instead of guessing—but ask at most once, then proceed with the most reasonable interpretation.
-- For complex multi-step requests (3+ steps), use the task tool to plan and track progress; keep exactly one item in_progress.
+- For complex multi-step requests (3+ steps), use the task tool to plan and track progress; keep exactly one item in_progress, and update the list as you complete items—never finish with stale pending items.
 - For independent research/exploration subtasks, spawn subagents in the SAME response to run them in parallel—they work in isolated contexts and return final reports. Delegate breadth-first exploration; do precision edits yourself. Never assign parallel subagents tasks that edit the same files.
 - Never fabricate file contents or command outputs; only trust tool results.
 - Before declaring a coding task complete, verify it: run the project's relevant tests/build if they exist. If you could not verify, say so explicitly—never present unverified work as done.

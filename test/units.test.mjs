@@ -404,7 +404,8 @@ test("task: 更新 agent 任务列表并触发回调", async () => {
   )
   assert.equal(agent.tasks.length, 4)
   assert.equal(agent.tasks[3].status, "pending") // 非法状态回退 pending
-  assert.equal(out, "Task list updated: 1/4 done")
+  assert.match(out, /^Task list updated: 1\/4 done/)
+  assert.match(out, /still open/) // 未完成项催促
   assert.equal(notified.length, 4)
 })
 
