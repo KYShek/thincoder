@@ -264,9 +264,20 @@ export async function startTUI(agent, opts = {}) {
     }
     out.push(`${borderColor}╰${"─".repeat(Math.max(0, W - 2))}╯${ansi.reset}${ansi.clearLine}`)
 
-    // 状态栏
+    // 状态栏（输入 / 开头时变为命令提示）
     const scrollHint = state.scroll > 0 ? ` │ scrolled ${state.scroll}` : ""
-    out.push(`${ansi.dim} ${state.status}${scrollHint} │ Enter: send │ PgUp/PgDn: scroll │ Ctrl+C: exit${ansi.reset}${ansi.clearLine}`)
+    const rawInput = state.input.join("")
+    let statusLine
+    if (rawInput.startsWith("/") && !state.processing && !state.permission) {
+      const prefix = rawInput.split(/\s/)[0]
+      const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(prefix))
+      statusLine = matches.length > 0
+        ? ` ${matches.map((c) => `${c.name} ${c.desc}`).join("  │  ")}`
+        : ` 未知命令（/help 查看可用命令）`
+    } else {
+      statusLine = ` ${state.status}${scrollHint} │ Enter: send │ /: commands │ PgUp/PgDn: scroll │ Ctrl+C: exit`
+    }
+    out.push(`${ansi.dim}${statusLine}${ansi.reset}${ansi.clearLine}`)
 
     process.stdout.write(out.join("\r\n"))
 
@@ -355,8 +366,17 @@ export async function startTUI(agent, opts = {}) {
 
   // ---------------------------------------------------------- 斜杠命令
 
+  const SLASH_COMMANDS = [
+    { name: "/help", desc: "命令列表" },
+    { name: "/model", desc: "查看/切换模型" },
+    { name: "/config", desc: "查看当前配置" },
+    { name: "/distill", desc: "从会话提取知识" },
+    { name: "/clear", desc: "清屏" },
+    { name: "/exit", desc: "退出" },
+  ]
+
   async function handleSlash(text) {
-    const [cmd] = text.split(/\s+/)
+    const [cmd, ...rest] = text.split(/\s+/)
     switch (cmd) {
       case "/clear":
         state.lines = []
@@ -370,13 +390,44 @@ export async function startTUI(agent, opts = {}) {
       case "/distill":
         await runDistill()
         return
-      case "/help":
-        pushLine("/distill 从当前会话提取知识  /clear 清屏  /exit 退出", C.dim)
+      case "/model": {
+        const arg = rest[0]
+        if (!arg) {
+          pushLabel(`❯ Model`, ansi.bold + C.tool)
+          pushLine(`model:   ${agent.provider.model}`, C.dim)
+          pushLine(`baseURL: ${agent.provider.baseURL}`, C.dim)
+          pushLine(`切换: /model <名称>（仅本次会话；永久修改请编辑 ~/.thincoder/config.json）`, C.dim)
+        } else {
+          agent.provider.model = arg
+          pushLabel(`❯ Model`, ansi.bold + C.tool)
+          pushLine(`已切换到 ${arg}（仅本次会话）`, C.tool)
+        }
         return
+      }
+      case "/config": {
+        pushLabel(`❯ Config`, ansi.bold + C.tool)
+        pushLine(`provider: ${agent.provider.baseURL} | model: ${agent.provider.model}`, C.dim)
+        pushLine(`apiKey: ${maskKey(agent.provider.apiKey)}`, C.dim)
+        const ac = agent.config?.agent ?? {}
+        pushLine(`agent: maxTurns=${ac.maxTurns ?? 50} | compactThreshold=${ac.compactThreshold ?? 100000}`, C.dim)
+        pushLine(`memory: ${agent.memory ? "enabled" : "disabled"}${agent.memory?.embedder ? " + vector" : " (FTS only)"}`, C.dim)
+        return
+      }
+      case "/help": {
+        pushLabel(`❯ Commands`, ansi.bold + C.tool)
+        for (const c of SLASH_COMMANDS) pushLine(`  ${c.name.padEnd(10)} ${c.desc}`, C.dim)
+        return
+      }
       default:
         pushLine(`Unknown command: ${cmd}（/help 查看可用命令）`, C.error)
         return
     }
+  }
+
+  function maskKey(key) {
+    if (!key) return "(none)"
+    if (key.length <= 8) return "***"
+    return `${key.slice(0, 5)}…${key.slice(-4)}`
   }
 
   /** /distill：从当前会话提取候选，逐条 y/n 确认后入库 */

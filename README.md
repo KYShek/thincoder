@@ -76,7 +76,7 @@ node bin/thincoder.mjs sync                       # 拉取团队仓库并重建�
 node bin/thincoder.mjs distill session.txt
 ```
 
-TUI 内斜杠命令：`/distill`（从当前会话提取知识）、`/clear`、`/exit`、`/help`。
+TUI 内斜杠命令：`/help`、`/model`（查看/切换模型）、`/config`（查看配置）、`/distill`（从当前会话提取知识）、`/clear`、`/exit`。输入 `/` 时状态栏实时提示匹配命令。
 
 环境变量：`THINCODER_API_KEY`（或 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`）、`THINCODER_BASE_URL`、`THINCODER_MODEL`、`SILICONFLOW_API_KEY`。
 
