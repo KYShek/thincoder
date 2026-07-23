@@ -283,4 +283,69 @@ const grepTool = {
   },
 }
 
-export const builtinTools = [readTool, writeTool, editTool, bashTool, globTool, grepTool]
+// ---------------------------------------------------------------- websearch
+
+const websearchTool = {
+  name: "websearch",
+  description:
+    "Search the web (Bing). Returns result titles, URLs, and snippets. Use for looking up current information, docs, error messages.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Search query" },
+      limit: { type: "number", description: "Max results (default 8)" },
+    },
+    required: ["query"],
+  },
+  readonly: true,
+  async execute(args) {
+    const limit = args.limit ?? 8
+    const url = `https://www.bing.com/search?q=${encodeURIComponent(args.query)}`
+    let html
+    try {
+      const response = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      html = await response.text()
+    } catch (error) {
+      throw new Error(`websearch request failed: ${error.cause?.code ?? error.message}`)
+    }
+
+    // 结果块 <li class="b_algo">：<h2><a href>标题</a></h2> + <p>摘要</p>
+    const blocks = html.split('<li class="b_algo"').slice(1)
+    const results = []
+    for (const block of blocks) {
+      const link = block.match(/<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/)
+      if (!link) continue
+      const snippet = block.match(/<p[^>]*>([\s\S]*?)<\/p>/)
+      results.push({
+        href: link[1],
+        title: stripTags(link[2]),
+        snippet: snippet ? stripTags(snippet[1]) : "",
+      })
+      if (results.length >= limit) break
+    }
+    if (results.length === 0) return "(no results)"
+    return truncate(
+      results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}\n   ${r.snippet}`).join("\n\n"),
+    )
+  },
+}
+
+function stripTags(html) {
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#0*(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&ensp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+export const builtinTools = [readTool, writeTool, editTool, bashTool, globTool, grepTool, websearchTool]

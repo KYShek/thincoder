@@ -79,6 +79,42 @@ function sliceByWidth(text, maxWidth) {
   return out
 }
 
+/** 输入区布局：把输入缓冲折行，同时算出光标的 (行, 列) 位置（显示宽度） */
+export function layoutInput(chars, cursor, width) {
+  const PROMPT = "▸ "
+  const lines = []
+  let cursorLine = 0
+  let cursorCol = 0
+  let cur = ""
+  let col = 0
+  let firstLine = true
+  const avail = () => (firstLine ? width - 2 : width)
+  const flush = () => {
+    lines.push((firstLine ? PROMPT : "") + cur)
+    firstLine = false
+    cur = ""
+    col = 0
+  }
+  for (let i = 0; i <= chars.length; i++) {
+    if (i === cursor) {
+      cursorLine = lines.length
+      cursorCol = (firstLine ? 2 : 0) + col
+    }
+    const ch = chars[i]
+    if (ch === undefined) break
+    if (ch === "\n") {
+      flush()
+      continue
+    }
+    const w = charWidth(ch.codePointAt(0))
+    if (col + w > avail()) flush()
+    cur += ch
+    col += w
+  }
+  if (cur || lines.length === 0) flush()
+  return { lines, cursorLine, cursorCol }
+}
+
 /** 文本按宽度折行（保留 \n），返回行数组 */
 export function wrapText(text, width) {
   const lines = []
@@ -148,9 +184,16 @@ export async function startTUI(agent, opts = {}) {
     const rows = process.stdout.rows || 24
     const model = agent.provider.model
 
-    // 输入区高度：折行后 1~5 行 + 上下边框
-    const inputText = state.input.join("")
-    const inputLines = wrapText(inputText, Math.max(10, cols - 6)).slice(0, 5)
+    // 输入区：全边框盒，宽度 W（所有输出行严格 ≤ cols-1，防自动折行错位）
+    const W = Math.max(20, cols - 1)
+    const layout = layoutInput(state.input, state.cursor, W - 4)
+    // 最多显示 5 行；超出时以光标所在行为中心滚动
+    const MAX_INPUT_LINES = 5
+    let inputOffset = 0
+    if (layout.lines.length > MAX_INPUT_LINES) {
+      inputOffset = Math.min(layout.cursorLine, layout.lines.length - MAX_INPUT_LINES)
+    }
+    const inputLines = layout.lines.slice(inputOffset, inputOffset + MAX_INPUT_LINES)
     const inputBoxH = inputLines.length + 2
 
     const headerH = 1
@@ -189,25 +232,36 @@ export async function startTUI(agent, opts = {}) {
       out.push(`${l.color}${l.text}${ansi.reset}${ansi.clearLine}`)
     }
 
-    // 输入框
+    // 输入框（全边框，宽 W）
     const borderColor = state.permission ? C.warn : C.tool
     const title = state.permission
       ? ` Allow ${state.permission.name}? (y/n) `
       : state.processing
         ? " Processing... "
         : " Input "
-    const topBorder = `╭─${title}${"─".repeat(Math.max(0, cols - 4 - stringWidth(title)))}╮`
+    const topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 3 - stringWidth(title)))}╮`
     out.push(`${borderColor}${topBorder}${ansi.reset}${ansi.clearLine}`)
     for (const l of inputLines) {
-      out.push(`${borderColor}│${ansi.reset} ${sliceByWidth(l, cols - 4)}${ansi.clearLine}`)
+      const content = sliceByWidth(l, W - 4)
+      const fill = " ".repeat(Math.max(0, W - 4 - stringWidth(content)))
+      out.push(`${borderColor}│${ansi.reset} ${content}${fill} ${borderColor}│${ansi.reset}${ansi.clearLine}`)
     }
-    out.push(`${borderColor}╰${"─".repeat(Math.max(0, cols - 2))}╯${ansi.reset}${ansi.clearLine}`)
+    out.push(`${borderColor}╰${"─".repeat(Math.max(0, W - 2))}╯${ansi.reset}${ansi.clearLine}`)
 
     // 状态栏
     const scrollHint = state.scroll > 0 ? ` │ scrolled ${state.scroll}` : ""
     out.push(`${ansi.dim} ${state.status}${scrollHint} │ Enter: send │ PgUp/PgDn: scroll │ Ctrl+C: exit${ansi.reset}${ansi.clearLine}`)
 
     process.stdout.write(out.join("\r\n"))
+
+    // 光标：输入态定位到输入框内（IME 候选框跟随真实光标）；处理中/权限确认时隐藏
+    if (state.processing || state.permission) {
+      process.stdout.write(ansi.hideCursor)
+    } else {
+      const cursorRow = 1 + convH + 2 + (layout.cursorLine - inputOffset) // header + 对话区 + 上边框 + 行偏移
+      const cursorCol = 3 + layout.cursorCol // 左边框 + 空格 + 文本偏移（1 基）
+      process.stdout.write(`${ESC}[${cursorRow};${cursorCol}H${ansi.showCursor}`)
+    }
   }
 
   process.stdout.on("resize", render)

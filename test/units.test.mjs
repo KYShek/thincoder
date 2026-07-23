@@ -276,3 +276,72 @@ test("team 层: 双 clone 同步 + 冲突诚实报错", async () => {
     rmSync(base, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------- TUI 输入布局 / 项目指令 / websearch
+
+test("layoutInput: 折行与光标定位", async () => {
+  const { layoutInput } = await import("../src/tui.mjs")
+  // 空输入：一行带提示符，光标在提示符后
+  let l = layoutInput([], 0, 10)
+  assert.deepEqual(l.lines, ["▸ "])
+  assert.equal(l.cursorLine, 0)
+  assert.equal(l.cursorCol, 2)
+  // 首行宽 10（提示符占 2），"你好世界你好" 6 字 12 宽 → ["▸ 你好世界","你好"]；cursor=6 在输入末尾
+  l = layoutInput([..."你好世界你好"], 6, 10)
+  assert.deepEqual(l.lines, ["▸ 你好世界", "你好"])
+  assert.equal(l.cursorLine, 1)
+  assert.equal(l.cursorCol, 4)
+  // 光标在中间：width=4，首行可用 2 → ["▸ ab","cdef","gh"]；cursor=3 在 'd' 前（第 2 行第 1 列）
+  l = layoutInput([..."abcdefgh"], 3, 4)
+  assert.deepEqual(l.lines, ["▸ ab", "cdef", "gh"])
+  assert.equal(l.cursorLine, 1)
+  assert.equal(l.cursorCol, 1)
+})
+
+test("agent: 项目指令文件加载（AGENTS.md / project_rules.md）", async () => {
+  const { loadProjectInstructions } = await import("../src/agent.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-rules-"))
+  try {
+    assert.equal(await loadProjectInstructions(dir), "") // 没有文件时为空
+    const { writeFile } = await import("node:fs/promises")
+    await writeFile(join(dir, "AGENTS.md"), "本项目用 pnpm")
+    await writeFile(join(dir, "project_rules.md"), "提交前必须跑测试")
+    const out = await loadProjectInstructions(dir)
+    assert.match(out, /本项目用 pnpm/)
+    assert.match(out, /提交前必须跑测试/)
+    assert.match(out, /# AGENTS\.md/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("websearch: 解析结果块（本地 mock Bing）", async () => {
+  const { createServer } = await import("node:http")
+  const page = `<html><body><ol id="b_results">
+    <li class="b_algo" data-id><h2 class=""><a target="_blank" href="https://example.com/1"><strong>Node</strong>.js 官网</a></h2><div class="b_caption"><p>Node.js&#174; 是一个运行时</p></div></li>
+    <li class="b_algo" data-id><h2 class=""><a target="_blank" href="https://example.com/2">第二个结果</a></h2><p>摘要&#0183;内容</p></li>
+  </ol></body></html>`
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "text/html")
+    res.end(page)
+  })
+  await new Promise((r) => server.listen(0, "127.0.0.1", r))
+  try {
+    // mock 服务器替换真实 Bing：直接验证解析逻辑（fetch 部分 monkey-patch）
+    const port = server.address().port
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => origFetch(`http://127.0.0.1:${port}/`)
+    try {
+      const ws = builtinTools.find((t) => t.name === "websearch")
+      const out = await ws.execute({ query: "test", limit: 5 }, { cwd: process.cwd() })
+      assert.match(out, /Node\.js 官网/)
+      assert.match(out, /https:\/\/example\.com\/1/)
+      assert.match(out, /Node\.js® 是一个运行时/)
+      assert.match(out, /摘要·内容/)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  } finally {
+    server.close()
+  }
+})
