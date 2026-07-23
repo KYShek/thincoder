@@ -467,6 +467,14 @@ export async function startTUI(agent, opts = {}) {
     pushLabel(`❯ You:`, ansi.bold + C.user)
     pushLine(text, C.text)
 
+    // 任务开始前自动打存档点（git 仓库内；失败静默，不挡任务）
+    try {
+      const { createCheckpoint } = await import("./checkpoint.mjs")
+      await createCheckpoint(agent.cwd)
+    } catch {
+      // 存档失败不影响任务
+    }
+
     assistantLabeled = false
     state.processing = true
     state.status = "Processing..."
@@ -571,6 +579,7 @@ export async function startTUI(agent, opts = {}) {
     { name: "/model", desc: "查看/切换模型" },
     { name: "/config", desc: "查看当前配置" },
     { name: "/auto", desc: "自动授权开关" },
+    { name: "/rewind", desc: "回滚到存档点" },
     { name: "/distill", desc: "从会话提取知识" },
     { name: "/new", desc: "开始新会话" },
     { name: "/clear", desc: "清屏" },
@@ -601,6 +610,35 @@ export async function startTUI(agent, opts = {}) {
       case "/distill":
         await runDistill()
         return
+      case "/rewind": {
+        const { listCheckpoints, rewind, isGitRepo } = await import("./checkpoint.mjs")
+        if (!isGitRepo(agent.cwd)) {
+          pushLine("[rewind] 当前目录不是 git 仓库，无法使用存档点", C.error)
+          return
+        }
+        const id = rest[0]
+        if (!id) {
+          const cps = await listCheckpoints(agent.cwd)
+          pushLabel(`❯ Checkpoints`, ansi.bold + C.tool)
+          if (cps.length === 0) {
+            pushLine("（暂无存档点——每次提交任务前自动创建）", C.dim)
+          }
+          for (const cp of cps.slice(0, 10)) {
+            pushLine(`  ${cp.id}  ${new Date(cp.time).toLocaleString()}  (+${cp.untracked} 个未跟踪文件)`, C.dim)
+          }
+          pushLine("回滚: /rewind <id>（恢复前会先存当前状态，回滚可逆）", C.dim)
+          return
+        }
+        try {
+          const summary = await rewind(agent.cwd, id)
+          pushLabel(`❯ Rewind`, ansi.bold + C.warn)
+          pushLine(`已回滚到 ${id}：补丁${summary.patchApplied ? "已应用" : "无"}，删除新建文件 ${summary.deleted} 个，还原文件 ${summary.restored} 个`, C.tool)
+          pushLine("（当前状态已先存为新存档点，可再次 /rewind 回到刚才）", C.dim)
+        } catch (error) {
+          pushLine(`[rewind] ${error.message}`, C.error)
+        }
+        return
+      }
       case "/auto":
         agent.autoApprove = !agent.autoApprove
         pushLabel(`❯ Auto`, ansi.bold + (agent.autoApprove ? C.warn : C.tool))

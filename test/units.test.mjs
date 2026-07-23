@@ -525,3 +525,48 @@ test("repairHistory: 为缺失结果的 tool_calls 补中断占位", async () =>
   // 完整的历史原样返回（引用相等）
   assert.equal(repairHistory([{ role: "user", content: "x" }]).length, 1)
 })
+
+// ---------------------------------------------------------------- checkpoint 快照与回滚
+
+test("checkpoint: 快照 → 改坏 → 回滚完全恢复", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { createCheckpoint, rewind, listCheckpoints } = await import("../src/checkpoint.mjs")
+  const { writeFile, readFile: rf, mkdir: mk, rm: del, access } = await import("node:fs/promises")
+
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cp-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  try {
+    // 初始化仓库：一个已跟踪文件
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    await writeFile(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 快照（含一个未跟踪文件）
+    await writeFile(join(dir, "note.md"), "原始笔记\n")
+    const cp = await createCheckpoint(dir)
+    assert.ok(cp?.id)
+
+    // agent 搞破坏：改跟踪文件、删未跟踪文件、新建垃圾文件
+    await writeFile(join(dir, "app.js"), "const v = 999 // 改坏了\n")
+    await del(join(dir, "note.md"))
+    await mk(join(dir, "src"), { recursive: true })
+    await writeFile(join(dir, "src", "junk.js"), "agent 新建的文件\n")
+
+    // 回滚
+    const summary = await rewind(dir, cp.id)
+    const restored = (await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n")
+    assert.equal(restored, "const v = 1\n") // 跟踪文件还原（autocrlf 归一化后比较）
+    assert.equal(await rf(join(dir, "note.md"), "utf8"), "原始笔记\n") // 未跟踪文件还原
+    await assert.rejects(access(join(dir, "src", "junk.js"))) // 新建文件被删
+    assert.equal(summary.deleted, 1)
+
+    // 回滚可逆：回滚前的"改坏"状态也被存成了新快照
+    const cps = await listCheckpoints(dir)
+    assert.ok(cps.length >= 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
