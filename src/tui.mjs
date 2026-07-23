@@ -1,0 +1,395 @@
+/**
+ * tui.mjs — 裸 ANSI 终端 UI
+ * 零依赖：raw mode 键盘输入、ANSI 转义渲染、自研宽字符换行。
+ * 布局：header / 对话区（可滚动）/ 输入框 / 状态栏。
+ */
+
+import { emitKeypressEvents } from "node:readline"
+import { basename } from "node:path"
+import { runAgent } from "./agent.mjs"
+
+// ---------------------------------------------------------------- ANSI 工具
+
+const ESC = "\x1b"
+const ansi = {
+  hideCursor: `${ESC}[?25l`,
+  showCursor: `${ESC}[?25h`,
+  altBuffer: `${ESC}[?1049h`,
+  mainBuffer: `${ESC}[?1049l`,
+  home: `${ESC}[H`,
+  clearLine: `${ESC}[K`,
+  reset: `${ESC}[0m`,
+  dim: `${ESC}[2m`,
+  bold: `${ESC}[1m`,
+  fg: (n) => `${ESC}[${30 + n}m`,
+  gray: `${ESC}[90m`,
+}
+
+const C = {
+  user: ansi.fg(4), // blue
+  assistant: ansi.fg(2), // green
+  tool: ansi.fg(6), // cyan
+  error: ansi.fg(1), // red
+  dim: ansi.gray,
+  warn: ansi.fg(3), // yellow
+}
+
+/** 字符显示宽度：CJK/emoji 计 2，组合字符计 0，其余计 1 */
+export function charWidth(cp) {
+  if (
+    (cp >= 0x300 && cp <= 0x36f) || // 组合变音符
+    (cp >= 0x200b && cp <= 0x200f) || // 零宽
+    cp === 0xfe0f // emoji 变体选择符
+  ) {
+    return 0
+  }
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe4f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f000 && cp <= 0x1faff) ||
+    (cp >= 0x20000 && cp <= 0x3fffd) ||
+    (cp >= 0x2600 && cp <= 0x27bf)
+  ) {
+    return 2
+  }
+  return 1
+}
+
+export function stringWidth(text) {
+  let w = 0
+  for (const ch of text) w += charWidth(ch.codePointAt(0))
+  return w
+}
+
+/** 按显示宽度裁剪 */
+function sliceByWidth(text, maxWidth) {
+  let w = 0
+  let out = ""
+  for (const ch of text) {
+    const cw = charWidth(ch.codePointAt(0))
+    if (w + cw > maxWidth) break
+    w += cw
+    out += ch
+  }
+  return out
+}
+
+/** 文本按宽度折行（保留 \n），返回行数组 */
+export function wrapText(text, width) {
+  const lines = []
+  for (const rawLine of text.split("\n")) {
+    if (rawLine === "") {
+      lines.push("")
+      continue
+    }
+    let line = rawLine
+    while (stringWidth(line) > width) {
+      const head = sliceByWidth(line, width)
+      lines.push(head)
+      line = line.slice([...head].length)
+    }
+    lines.push(line)
+  }
+  return lines
+}
+
+// ---------------------------------------------------------------- TUI 主入口
+
+/**
+ * 启动 TUI，接管终端直到退出。
+ * agent: createAgent 的返回值
+ */
+export async function startTUI(agent) {
+  if (!process.stdin.isTTY) {
+    throw new Error("TUI requires a TTY; use 'thincoder chat' for non-interactive use")
+  }
+
+  const state = {
+    lines: [], // 对话区行：{ text, color }
+    streaming: "", // 当前流式缓冲
+    input: [], // 输入缓冲区（码点数组）
+    cursor: 0,
+    history: [],
+    historyIndex: -1,
+    scroll: 0, // 从底部向上的滚动行数
+    processing: false,
+    permission: null, // { name, args, resolve }
+    status: "Ready",
+  }
+
+  emitKeypressEvents(process.stdin)
+  process.stdin.setRawMode(true)
+  process.stdout.write(ansi.altBuffer + ansi.hideCursor)
+
+  const cleanup = () => {
+    process.stdin.setRawMode(false)
+    process.stdout.write(ansi.mainBuffer + ansi.showCursor + ansi.reset)
+  }
+  process.on("exit", cleanup)
+
+  const pushLine = (text, color) => {
+    state.lines.push({ text, color })
+    if (state.lines.length > 5000) state.lines.splice(0, 1000) // 防无限增长
+    render()
+  }
+
+  // ---------------------------------------------------------- 渲染
+
+  function render() {
+    const cols = process.stdout.columns || 80
+    const rows = process.stdout.rows || 24
+    const model = agent.provider.model
+
+    // 输入区高度：折行后 1~5 行 + 上下边框
+    const inputText = state.input.join("")
+    const inputLines = wrapText(inputText, Math.max(10, cols - 6)).slice(0, 5)
+    const inputBoxH = inputLines.length + 2
+
+    const headerH = 1
+    const statusH = 1
+    const convH = Math.max(1, rows - headerH - inputBoxH - statusH)
+
+    // 对话区内容行（含流式缓冲）
+    const convLines = []
+    for (const l of state.lines) {
+      for (const wrapped of wrapText(l.text, cols - 1)) {
+        convLines.push({ text: wrapped, color: l.color })
+      }
+    }
+    if (state.streaming) {
+      for (const wrapped of wrapText(state.streaming, cols - 1)) {
+        convLines.push({ text: wrapped, color: C.assistant })
+      }
+    }
+
+    const maxScroll = Math.max(0, convLines.length - convH)
+    state.scroll = Math.min(state.scroll, maxScroll)
+    const end = convLines.length - state.scroll
+    const visible = convLines.slice(Math.max(0, end - convH), end)
+
+    const out = [ansi.home]
+
+    // header
+    out.push(
+      `${ansi.bold}${C.tool} ThinCoder ${ansi.reset}${ansi.dim}│ ${model} │ ${basename(agent.cwd)}${ansi.reset}${ansi.clearLine}`,
+    )
+
+    // 对话区（不足部分补空行，把输入框钉在底部）
+    const pad = convH - visible.length
+    for (let i = 0; i < pad; i++) out.push(ansi.clearLine)
+    for (const l of visible) {
+      out.push(`${l.color}${l.text}${ansi.reset}${ansi.clearLine}`)
+    }
+
+    // 输入框
+    const borderColor = state.permission ? C.warn : C.tool
+    const title = state.permission
+      ? ` Allow ${state.permission.name}? (y/n) `
+      : state.processing
+        ? " Processing... "
+        : " Input "
+    const topBorder = `╭─${title}${"─".repeat(Math.max(0, cols - 4 - stringWidth(title)))}╮`
+    out.push(`${borderColor}${topBorder}${ansi.reset}${ansi.clearLine}`)
+    for (const l of inputLines) {
+      out.push(`${borderColor}│${ansi.reset} ${sliceByWidth(l, cols - 4)}${ansi.clearLine}`)
+    }
+    out.push(`${borderColor}╰${"─".repeat(Math.max(0, cols - 2))}╯${ansi.reset}${ansi.clearLine}`)
+
+    // 状态栏
+    const scrollHint = state.scroll > 0 ? ` │ scrolled ${state.scroll}` : ""
+    out.push(`${ansi.dim} ${state.status}${scrollHint} │ Enter: send │ PgUp/PgDn: scroll │ Ctrl+C: exit${ansi.reset}${ansi.clearLine}`)
+
+    process.stdout.write(out.join("\r\n"))
+  }
+
+  process.stdout.on("resize", render)
+
+  // ---------------------------------------------------------- 提交
+
+  async function submit() {
+    const text = state.input.join("").trim()
+    if (!text || state.processing) return
+    state.input = []
+    state.cursor = 0
+    state.history.push(text)
+    state.historyIndex = -1
+    state.scroll = 0
+
+    pushLine(`╭ You`, C.user)
+    pushLine(text, C.user)
+
+    state.processing = true
+    state.status = "Processing..."
+    state.streaming = ""
+    render()
+
+    try {
+      await runAgent(agent, text, {
+        onToken: (t) => {
+          state.streaming += t
+          render()
+        },
+        onReasoning: () => {}, // 思考流 v1 不展示
+        onToolCall: (name, args) => {
+          flushStream()
+          pushLine(`[tool] ${name} ${summarize(args)}`, C.tool)
+        },
+        onToolResult: (name, result) => {
+          const first = result.split("\n")[0]
+          pushLine(`[done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
+        },
+        onPermissionRequest: (name, args) => askPermission(name, args),
+      })
+      flushStream()
+    } catch (error) {
+      flushStream()
+      pushLine(`[error] ${error.message}`, C.error)
+    }
+
+    state.processing = false
+    state.status = "Ready"
+    render()
+  }
+
+  function flushStream() {
+    if (state.streaming) {
+      pushLine(state.streaming, C.assistant)
+      state.streaming = ""
+    }
+  }
+
+  function askPermission(name, args) {
+    return new Promise((resolve) => {
+      state.permission = { name, args, resolve }
+      state.status = `Waiting: ${name}`
+      render()
+    })
+  }
+
+  // ---------------------------------------------------------- 键盘
+
+  process.stdin.on("keypress", (str, key = {}) => {
+    // 权限确认态：只认 y/n
+    if (state.permission) {
+      const answer = (str || "").toLowerCase()
+      if (answer === "y" || answer === "n" || key.name === "escape") {
+        const { resolve } = state.permission
+        state.permission = null
+        state.status = "Processing..."
+        resolve(answer === "y")
+        render()
+      }
+      return
+    }
+
+    if (key.ctrl && key.name === "c") {
+      cleanup()
+      process.exit(0)
+    }
+
+    // 翻页
+    if (key.name === "pageup") {
+      state.scroll += Math.max(1, (process.stdout.rows || 24) - 8)
+      render()
+      return
+    }
+    if (key.name === "pagedown") {
+      state.scroll = Math.max(0, state.scroll - Math.max(1, (process.stdout.rows || 24) - 8))
+      render()
+      return
+    }
+
+    if (state.processing) return // 处理中锁定输入
+
+    // 输入历史
+    if (key.name === "up") {
+      if (state.history.length) {
+        state.historyIndex = state.historyIndex === -1 ? state.history.length - 1 : Math.max(0, state.historyIndex - 1)
+        state.input = [...state.history[state.historyIndex]]
+        state.cursor = state.input.length
+        render()
+      }
+      return
+    }
+    if (key.name === "down") {
+      if (state.historyIndex !== -1) {
+        state.historyIndex++
+        if (state.historyIndex >= state.history.length) {
+          state.historyIndex = -1
+          state.input = []
+        } else {
+          state.input = [...state.history[state.historyIndex]]
+        }
+        state.cursor = state.input.length
+        render()
+      }
+      return
+    }
+
+    // 光标移动
+    if (key.name === "left") {
+      state.cursor = Math.max(0, state.cursor - 1)
+      render()
+      return
+    }
+    if (key.name === "right") {
+      state.cursor = Math.min(state.input.length, state.cursor + 1)
+      render()
+      return
+    }
+    if (key.name === "home") {
+      state.cursor = 0
+      render()
+      return
+    }
+    if (key.name === "end") {
+      state.cursor = state.input.length
+      render()
+      return
+    }
+
+    // 编辑
+    if (key.name === "backspace") {
+      if (state.cursor > 0) {
+        state.input.splice(state.cursor - 1, 1)
+        state.cursor--
+        render()
+      }
+      return
+    }
+    if (key.name === "delete") {
+      if (state.cursor < state.input.length) {
+        state.input.splice(state.cursor, 1)
+        render()
+      }
+      return
+    }
+    if (key.name === "return") {
+      submit()
+      return
+    }
+
+    // 可打印字符 / 粘贴（str 可能一次多个字符）
+    if (str && !key.ctrl && !key.meta) {
+      const chars = [...str.replace(/\r/g, "")]
+      state.input.splice(state.cursor, 0, ...chars)
+      state.cursor += chars.length
+      render()
+    }
+  })
+
+  // 启动画面
+  pushLine(`Welcome to ThinCoder. Model: ${agent.provider.model}`, C.dim)
+  pushLine(`Tools: ${agent.tools.map((t) => t.name).join(", ")}`, C.dim)
+  render()
+}
+
+function summarize(obj) {
+  const s = JSON.stringify(obj)
+  return s.length > 80 ? s.slice(0, 80) + "…" : s
+}
