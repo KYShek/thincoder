@@ -6,6 +6,7 @@
 
 import { chat } from "./provider.mjs"
 import { put, putMarkdown } from "./memory.mjs"
+import { commitAndPush } from "./gitmem.mjs"
 
 const DISTILL_PROMPT = `你是知识提取器。阅读下面的 agent 工作会话记录，提取值得跨会话长期记住的知识。
 
@@ -109,7 +110,6 @@ export async function saveCandidate(memory, candidate, opts = {}) {
       type: candidate.type, title: candidate.title, content: candidate.content,
       tags, author: opts.author ?? "unknown",
     })
-    const { commitAndPush } = await import("./gitmem.mjs")
     await commitAndPush(opts.team.dir, filename, `memory: [${candidate.type}] ${candidate.title} (distilled)`)
     return `team:${filename}`
   }

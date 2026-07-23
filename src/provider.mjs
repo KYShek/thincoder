@@ -4,7 +4,7 @@
  * 覆盖：OpenAI / DeepSeek / Moonshot / Ollama / 一切 OpenAI 兼容端点。
  */
 
-const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504])
+export const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504])
 const MAX_RETRIES = 3
 
 /**

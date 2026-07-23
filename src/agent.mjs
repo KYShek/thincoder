@@ -19,6 +19,9 @@ const VALID_TASK_STATUS = new Set(["pending", "in_progress", "done"])
  * task 工具：多步任务规划与进度跟踪（Claude Code 的 todo 模式）。
  * 每次调用整体替换列表；只改 agent 内部状态、不碰外部世界，故 readonly。
  * 通过 ctx.agent 访问调用方 agent（由 runAgent 注入）。
+ * 注：ctx.agent 的回写是有意的轻量耦合——task 本质是主循环的内建能力而非普通工具，
+ * 伪装成工具是为了让 LLM 用统一的 tool calling 协议调用它；替代方案（主循环特判）
+ * 会让循环代码更绕，不值。
  */
 export const taskTool = {
   name: "task",  description:
@@ -137,7 +140,7 @@ export async function runAgent(agent, input, callbacks = {}) {
   for (let turn = 0; turn < maxTurns; turn++) {
     // 每轮 LLM 调用前检查上下文长度，超阈值先压缩（末尾是 user 或 tool 消息都是安全点；
     // 但压缩只在末尾是 user 时最干净，tool 结尾说明在工具循环中段，下一轮再压）
-    if (agent.history.at(-1).role === "user") {
+    if (agent.history.at(-1)?.role === "user") {
       if (await compressIfNeeded(agent, threshold)) {
         callbacks.onCompress?.()
       }

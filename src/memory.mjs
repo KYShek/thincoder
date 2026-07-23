@@ -16,6 +16,7 @@ import { readFile, readdir, stat, writeFile, mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { parseEntry, serializeEntry, entryFilename } from "./markdown.mjs"
 import { embed, cosine, toBlob, fromBlob } from "./embedding.mjs"
+import { commitAndPush } from "./gitmem.mjs"
 
 const VALID_TYPES = new Set(["rule", "knowledge", "decision", "pattern"])
 const SCHEMA_VERSION = 5
@@ -467,7 +468,6 @@ export function memoryTools(memory, opts = {}) {
           tags: (args.tags ?? "").split(/\s+/).filter(Boolean),
           author: opts.author ?? "unknown",
         })
-        const { commitAndPush } = await import("./gitmem.mjs")
         await commitAndPush(opts.team.dir, filename, `memory: [${args.type}] ${args.title}`)
         return `Saved to team memory and pushed (${filename}): [${args.type}] ${args.title}`
       },
