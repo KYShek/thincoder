@@ -144,14 +144,42 @@ const bashTool = {
         shell: true,
         windowsHide: true,
       })
-      // Windows cmd 中文输出是 GBK：按平台解码，流式模式处理跨 chunk 的多字节字符
-      const decoder = new TextDecoder(process.platform === "win32" ? "gbk" : "utf8")
+      // 编码嗅探：cmd 自带消息是 GBK，git/node 等程序是 UTF-8，平台判断不了。
+      // 策略：纯 ASCII 段两种编码一致，直接透传不判定；遇到高位字节才用
+      // fatal UTF-8 试解（容忍尾部 1~3 字节截断），失败则判 GBK；一经判定不再变更。
+      let decoder = null
+      let pending = Buffer.alloc(0)
+      const feed = (d, flush = false) => {
+        pending = Buffer.concat([pending, d])
+        if (!decoder) {
+          const hasHighByte = pending.some((b) => b >= 0x80)
+          if (!hasHighByte) {
+            // 纯 ASCII：UTF-8/GBK 完全一致，透传即可（无需判定）
+            const s = pending.toString("ascii")
+            pending = Buffer.alloc(0)
+            return s
+          }
+          for (let trim = 0; trim <= 3 && !decoder; trim++) {
+            try {
+              new TextDecoder("utf-8", { fatal: true }).decode(pending.subarray(0, pending.length - trim))
+              decoder = new TextDecoder("utf-8")
+            } catch {
+              // 继续尝试
+            }
+          }
+          if (!decoder) decoder = new TextDecoder("gbk")
+        }
+        const s = decoder.decode(pending, { stream: !flush })
+        pending = Buffer.alloc(0)
+        return s
+      }
+
       let out = ""
       let truncatedNote = ""
       const onData = (d) => {
-        const s = decoder.decode(d, { stream: true })
+        const s = feed(d)
         // 输出实时透传给 UI；本地缓冲超 2MB 后停止累积（防内存爆炸）
-        ctx.onOutput?.(s)
+        if (s) ctx.onOutput?.(s)
         if (out.length < 2_000_000) {
           out += s
         } else if (!truncatedNote) {
@@ -168,7 +196,7 @@ const bashTool = {
       })
       child.on("close", (code, signal) => {
         clearTimeout(timer)
-        out += decoder.decode() // flush 解码器尾部
+        out += feed(Buffer.alloc(0), true) // 最终判定 + 冲刷解码器尾部
         const suffix = signal
           ? "\n(killed: timeout)"
           : code !== 0
