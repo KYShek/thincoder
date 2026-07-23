@@ -46,6 +46,23 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
   return readSSE(response, { onToken, onReasoning })
 }
 
+/**
+ * 拉取端点可用模型列表（GET /v1/models）。
+ * 返回模型 id 数组；端点不支持时抛错。
+ */
+export async function listModels(provider, { signal } = {}) {
+  const response = await fetch(`${provider.baseURL}/models`, {
+    headers: { Authorization: `Bearer ${provider.apiKey}` },
+    signal,
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => "")
+    throw new Error(`GET /models failed ${response.status}: ${text}`)
+  }
+  const data = await response.json()
+  return (data.data ?? []).map((m) => m.id).filter(Boolean).sort()
+}
+
 /** 带重试的请求：网络错误与 429/5xx 指数退避（1s/2s/4s），其余 4xx 直接抛 */
 async function requestWithRetry(provider, body, signal) {
   let lastError

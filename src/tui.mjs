@@ -397,6 +397,18 @@ export async function startTUI(agent, opts = {}) {
           pushLine(`model:   ${agent.provider.model}`, C.dim)
           pushLine(`baseURL: ${agent.provider.baseURL}`, C.dim)
           pushLine(`切换: /model <名称>（仅本次会话；永久修改请编辑 ~/.thincoder/config.json）`, C.dim)
+          // 拉取端点可用模型列表
+          pushLine(`正在拉取可用模型...`, C.dim)
+          try {
+            const { listModels } = await import("./provider.mjs")
+            const models = await listModels(agent.provider)
+            pushLabel(`❯ Available (${models.length})`, ansi.bold + C.tool)
+            for (const m of models) {
+              pushLine(`  ${m === agent.provider.model ? "▸ " : "  "}${m}`, m === agent.provider.model ? C.tool : C.dim)
+            }
+          } catch (error) {
+            pushLine(`  (拉取失败: ${error.message})`, C.error)
+          }
         } else {
           agent.provider.model = arg
           pushLabel(`❯ Model`, ansi.bold + C.tool)
