@@ -231,6 +231,19 @@ export async function startTUI(agent, opts = {}) {
 
   // ---------------------------------------------------------- 渲染
 
+  // 帧去重 + 流式限流：内容没变的帧不重写（防闪屏）；token 洪流合并到 ~25fps
+  let lastFrame = ""
+  let renderTimer = null
+
+  /** 流式期间的限流渲染（trailing edge：最后一次变化一定渲染到） */
+  function scheduleRender() {
+    if (renderTimer) return
+    renderTimer = setTimeout(() => {
+      renderTimer = null
+      render()
+    }, 40)
+  }
+
   function render() {
     const cols = process.stdout.columns || 80
     const rows = process.stdout.rows || 24
@@ -315,7 +328,11 @@ export async function startTUI(agent, opts = {}) {
     }
     out.push(`${ansi.dim}${statusLine}${ansi.reset}${ansi.clearLine}`)
 
-    process.stdout.write(out.join("\r\n"))
+    const frame = out.join("\r\n")
+    if (frame !== lastFrame) {
+      lastFrame = frame
+      process.stdout.write(frame)
+    }
 
     // 光标：输入态定位到输入框内（IME 候选框跟随真实光标）；处理中/权限确认时隐藏
     if (state.processing || state.permission) {
@@ -360,7 +377,7 @@ export async function startTUI(agent, opts = {}) {
         onToken: (t) => {
           ensureAssistantLabel()
           state.streaming += t
-          render()
+          scheduleRender() // token 洪流限流，防闪屏
         },
         onReasoning: () => {}, // 思考流 v1 不展示
         onToolCall: (name, args) => {
