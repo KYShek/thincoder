@@ -50,15 +50,26 @@ export async function compressIfNeeded(agent, threshold) {
   if (history.length <= KEEP_HEAD + KEEP_TAIL + 1) return false
 
   // 切分：head / middle(被摘要) / tail
+  // head 终点必须避开断头 tool_calls：assistant 带了 tool_calls 时其 tool 响应必须留在 head，
+  // 否则响应被摘要成纯文本后协议校验 400（tool_calls must be followed by tool messages）
+  let headEnd = KEEP_HEAD
+  while (
+    headEnd < history.length &&
+    history[headEnd - 1].role === "assistant" &&
+    history[headEnd - 1].tool_calls?.length &&
+    history[headEnd].role === "tool"
+  ) {
+    headEnd++
+  }
   // tail 起点必须避开孤儿 tool 消息（其 assistant tool_calls 在 middle 里无妨，middle 会被整体摘要成纯文本）
   let tailStart = history.length - KEEP_TAIL
-  while (tailStart > KEEP_HEAD && history[tailStart].role === "tool") {
+  while (tailStart > headEnd && history[tailStart].role === "tool") {
     tailStart++
   }
-  if (tailStart <= KEEP_HEAD) return false // 没有可压缩的中间段
+  if (tailStart <= headEnd) return false // 没有可压缩的中间段
 
-  const head = history.slice(0, KEEP_HEAD)
-  const middle = history.slice(KEEP_HEAD, tailStart)
+  const head = history.slice(0, headEnd)
+  const middle = history.slice(headEnd, tailStart)
   const tail = history.slice(tailStart)
 
   const serialized = middle

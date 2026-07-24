@@ -449,7 +449,8 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
   assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
   // 未配置时按模型推导（窗口 * 0.8）
   assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 800000, auto: true })
-  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 51200, auto: true })
+  // deepseek-chat 已弃用并映射到 v4-flash（256K 窗口）
+  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 204800, auto: true })
 })
 
 // ---------------------------------------------------------------- markdown 表格重排
@@ -789,7 +790,7 @@ function mockLLM(script) {
       let bodyText = ""
       req.on("data", (c) => (bodyText += c))
       req.on("end", () => {
-        requests.push(JSON.parse(bodyText))
+        requests.push({ ...JSON.parse(bodyText), _url: req.url })
         const step = script[Math.min(i++, script.length - 1)]
         const reasoningFrame = step.reasoning
           ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: step.reasoning } }] })}\n\n`
@@ -802,14 +803,14 @@ function mockLLM(script) {
           frames =
             reasoningFrame +
             `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${i}`, function: { name: step.toolCall.name, arguments: step.toolCall.arguments ?? "{}" } }] } }] })}\n\n` +
-            `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\n` +
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: step.finishReason ?? "tool_calls" }] })}\n\n` +
             usageFrame +
             `data: [DONE]\n\n`
         } else {
           frames =
             reasoningFrame +
             `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: step.content } }] })}\n\n` +
-            `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: step.finishReason ?? "stop" }] })}\n\n` +
             usageFrame +
             `data: [DONE]\n\n`
         }
@@ -911,6 +912,38 @@ test("context: 压缩后回注 task 列表（不重复嵌入摘要）", async ()
   }
 })
 
+test("context: 压缩时 head 不以断头 tool_calls 结尾（防 400）", async () => {
+  const { compressIfNeeded } = await import("../src/context.mjs")
+  const { server, port } = await mockLLM([{ content: "这是摘要" }])
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    // 第 2 条（head 边界处）是带 tool_calls 的 assistant，其后是成对的 tool 响应——
+    // 若 head 只切前 2 条，tool 响应会被摘要掉，下轮请求必 400
+    const agent = {
+      provider,
+      history: [
+        { role: "user", content: "最初需求 " + "x".repeat(50) },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "ls", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_1", content: "结果 " + "x".repeat(50) },
+        ...Array.from({ length: 12 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(50) })),
+      ],
+      tasks: [],
+      planMode: false,
+      _turnsSinceTaskUpdate: 0,
+      _turnsInPlanMode: 0,
+    }
+    const compacted = await compressIfNeeded(agent, 10)
+    assert.equal(compacted, true)
+    // head 扩展为 3 条：assistant tool_calls 与其 tool 响应成对保留
+    assert.equal(agent.history[1].tool_calls?.[0]?.id, "call_1")
+    assert.equal(agent.history[2].role, "tool")
+    assert.equal(agent.history[2].tool_call_id, "call_1")
+    assert.match(agent.history[3].content, /这是摘要/)
+  } finally {
+    server.close()
+  }
+})
+
 test("provider: CJK 字符跨 chunk 边界时正确拼装（TextDecoder 流式解码）", async () => {
   const { createServer } = await import("node:http")
   const { chat } = await import("../src/provider.mjs")
@@ -931,6 +964,101 @@ test("provider: CJK 字符跨 chunk 边界时正确拼装（TextDecoder 流式�
     const provider = { baseURL: `http://127.0.0.1:${server.address().port}`, apiKey: "x", model: "m" }
     const result = await chat(provider, { messages: [{ role: "user", content: "hi" }] })
     assert.equal(result.content, "你好世界") // 无替换字符、无丢字节
+  } finally {
+    server.close()
+  }
+})
+
+test("provider: Partial Mode 截断续写——length 且有正文时自动续写（仅声明 partialMode 的模型）", async () => {
+  const { chat } = await import("../src/provider.mjs")
+  // 第一轮截断在正文中间，第二轮（续写）正常结束
+  const script = [
+    { content: "前半段内容", finishReason: "length", reasoning: "思考链" },
+    { content: "后半段内容" },
+  ]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const kimi = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "kimi-k3" }
+    const result = await chat(kimi, { messages: [{ role: "user", content: "hi" }] })
+    assert.equal(result.content, "前半段内容后半段内容")
+    assert.equal(result.finishReason, "stop")
+    // 续写请求：尾部追加了 partial assistant 消息，带原文与 reasoning_content
+    assert.equal(requests.length, 2)
+    const tail = requests[1].messages.at(-1)
+    assert.equal(tail.role, "assistant")
+    assert.equal(tail.partial, true)
+    assert.equal(tail.content, "前半段内容")
+    assert.equal(tail.reasoning_content, "思考链")
+
+    // 未声明续写协议的模型：不续写，原样返回截断结果
+    const script2 = [{ content: "截断了", finishReason: "length" }]
+    const { server: s2, port: p2, requests: r2 } = await mockLLM(script2)
+    try {
+      const gpt = { baseURL: `http://127.0.0.1:${p2}`, apiKey: "x", model: "gpt-4o" }
+      const r = await chat(gpt, { messages: [{ role: "user", content: "hi" }] })
+      assert.equal(r.content, "截断了")
+      assert.equal(r.finishReason, "length")
+      assert.equal(r2.length, 1) // 没有第二次请求
+    } finally {
+      s2.close()
+    }
+  } finally {
+    server.close()
+  }
+})
+
+test("provider: DeepSeek Prefix Completion——length 时走 /beta 端点 prefix 续写", async () => {
+  const { chat } = await import("../src/provider.mjs")
+  const script = [
+    { content: "前半段", finishReason: "length" },
+    { content: "后半段" },
+  ]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const ds = { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: "x", model: "deepseek-v4-pro" }
+    const result = await chat(ds, { messages: [{ role: "user", content: "hi" }] })
+    assert.equal(result.content, "前半段后半段")
+    assert.equal(result.finishReason, "stop")
+    assert.equal(requests.length, 2)
+    // 续写请求走 /beta 端点，尾部 assistant 消息带 prefix:true（无 partial、无 reasoning_content）
+    assert.equal(requests[0]._url, "/v1/chat/completions")
+    assert.equal(requests[1]._url, "/beta/chat/completions")
+    const tail = requests[1].messages.at(-1)
+    assert.equal(tail.role, "assistant")
+    assert.equal(tail.prefix, true)
+    assert.equal(tail.partial, undefined)
+    assert.equal(tail.reasoning_content, undefined)
+    assert.equal(tail.content, "前半段")
+  } finally {
+    server.close()
+  }
+})
+
+test("provider: DeepSeek Prefix 续写不处理思考模式（已产出 reasoning 直接返回）", async () => {
+  const { chat } = await import("../src/provider.mjs")
+  const script = [{ content: "截断了", finishReason: "length", reasoning: "思考链" }]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const ds = { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: "x", model: "deepseek-v4-pro" }
+    const result = await chat(ds, { messages: [{ role: "user", content: "hi" }] })
+    assert.equal(result.content, "截断了")
+    assert.equal(result.finishReason, "length")
+    assert.equal(requests.length, 1) // 无续写请求
+  } finally {
+    server.close()
+  }
+})
+
+test("provider: Partial Mode 续写不处理思考阶段截断（content 为空直接返回）", async () => {
+  const { chat } = await import("../src/provider.mjs")
+  const script = [{ content: "", finishReason: "length", reasoning: "想了一半" }]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const kimi = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "kimi-k3" }
+    const result = await chat(kimi, { messages: [{ role: "user", content: "hi" }] })
+    assert.equal(result.content, "")
+    assert.equal(result.finishReason, "length")
+    assert.equal(requests.length, 1) // 无续写请求
   } finally {
     server.close()
   }

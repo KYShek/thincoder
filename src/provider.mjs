@@ -2,10 +2,14 @@
  * provider.mjs — LLM 调用层
  * 原生 fetch 直连 OpenAI 兼容协议，SSE 流式，零依赖。
  * 覆盖：OpenAI / DeepSeek / Moonshot / Ollama / 一切 OpenAI 兼容端点。
+ * 模型私有能力（Kimi/Qwen Partial Mode、DeepSeek Prefix Completion）由 config.mjs 的规格表声明，这里只按能力开关分支。
  */
+
+import { specForModel } from "./config.mjs"
 
 export const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504])
 const MAX_RETRIES = 3
+const MAX_CONTINUATIONS = 3 // Partial Mode 截断续写上限（防异常的无限 length 循环）
 
 /**
  * 创建 provider。config: { baseURL, apiKey, model, maxTokens?, temperature?, thinking?, reasoningEffort? }
@@ -34,6 +38,13 @@ export function createProvider(config) {
  * signal: AbortSignal（可选）
  * 返回 { content, reasoning, toolCalls: [{id, name, arguments}], usage, finishReason }
  * 注意：toolCalls[i].arguments 是 JSON 字符串，调用方负责 parse
+ *
+ * 截断续写（按规格表能力门控，未声明的模型原样返回截断结果）：
+ * finish_reason=length 且已有正文时，把已输出内容作为前缀 assistant 消息回传，
+ * 模型接着续写而非丢弃重跑。思考阶段被截断（content 为空）时无前缀可续，直接返回。
+ * - partialMode（Kimi / Qwen）：assistant 消息带 partial:true；K3 思考续写需回传 reasoning_content
+ * - prefixMode（DeepSeek）：assistant 消息带 prefix:true，且须走 /beta 端点；
+ *   思考模式不支持前缀续写，已产出 reasoning 时放弃续写
  */
 export async function chat(provider, { messages, tools, onToken, onReasoning, signal }) {
   const body = {
@@ -49,7 +60,39 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
   if (tools?.length) body.tools = tools
 
   const response = await requestWithRetry(provider, body, signal)
-  return readSSE(response, { onToken, onReasoning })
+  const result = await readSSE(response, { onToken, onReasoning })
+
+  // 截断续写：仅规格表声明续写协议的模型（其他端点不认识 partial/prefix 字段，可能 400）
+  const spec = specForModel(provider.model)
+  if (!spec.partialMode && !spec.prefixMode) return result
+  // DeepSeek prefix 续写不支持思考模式，已产出 reasoning 时无前缀协议可用
+  if (spec.prefixMode && !spec.partialMode && result.reasoning) return result
+  for (let n = 0; result.finishReason === "length" && result.content && n < MAX_CONTINUATIONS; n++) {
+    const continued = await chat(spec.prefixMode ? { ...provider, baseURL: betaBaseURL(provider.baseURL) } : provider, {
+      messages: [
+        ...messages,
+        spec.partialMode
+          ? {
+              role: "assistant",
+              content: result.content,
+              partial: true,
+              // K3 思考模式续写必须回传 reasoning_content
+              ...(result.reasoning ? { reasoning_content: result.reasoning } : {}),
+            }
+          : { role: "assistant", content: result.content, prefix: true },
+      ],
+      tools,
+      onToken,
+      onReasoning,
+      signal,
+    })
+    result.content += continued.content
+    result.reasoning += continued.reasoning
+    result.toolCalls = continued.toolCalls.length > 0 ? continued.toolCalls : result.toolCalls
+    result.finishReason = continued.finishReason
+    result.usage = continued.usage ?? result.usage
+  }
+  return result
 }
 
 /**
@@ -162,4 +205,9 @@ async function readSSE(response, { onToken, onReasoning }) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** DeepSeek Prefix Completion 只在 /beta 端点开放：.../v1 → .../beta */
+function betaBaseURL(baseURL) {
+  return baseURL.replace(/\/v1$/, "/beta")
 }
