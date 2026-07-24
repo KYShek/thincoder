@@ -27,7 +27,7 @@ const DEFAULTS = {
   providers: [{ name: "deepseek", ...deepseekPreset }],
   activeProvider: "deepseek",
   agent: {
-    maxTurns: 50,
+    maxTurns: 100,
     compactThreshold: 100000,
   },
   memory: {
@@ -38,6 +38,9 @@ const DEFAULTS = {
   embedding: {
     baseURL: "https://api.siliconflow.cn/v1",
     model: "BAAI/bge-m3",
+  },
+  mcp: {
+    servers: [],
   },
 }
 
@@ -133,10 +136,15 @@ export function loadConfig() {
   if (process.env.THINCODER_BASE_URL) runtimeProvider.baseURL = process.env.THINCODER_BASE_URL
   if (process.env.THINCODER_MODEL) runtimeProvider.model = process.env.THINCODER_MODEL
 
-  // apiKey 还可用通用环境变量兜底（当 providers 里没配 key 时）
+  // apiKey 还可用环境变量兜底（当 providers 里没配 key 时）
+  // 提供商专用的环境变量只对同名 provider 生效，避免 key 串到错误的端点
   if (!runtimeProvider.apiKey) {
-    runtimeProvider.apiKey =
-      process.env.THINCODER_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY
+    const envMap = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }
+    const keyVar = envMap[merged.activeProvider]
+    if (keyVar && process.env[keyVar]) runtimeProvider.apiKey = process.env[keyVar]
+  }
+  if (!runtimeProvider.apiKey) {
+    runtimeProvider.apiKey = process.env.THINCODER_API_KEY
   }
 
   // embedding apiKey

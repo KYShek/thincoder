@@ -8,10 +8,32 @@ import { chat } from "./provider.mjs"
 import { compressIfNeeded } from "./context.mjs"
 import { search as memorySearch } from "./memory.mjs"
 import { toOpenAISchema } from "./tools.mjs"
+import { loadSkills, formatSkillListing, readSkill } from "./skills.mjs"
 import { readFile } from "node:fs/promises"
-import { join } from "node:path"
+import { readFileSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+import { execSync } from "node:child_process"
 
-const DEFAULT_MAX_TURNS = 50
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const SYSTEM_PROMPT = readFileSync(join(__dirname, "SYSTEM_PROMPT.md"), "utf8")
+const EXPLORE_OVERLAY = readFileSync(join(__dirname, "explore-overlay.md"), "utf8")
+const CODER_OVERLAY = readFileSync(join(__dirname, "coder-overlay.md"), "utf8")
+
+const DEFAULT_MAX_TURNS = 100
+const DEFAULT_SUBAGENT_TURNS = 20
+
+/**
+ * ContinueError — agent 超过 maxTurns 时抛此错误。
+ * UI 层据此询问用户"继续？"而非直接终止。
+ */
+export class ContinueError extends Error {
+  constructor(turn) {
+    super(`Agent paused after ${turn} turns. Continue?`)
+    this.name = "ContinueError"
+    this.turn = turn
+  }
+}
 
 /**
  * 修复历史里的两类毒数据（都会让 API 整单拒绝 invalid_request_error）：
@@ -61,22 +83,61 @@ export function repairHistory(history) {
 
 const VALID_TASK_STATUS = new Set(["pending", "in_progress", "done"])
 
+/** 只读工具名集合（用于 explore 子 agent 过滤） */
+function readonlyToolNames(tools) {
+  return new Set(tools.filter((t) => t.readonly).map((t) => t.name))
+}
+
+/**
+ * plan 工具：进入/退出规划模式。
+ * 规划模式下只允许只读工具——探索代码、设计方案，不写代码。
+ * 用户确认方案后退出规划模式开始实现。
+ */
+export const planTool = {
+  name: "plan",
+  description:
+    "Enter or exit plan mode. In plan mode you are restricted to READ-ONLY tools: read files, search code, run read-only shell commands. Use plan mode before complex multi-step tasks — explore the codebase, design the architecture, present a plan to the user. When the user approves, exit plan mode and implement. For simple single-file edits, skip plan mode and just make the change.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["enter", "exit"], description: "Enter or exit plan mode" },
+    },
+    required: ["action"],
+  },
+  readonly: true,
+  async execute(args, ctx) {
+    if (args.action === "exit") {
+      ctx.agent.planMode = false
+      ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
+      ctx.agent._pendingReminders.push("[System reminder: plan mode is now OFF. You may edit files, run commands, and implement changes. Start by executing the first step of your approved plan.]")
+      return "Plan mode exited. You may now edit files and run commands."
+    }
+    ctx.agent.planMode = true
+    ctx.agent._turnsInPlanMode = 0
+    ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
+    ctx.agent._pendingReminders.push("[System reminder: plan mode is now ON. Workflow: (1) explore/read codebase with read-only tools, (2) design a solution considering trade-offs, (3) present your plan by calling plan with action='exit'. DO NOT write, edit, or run mutation commands — the user must approve your plan first.]")
+    return "Plan mode activated. You are now restricted to READ-ONLY tools. Explore the codebase, understand the architecture, design a solution. Present your plan to the user for approval before writing any code."
+  },
+}
+
 /**
  * subagent 工具：派生子 agent 处理独立子任务（隔离上下文，只带回报告）。
- * - 一批多个 subagent 调用走并行通道（parallel: true），适合广发探索
- * - 不递归：子 agent 的 tools 里不含 subagent（depth > 0 不注入）
- * - 普通模式：子 agent 的有副作用工具一律拒绝（研究型用法）；
- *   auto 模式（agent.autoApprove）：全部放行
+ * - role: "explore" — 只读工具，搜索/阅读/分析（适合代码库探索）
+ * - role: "coder" — 全套工具，独立完成编码任务（适合隔离实现）
+ * - 不指定 role — 默认行为，同主 agent 工具集
+ * - 一批多个 subagent 调用走并行通道（parallel: true）
+ * - 不递归：子 agent 不含 subagent（depth > 0 不注入）
  */
 export const subagentTool = {
   name: "subagent",
   description:
-    "Spawn a sub-agent to handle an independent subtask in an isolated context. The sub-agent has the same tools (except subagent itself) and returns only its final report. Spawn MULTIPLE subagents in the SAME response for parallel research—they run concurrently. Do not give parallel subagents tasks that edit the same files.",
+    "Spawn a sub-agent to handle an independent subtask in an isolated context. The sub-agent returns only its final report. Spawn MULTIPLE subagents in the SAME response for parallel work—they run concurrently. Use role='explore' for codebase search/analysis (read-only, fast), role='coder' for self-contained implementation tasks. Do not give parallel subagents tasks that edit the same files.",
   parameters: {
     type: "object",
     properties: {
       task: { type: "string", description: "Self-contained task description for the sub-agent" },
       context: { type: "string", description: "Optional background the sub-agent needs (it cannot see this conversation)" },
+      role: { type: "string", enum: ["explore", "coder"], description: "Sub-agent role: 'explore' (read-only search/analysis) or 'coder' (full implementation). Default: same tools as parent." },
     },
     required: ["task"],
   },
@@ -84,17 +145,50 @@ export const subagentTool = {
   parallel: true,
   async execute(args, ctx) {
     const parent = ctx.agent
+    const role = args.role
+
+    // 按 role 过滤工具集
+    let tools
+    if (role === "explore") {
+      const allowed = readonlyToolNames(parent.tools)
+      tools = parent.tools.filter((t) => allowed.has(t.name))
+    } else {
+      tools = parent.tools
+    }
+
+    // 按 role 选择 prompt overlay
+    let overlay = ""
+    if (role === "explore") overlay = EXPLORE_OVERLAY
+    else if (role === "coder") overlay = CODER_OVERLAY
+
+    // explore 强制只读权限；coder 继承父 agent 权限策略
+    let childPermission
+    if (role === "explore") {
+      childPermission = async () => false
+    } else {
+      childPermission = parent.autoApprove ? async () => true : async () => false
+    }
+
     const child = createAgent({
       provider: parent.provider,
-      tools: parent.tools,
+      tools,
       config: parent.config,
       cwd: parent.cwd,
       memory: parent.memory,
+      overlay,
     })
-    // 子 agent 的权限策略：auto 模式全放行；普通模式只读（拒绝写操作）
-    const childPermission = parent.autoApprove ? async () => true : async () => false
+
     const input = args.context ? `背景：\n${args.context}\n\n任务：\n${args.task}` : args.task
-    const report = await runAgent(child, input, { onPermissionRequest: childPermission }, { depth: (ctx.depth ?? 0) + 1 })
+    const report = await runAgent(child, input, { onPermissionRequest: childPermission }, { depth: (ctx.depth ?? 0) + 1, maxTurns: DEFAULT_SUBAGENT_TURNS })
+
+    // coder 完成后注入校验提醒到主 agent
+    if (role === "coder") {
+      parent._pendingReminders = parent._pendingReminders ?? []
+      parent._pendingReminders.push(
+        `[Subagent "${args.task?.slice(0, 80)}" finished. Verify its report: read the files it claims to have changed, run tests, and confirm the changes match the report before marking the task done.]`
+      )
+    }
+
     const maxLen = 32000
     return report.length > maxLen
       ? report.slice(0, maxLen) + `\n\n[... report truncated: ${report.length} chars total, ${report.length - maxLen} omitted. Ask a follow-up if you need the missing details.]`
@@ -106,9 +200,6 @@ export const subagentTool = {
  * task 工具：多步任务规划与进度跟踪（Claude Code 的 todo 模式）。
  * 每次调用整体替换列表；只改 agent 内部状态、不碰外部世界，故 readonly。
  * 通过 ctx.agent 访问调用方 agent（由 runAgent 注入）。
- * 注：ctx.agent 的回写是有意的轻量耦合——task 本质是主循环的内建能力而非普通工具，
- * 伪装成工具是为了让 LLM 用统一的 tool calling 协议调用它；替代方案（主循环特判）
- * 会让循环代码更绕，不值。
  */
 export const taskTool = {
   name: "task",
@@ -138,6 +229,7 @@ export const taskTool = {
       status: VALID_TASK_STATUS.has(it.status) ? it.status : "pending",
     }))
     ctx.agent.tasks = items
+    ctx.agent._turnsSinceTaskUpdate = 0
     ctx.agent._onTaskUpdate?.(items)
     const done = items.filter((i) => i.status === "done").length
     const open = items.length - done
@@ -146,13 +238,181 @@ export const taskTool = {
   },
 }
 
-/** 项目指令文件候选（按优先级拼接所有存在的） */
+/**
+ * skill 工具：按需加载项目技能文件（.thincoder/skills/*.md）。
+ * 加载后技能内容以 <skill-loaded> 包裹写入对话，供后续参考。
+ * 列出所有可用技能用 action="list"。
+ */
+export const skillTool = {
+  name: "skill",
+  description:
+    "Load a project skill from .thincoder/skills/. Skills contain reusable instructions, workflows, or reference material. Use this when the user references a skill by name, or when a task matches a known skill's description. Call with action='list' to see available skills; call with action='load' and name=<skill> to activate one.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["list", "load"], description: "'list' to see available skills, 'load' to activate one" },
+      name: { type: "string", description: "Skill name (for 'load' action)" },
+    },
+    required: ["action"],
+  },
+  readonly: true,
+  async execute(args, ctx) {
+    const skills = await loadSkills(ctx.agent.cwd)
+    if (args.action === "list") {
+      if (skills.length === 0) return "No project skills found in .thincoder/skills/."
+      return skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")
+    }
+    if (!args.name) return "Error: skill name required for 'load' action."
+    const content = await readSkill(ctx.agent.cwd, args.name)
+    if (!content) {
+      const available = skills.map((s) => s.name).join(", ")
+      return `Error: skill "${args.name}" not found. Available: ${available || "(none)"}`
+    }
+    // 注入 skill 内容到 history（下一条 user 消息）
+    ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
+    ctx.agent._pendingReminders.push(
+      `<skill-loaded name="${args.name}" source=".thincoder/skills/${args.name}.md">\n${content}\n</skill-loaded>\n\nFollow the skill's instructions above for the current task.`
+    )
+    return `Skill "${args.name}" loaded. Instructions will appear in the next message.`
+  },
+}
+
+/**
+ * goal 工具：设置/更新/取消长期任务目标。
+ * 用于跨多轮会话的自主任务——agent 记住自己要完成什么，
+ * 系统每 8 轮注入一次进度提醒。
+ */
+export const goalTool = {
+  name: "goal",
+  description:
+    "Set or update a long-running goal that spans many turns. Use for autonomous tasks where you need to remember the objective across context compaction. Call with action='set' to create/update the goal, or action='cancel' to clear it. The system will periodically remind you of the current goal.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["set", "cancel"], description: "'set' to create/update the goal, 'cancel' to clear" },
+      objective: { type: "string", description: "What you are trying to accomplish (for 'set' action)" },
+      criteria: { type: "string", description: "How you know it's done (for 'set' action)" },
+    },
+    required: ["action"],
+  },
+  readonly: true,
+  async execute(args, ctx) {
+    if (args.action === "cancel") {
+      ctx.agent.goal = null
+      return "Goal cancelled."
+    }
+    if (!args.objective) return "Error: 'objective' required for 'set' action."
+    ctx.agent.goal = {
+      objective: String(args.objective).slice(0, 500),
+      criteria: String(args.criteria ?? "").slice(0, 500),
+      setAt: Date.now(),
+    }
+    return `Goal set: ${ctx.agent.goal.objective}${ctx.agent.goal.criteria ? `\nDone when: ${ctx.agent.goal.criteria}` : ""}`
+  },
+}
+
+/**
+ * verify 工具：完成前的自检。调用时会展示：
+ * 1. git diff --stat — 所有变更文件
+ * 2. task 列表 — 是否全部 done
+ * 3. 一个自检清单
+ * Agent 不应该在 verify 通过前说"完成"。
+ */
+export const verifyTool = {
+  name: "verify",
+  description:
+    "Run a pre-completion self-check. Shows what files changed (git diff --stat), the current task list, and a verification checklist. Call this BEFORE declaring any coding task complete — do not say 'done' until verify passes.",
+  parameters: {
+    type: "object",
+    properties: {},
+  },
+  readonly: true,
+  async execute(_args, ctx) {
+    const lines = []
+    lines.push("=== VERIFICATION REPORT ===")
+    lines.push("")
+
+    // 1. Git diff
+    try {
+      const diff = execSync("git diff --stat", { cwd: ctx.agent.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      if (diff.trim()) {
+        lines.push("Changed files (git diff --stat):")
+        lines.push(diff.trim())
+      } else {
+        lines.push("Changed files: (none — no uncommitted changes)")
+      }
+    } catch {
+      lines.push("Changed files: (not a git repo or git unavailable)")
+    }
+
+    // 2. 未跟踪文件
+    try {
+      const untracked = execSync("git ls-files --others --exclude-standard", { cwd: ctx.agent.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      if (untracked.trim()) {
+        lines.push("")
+        lines.push("Untracked files:")
+        lines.push(untracked.trim())
+      }
+    } catch {
+      // 静默
+    }
+
+    // 3. Task 列表
+    lines.push("")
+    if (ctx.agent.tasks.length === 0) {
+      lines.push("Task list: (no tasks tracked)")
+    } else {
+      const done = ctx.agent.tasks.filter((t) => t.status === "done").length
+      const total = ctx.agent.tasks.length
+      const open = ctx.agent.tasks.filter((t) => t.status !== "done")
+      lines.push(`Task list: ${done}/${total} done`)
+      for (const t of ctx.agent.tasks) {
+        const mark = t.status === "done" ? "✓" : t.status === "in_progress" ? "▶" : "○"
+        lines.push(`  ${mark} [${t.status}] ${t.title}`)
+      }
+      if (open.length > 0) {
+        lines.push("")
+        lines.push(`WARNING: ${open.length} task(s) still open. Complete them or explain why they can be left undone.`)
+      }
+    }
+
+    // 4. Checklist
+    lines.push("")
+    lines.push("Self-review checklist:")
+    lines.push("- [ ] Did I run the project's tests and do they pass?")
+    lines.push("- [ ] Did I read every file I changed to catch leftover debug code or stale comments?")
+    lines.push("- [ ] Do comments and docstrings match what the code actually does?")
+    lines.push("- [ ] Did I remove placeholder code, TODO stubs, or commented-out experiment blocks?")
+    lines.push("- [ ] If I used a subagent, did I verify its report against the actual files it touched?")
+    lines.push("- [ ] Are all task items genuinely done (not just marked done to finish early)?")
+
+    return lines.join("\n")
+  },
+}
+
+/** 项目指令文件候选（cwd 本地，按优先级拼接） */
 const INSTRUCTION_FILES = ["AGENTS.md", "agents.md", "PROJECT_RULES.md", "project_rules.md", ".thincoder/rules.md"]
 const MAX_INSTRUCTION_CHARS = 8000
 
-/** 读取项目指令（AGENTS.md / project_rules 等），没有则返回空串 */
+/**
+ * 读取项目指令，两层合并：
+ * 1. 用户全局：~/.thincoder/AGENTS.md（适用所有项目）
+ * 2. 项目本地：cwd 下的 AGENTS.md / project_rules 等
+ * 最多 8000 字符。
+ */
 export async function loadProjectInstructions(cwd) {
   const parts = []
+  const { homedir } = await import("node:os")
+
+  // 用户全局指令（优先级低，放前面）
+  try {
+    const globalText = await readFile(join(homedir(), ".thincoder", "AGENTS.md"), "utf8")
+    if (globalText.trim()) parts.push(`# ~/.thincoder/AGENTS.md (user-global conventions)\n${globalText.trim()}`)
+  } catch {
+    // 不存在，跳过
+  }
+
+  // 项目本地指令（优先级高，放后面）
   for (const name of INSTRUCTION_FILES) {
     try {
       const text = await readFile(join(cwd, name), "utf8")
@@ -165,34 +425,26 @@ export async function loadProjectInstructions(cwd) {
   return parts.join("\n\n").slice(0, MAX_INSTRUCTION_CHARS)
 }
 
-const SYSTEM_PROMPT = `You are ThinCoder, a coding agent. Thin means sharp: you are a terse, precise engineer who cuts straight to the point—no fluff, no showing off, no filler. You write the most minimal, elegant code that solves the problem, and you say things in as few words as the truth allows.
-
-Rules:
-- Prefer tool calls over guessing. Read files before modifying them.
-- When you need multiple independent pieces of information (e.g. reading several files), make all independent tool calls in the SAME response so they can run in parallel.
-- Be concise in your final answers. Report what you did, not what you plan to do.
-- If the request is ambiguous at a decision that matters, stop and ask in your reply instead of guessing—but ask at most once, then proceed with the most reasonable interpretation.
-- When the user shares an observation or opinion, don't mistake it for a command—confirm before making changes.
-- For complex multi-step requests (3+ steps), use the task tool to plan and track progress; keep exactly one item in_progress, and update the list as you complete items—never finish with stale pending items.
-- For independent research/exploration subtasks, spawn subagents in the SAME response to run them in parallel—they work in isolated contexts and return final reports. Delegate breadth-first exploration; do precision edits yourself. Never assign parallel subagents tasks that edit the same files.
-- Never fabricate file contents or command outputs; only trust tool results.
-- Before declaring a coding task complete, verify it: run the project's relevant tests/build if they exist. If you could not verify, say so explicitly—never present unverified work as done.
-- Run shell commands non-interactively: git commit -m, git --no-pager, -y/--yes flags where applicable. There is no TTY; editors and pagers (vim, less) cannot be used.
-- You have long-term memory via memory_put/memory_search. When you learn a durable fact about this project (convention, decision, debugging insight), save it with memory_put. Relevant memories may be injected below—use them.`
-
 /**
  * 创建 agent。
- * { provider, tools, config, cwd, memory? } —— memory 可空（无记忆模式）
+ * { provider, tools, config, cwd, memory?, overlay? }
+ * overlay — 子 agent 角色覆盖文本，拼接在 system prompt 末尾
  */
-export function createAgent({ provider, tools, config, cwd, memory = null }) {
+export function createAgent({ provider, tools, config, cwd, memory = null, overlay = "" }) {
   return {
     provider,
     tools,
     config,
     cwd,
     memory,
+    overlay,
     history: [], // OpenAI 格式的对话历史（不含 system）
-    tasks: [], // task 工具维护的任务列表
+    tasks: [],   // task 工具维护的任务列表
+    planMode: false, // plan 工具切换的规划模式
+    goal: null,      // goal 工具设置的长期目标 { objective, criteria, setAt }
+    _pendingReminders: [], // 模式切换提醒，在主循环中刷新后写入 history
+    _turnsSinceTaskUpdate: 0, // 距上次 task 工具调用的轮数（过期提醒用）
+    _turnsInPlanMode: 0,     // plan mode 中持续的轮数（引导提醒用）
   }
 }
 
@@ -205,24 +457,43 @@ export function createAgent({ provider, tools, config, cwd, memory = null }) {
  * }
  * 返回最终文本。
  */
-export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {}) {
-  const maxTurns = agent.config?.agent?.maxTurns ?? DEFAULT_MAX_TURNS
+export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal, maxTurns: overrideTurns, resume = false } = {}) {
+  const maxTurns = overrideTurns ?? agent.config?.agent?.maxTurns ?? DEFAULT_MAX_TURNS
   const threshold = agent.config?.agent?.compactThreshold ?? 100_000
   // 先修复历史（恢复的会话可能有中断的 tool_calls），再追加新输入
   agent.history = repairHistory(agent.history)
-  agent.history.push({ role: "user", content: input })
+  if (!resume) {
+    agent.history.push({ role: "user", content: input })
+  }
 
-  // task 工具随主循环注入（内建能力）；subagent 只在顶层注入（禁止递归）
-  const tools = [...agent.tools, taskTool, ...(depth === 0 ? [subagentTool] : [])]
+  // 刷新上轮积压的提醒（如 /auto 切换在两次 runAgent 之间注入的）
+  if (agent._pendingReminders.length > 0) {
+    for (const reminder of agent._pendingReminders) {
+      agent.history.push({ role: "user", content: reminder })
+    }
+    agent._pendingReminders = []
+  }
+
+  // task/plan 工具随主循环注入（内建能力）；subagent/skill/goal/verify 只在顶层注入（禁止递归）
+  const tools = [...agent.tools, taskTool, planTool, ...(depth === 0 ? [subagentTool, skillTool, goalTool, verifyTool] : [])]
   const toolSchemas = tools.map(toOpenAISchema)
   const toolByName = new Map(tools.map((t) => [t.name, t]))
   agent._onTaskUpdate = callbacks.onTaskUpdate
 
-  // 记忆注入：按用户输入检索相关记忆，附加到 system prompt
+  // 环境信息 + profile overlay + 记忆注入：附加到 system prompt
   let systemPrompt = SYSTEM_PROMPT
+  if (agent.overlay) systemPrompt += `\n\n${agent.overlay}`
+  const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] ?? process.platform
+  systemPrompt += `\n\nOS: ${platform}. Working directory: ${agent.cwd}. Session start: ${new Date().toISOString()}.`
   const projectRules = await loadProjectInstructions(agent.cwd)
   if (projectRules) {
     systemPrompt += `\n\nProject instructions (follow these as project conventions):\n${projectRules}`
+  }
+  // 技能列表注入（仅顶层 agent，子 agent 不需要）
+  if (depth === 0) {
+    const skills = await loadSkills(agent.cwd)
+    const listing = formatSkillListing(skills)
+    if (listing) systemPrompt += `\n\n${listing}`
   }
   if (agent.memory) {
     const memories = await memorySearch(agent.memory, input, { limit: 3 })
@@ -233,12 +504,26 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {})
     }
   }
 
+  // 以 AUTO 模式启动时注入一次提醒（历史里已有就不重复，防每轮对话都堆一条）
+  const AUTO_REMINDER = "[System reminder: AUTO mode is active — all tool calls are automatically approved without asking.]"
+  if (agent.autoApprove && !agent.history.some((m) => m.content === AUTO_REMINDER)) {
+    agent.history.push({ role: "user", content: AUTO_REMINDER })
+  }
+
   for (let turn = 0; turn < maxTurns; turn++) {
-    // 每轮 LLM 调用前检查上下文长度，超阈值先压缩（末尾是 user 或 tool 消息都是安全点；
-    // 但压缩只在末尾是 user 时最干净，tool 结尾说明在工具循环中段，下一轮再压）
+    // 递增跟踪计数器
+    agent._turnsSinceTaskUpdate++
+    if (agent.planMode) agent._turnsInPlanMode++
+
+    // 每轮 LLM 调用前检查上下文长度，超阈值先压缩
+    // 压缩失败不终止 agent 循环——宁可继续跑长上下文也别中断任务
     if (agent.history.at(-1)?.role === "user") {
-      if (await compressIfNeeded(agent, threshold)) {
-        callbacks.onCompress?.()
+      try {
+        if (await compressIfNeeded(agent, threshold)) {
+          callbacks.onCompress?.()
+        }
+      } catch {
+        // 压缩 LLM 调用失败（限流/网络），静默跳过；下一轮重试
       }
     }
 
@@ -249,6 +534,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {})
       tools: toolSchemas,
       onToken: callbacks.onToken,
       onReasoning: callbacks.onReasoning,
+      signal,
     })
 
     // 无工具调用：最终回答，收尾
@@ -272,7 +558,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {})
       })),
     })
 
-    const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks, depth)
+    const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks, depth, signal)
 
     // 结果按 toolCallId 配对回喂（协议按 ID 不按位置，完成乱序无影响）
     for (const { toolCall, result } of results) {
@@ -282,18 +568,56 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {})
         content: result,
       })
     }
+
+    // 刷新待处理的模式提醒（plan/auto 切换后注入，在工具结果之后）
+    if (agent._pendingReminders.length > 0) {
+      for (const reminder of agent._pendingReminders) {
+        agent.history.push({ role: "user", content: reminder })
+      }
+      agent._pendingReminders = []
+    }
+
+    // 每 10 轮注入一次 goal 提醒（长期任务进度感知）
+    if (agent.goal && turn > 0 && turn % 10 === 0) {
+      agent.history.push({
+        role: "user",
+        content: `[System reminder: your current goal is: "${agent.goal.objective}"${agent.goal.criteria ? ` — Done when: ${agent.goal.criteria}` : ""}. Stay focused on this objective. Use the goal tool to update or cancel it.]`,
+      })
+    }
+
+    // 每 10 轮注入 task 过期提醒：有活跃任务但长时间未更新 task list
+    if (agent.tasks.length > 0 && agent._turnsSinceTaskUpdate >= 10) {
+      const hasIncomplete = agent.tasks.some((t) => t.status !== "done")
+      if (hasIncomplete) {
+        const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
+        agent.history.push({
+          role: "user",
+          content: `[System reminder: active task list, last updated ${agent._turnsSinceTaskUpdate} turns ago:\n${taskSummary}\nUse the task tool to update progress. Never mention this reminder to the user.]`,
+        })
+      }
+      agent._turnsSinceTaskUpdate = 0
+    }
+
+    // 每 8 轮注入 plan mode 引导：防止无限探索不产出方案
+    if (agent.planMode && agent._turnsInPlanMode >= 8) {
+      agent.history.push({
+        role: "user",
+        content: "[System reminder: plan mode still active after several turns. Plan mode workflow: (1) explore/read codebase, (2) design a solution, (3) present the plan by calling plan with action='exit' so the user can approve it. If you've explored enough, exit plan mode now. Never mention this reminder to the user.]",
+      })
+      agent._turnsInPlanMode = 0
+    }
   }
 
-  throw new Error(`Agent exceeded max turns (${maxTurns})`)
+  throw new ContinueError(maxTurns)
 }
 
 /**
  * 两段式执行：
- * 阶段一（串行）：逐个解析参数 + 权限确认（有副作用工具）
+ * 阶段一（串行）：逐个解析参数 + planMode 检查 + 权限确认（有副作用工具）
  * 阶段二（分类）：只读工具 Promise.all 并行；有副作用工具逐个串行
  * 返回按 toolCallId 配对的结果数组。
  */
-async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth = 0) {
+async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth = 0, signal) {
   // ---- 阶段一：串行准备 ----
   const prepared = []
   for (const toolCall of toolCalls) {
@@ -308,6 +632,12 @@ async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth =
 
     if (!tool) {
       prepared.push({ toolCall, tool: null, error: `Unknown tool: ${toolCall.name}` })
+      continue
+    }
+
+    // plan 模式：拒绝所有非只读工具
+    if (agent.planMode && !tool.readonly) {
+      prepared.push({ toolCall, tool, denied: true, reason: "plan mode" })
       continue
     }
 
@@ -328,13 +658,20 @@ async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth =
   // ---- 阶段二：分类执行 ----
   const runOne = async (item) => {
     if (item.error) return { ...item, result: `Error: ${item.error}` }
-    if (item.denied) return { ...item, result: "Error: permission denied by user" }
+    if (item.denied) {
+      const reason = item.reason === "plan mode"
+        ? "Error: plan mode is active — only read-only tools are allowed. Exit plan mode first."
+        : "Error: permission denied by user"
+      return { ...item, result: reason }
+    }
     try {
       const result = await item.tool.execute(item.args, {
         cwd: agent.cwd,
         agent,
         depth,
+        signal,
         onOutput: (chunk) => callbacks.onToolOutput?.(item.toolCall.name, chunk),
+        onQuestion: callbacks.onQuestion,
       })
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result: String(result) }

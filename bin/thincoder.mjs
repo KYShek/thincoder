@@ -84,15 +84,38 @@ async function makeAgent() {
     await ensureClone(team)
     await syncDir(memory, { layer: "team", dir: team.dir })
   }
+  const baseTools = [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team })]
+
+  // MCP servers：并行连接（一个死 server 不会拖住启动），失败的收集警告（TUI 下 stderr 不可见，通过 agent 对象传递）
+  const mcpServers = config.mcp?.servers ?? []
+  let mcpTools = []
+  const mcpWarnings = []
+  if (mcpServers.length) {
+    const { connectMcpServer } = await import("../src/mcp.mjs")
+    const results = await Promise.allSettled(mcpServers.map((srv) => connectMcpServer(srv)))
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      if (r.status === "fulfilled") {
+        mcpTools = mcpTools.concat(r.value)
+      } else {
+        const srv = mcpServers[i]
+        const msg = `MCP server "${srv.name ?? srv.command}" failed to connect: ${r.reason?.message ?? r.reason}`
+        console.error(`[mcp] ${msg}`)
+        mcpWarnings.push(msg)
+      }
+    }
+  }
+
   const agent = createAgent({
     provider,
-    tools: [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team })],
+    tools: [...baseTools, ...mcpTools],
     config,
     cwd,
     memory,
   })
   agent.providers = providers
   agent.activeProvider = config.activeProvider
+  agent._mcpWarnings = mcpWarnings
   return agent
 }
 
@@ -144,6 +167,7 @@ switch (command) {
       }
     }
     if (auto) agent.autoApprove = true
+    const { ContinueError } = await import("../src/agent.mjs")
     try {
       await runAgent(agent, prompt, {
         onToken: (text) => process.stdout.write(text),
@@ -159,8 +183,13 @@ switch (command) {
       })
       process.stdout.write("\n")
     } catch (error) {
-      console.error(`\n[error] ${error.message}`)
-      exitSoon(1)
+      if (error instanceof ContinueError) {
+        console.error(`\n[paused] Agent stopped after ${error.turn} turns. Run in TUI to continue.`)
+        exitSoon(0)
+      } else {
+        console.error(`\n[error] ${error.message}`)
+        exitSoon(1)
+      }
     }
     break
   }
@@ -309,6 +338,17 @@ switch (command) {
     if (restored) {
       agent.history = restored.history
       agent.tasks = restored.tasks ?? []
+      agent.planMode = restored.planMode ?? false
+      agent.goal = restored.goal ?? null
+    }
+    // MCP 连接失败在 TUI alt-buffer 下 stderr 不可见，注入为下一条 user 消息后的提醒
+    if (agent._mcpWarnings?.length) {
+      agent._pendingReminders = agent._pendingReminders ?? []
+      agent._pendingReminders.push(
+        `[System notice: ${agent._mcpWarnings.length} MCP server(s) failed to connect at startup:\n` +
+        agent._mcpWarnings.map((w) => `  - ${w}`).join("\n") +
+        `\nYou can try reconnecting with /mcp connect <name>.]`
+      )
     }
     const { startTUI } = await import("../src/tui.mjs")
     try {

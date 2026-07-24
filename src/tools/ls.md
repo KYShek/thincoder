@@ -1,0 +1,9 @@
+List directory contents with type, size, and modification time. Directories listed first. Use to see what a directory contains (glob only matches files).
+
+Parameters:
+- path: Directory path (default cwd)
+
+Notes:
+- Shows first 500 entries
+- Directories are prefixed with `/` and listed before files
+- Use this for a quick overview; use glob when you have a specific file pattern in mind

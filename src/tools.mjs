@@ -1,12 +1,18 @@
 /**
  * tools.mjs — 内置工具集
- * read / write / edit / bash / glob / grep，零依赖实现。
+ * read / write / edit / bash / glob / grep / websearch / ls / fetch / delete / git_diff / git_status / git_log / question，零依赖实现。
+ * 工具描述从 src/tools/*.md 加载（方便人读和修改）。
  * readonly 标记供 agent 调度：只读工具可并行，有副作用工具串行。
  */
 
-import { spawn } from "node:child_process"
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises"
-import { dirname, join, resolve } from "node:path"
+import { spawn, execFileSync } from "node:child_process"
+import { mkdir, readFile, readdir, stat, writeFile, unlink } from "node:fs/promises"
+import { readFileSync, existsSync } from "node:fs"
+import { dirname, join, resolve, relative } from "node:path"
+import { fileURLToPath } from "node:url"
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const DESC = (name) => readFileSync(join(__dirname, "tools", `${name}.md`), "utf8")
 
 const MAX_READ_LINES = 2000
 const MAX_OUTPUT_CHARS = 50_000
@@ -48,8 +54,7 @@ function resolveInCwd(ctx, p) {
 
 const readTool = {
   name: "read",
-  description:
-    "Read a text file. Returns numbered lines. Use offset/limit to page large files.",
+  description: DESC("read"),
   parameters: {
     type: "object",
     properties: {
@@ -77,7 +82,7 @@ const readTool = {
 
 const writeTool = {
   name: "write",
-  description: "Write content to a file. Creates parent directories; overwrites existing file.",
+  description: DESC("write"),
   parameters: {
     type: "object",
     properties: {
@@ -99,8 +104,7 @@ const writeTool = {
 
 const editTool = {
   name: "edit",
-  description:
-    "Edit a file by exact string replacement. old_string must match exactly once unless replace_all is set.",
+  description: DESC("edit"),
   parameters: {
     type: "object",
     properties: {
@@ -134,8 +138,7 @@ const editTool = {
 
 const bashTool = {
   name: "bash",
-  description:
-    "Execute a shell command and return stdout+stderr. Use for running commands, builds, tests.",
+  description: DESC("bash"),
   parameters: {
     type: "object",
     properties: {
@@ -210,6 +213,10 @@ const bashTool = {
       child.stderr.on("data", onData)
 
       const timer = setTimeout(() => child.kill(), args.timeout ?? BASH_TIMEOUT_MS)
+      // 用户中止：杀进程
+      if (ctx.signal) {
+        ctx.signal.addEventListener("abort", () => child.kill(), { once: true })
+      }
       child.on("error", (error) => {
         clearTimeout(timer)
         resolve(truncate(`Command failed: ${error.message}\n${out}`))
@@ -218,7 +225,7 @@ const bashTool = {
         clearTimeout(timer)
         out += sanitizeOutput(feed(Buffer.alloc(0), true)) // 最终判定 + 冲刷解码器尾部
         const suffix = signal
-          ? "\n(killed: timeout)"
+          ? `\n(killed: ${ctx.signal?.aborted ? "user interrupted" : "timeout"})`
           : code !== 0
             ? `\n(exit code ${code})`
             : ""
@@ -232,7 +239,7 @@ const bashTool = {
 
 const globTool = {
   name: "glob",
-  description: "Find files by glob pattern (e.g. 'src/**/*.mjs'). Returns matching paths.",
+  description: DESC("glob"),
   parameters: {
     type: "object",
     properties: {
@@ -295,7 +302,7 @@ function globToRegex(pattern) {
 
 const grepTool = {
   name: "grep",
-  description: "Search file contents with a regex. Returns matching lines as path:line: content.",
+  description: DESC("grep"),
   parameters: {
     type: "object",
     properties: {
@@ -357,8 +364,7 @@ const grepTool = {
 
 const websearchTool = {
   name: "websearch",
-  description:
-    "Search the web (Bing). Returns result titles, URLs, and snippets. Use for looking up current information, docs, error messages.",
+  description: DESC("websearch"),
   parameters: {
     type: "object",
     properties: {
@@ -422,8 +428,7 @@ function stripTags(html) {
 
 const lsTool = {
   name: "ls",
-  description:
-    "List directory contents with type, size, and modification time. Directories listed first. Use to see what a directory contains (glob only matches files).",
+  description: DESC("ls"),
   parameters: {
     type: "object",
     properties: {
@@ -457,8 +462,7 @@ const lsTool = {
 
 const fetchTool = {
   name: "fetch",
-  description:
-    "Fetch a URL and return its content as text (HTML pages are stripped to readable text). Use after websearch to read full documents.",
+  description: DESC("fetch"),
   parameters: {
     type: "object",
     properties: {
@@ -511,3 +515,170 @@ function htmlToText(html) {
 }
 
 export const builtinTools = [readTool, writeTool, editTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]
+
+// ---------------------------------------------------------------- delete
+
+const deleteTool = {
+  name: "delete",
+  description: DESC("delete"),
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path (relative to cwd or absolute)" },
+      force: { type: "boolean", description: "Allow deleting git-tracked files (default false)" },
+    },
+    required: ["path"],
+  },
+  readonly: false,
+  async execute(args, ctx) {
+    const abs = resolveInCwd(ctx, args.path)
+    if (!existsSync(abs)) throw new Error(`File not found: ${abs}`)
+    const s = await stat(abs)
+    if (s.isDirectory()) throw new Error(`"${args.path}" is a directory — use bash to remove directories`)
+    // git 跟踪文件拒绝直接删除（安全网）；未跟踪的放行
+    // 用解析后的相对路径（统一正斜杠），防反斜杠/非常规路径绕过 ls-files 匹配
+    const rel = relative(ctx.cwd, abs).replace(/\\/g, "/")
+    let tracked = false
+    try {
+      execFileSync("git", ["ls-files", "--error-unmatch", "--", rel], { cwd: ctx.cwd, stdio: "ignore" })
+      tracked = true
+    } catch {
+      // 未跟踪 / 非 git 仓库
+    }
+    if (tracked && !args.force) throw new Error(`"${args.path}" is git-tracked. Set force=true to delete anyway.`)
+    await unlink(abs)
+    return `Deleted ${abs}`
+  },
+}
+
+// ---------------------------------------------------------------- git_diff
+
+const gitDiffTool = {
+  name: "git_diff",
+  description: DESC("git_diff"),
+  parameters: {
+    type: "object",
+    properties: {
+      staged: { type: "boolean", description: "Show staged changes (default false)" },
+      path: { type: "string", description: "File or directory to diff (default all)" },
+      ref: { type: "string", description: "Compare against this ref (default HEAD)" },
+    },
+  },
+  readonly: true,
+  execute(args, ctx) {
+    const ref = args.ref ?? "HEAD"
+    const flags = args.staged ? ["--staged"] : []
+    const paths = args.path ? [args.path] : []
+    const out = runGit(ctx.cwd, ["diff", ...flags, ref, "--", ...paths])
+    return truncate(out || "(no changes)")
+  },
+}
+
+// ---------------------------------------------------------------- git_status
+
+const gitStatusTool = {
+  name: "git_status",
+  description: DESC("git_status"),
+  parameters: {
+    type: "object",
+    properties: {},
+  },
+  readonly: true,
+  execute(_args, ctx) {
+    const porcelain = runGit(ctx.cwd, ["status", "--porcelain"])
+    if (!porcelain) return "(clean — no changes)"
+
+    const staged = []
+    const unstaged = []
+    const untracked = []
+    const conflicts = []
+    for (const line of porcelain.split("\n")) {
+      if (!line) continue
+      // porcelain: XY path — 2 状态字符 + 空格 + 文件路径（部分环境只 1 空格）
+      // 去掉可能的 CR（execFileSync 在某些 Windows git 下会残留 \r 在行末但不在换行符中）
+      const clean = line.replace(/\r/g, "")
+      // 尝试匹配 "XY path" 或 "XY  path"（可变间距）
+      const m = clean.match(/^(..?)\s+(.+)$/)
+      if (!m) continue
+      const [, status, file] = m
+      const idx = status[0] ?? " "
+      const wt = status[1] ?? " "
+      if (idx === "U" || wt === "U" || (idx === "A" && wt === "A")) {
+        conflicts.push(file)
+      } else if (idx === "?" && wt === "?") {
+        untracked.push(file)
+      } else {
+        if (idx !== " " && idx !== "?") staged.push(idx + " " + file)
+        if (wt !== " " && wt !== "?") unstaged.push(wt + " " + file)
+      }
+    }
+    const parts = []
+    if (staged.length) parts.push("Staged (" + staged.length + "):\n" + staged.join("\n"))
+    if (unstaged.length) parts.push("Unstaged (" + unstaged.length + "):\n" + unstaged.join("\n"))
+    if (untracked.length) parts.push("Untracked (" + untracked.length + "):\n" + untracked.join("\n"))
+    if (conflicts.length) parts.push("Conflicts (" + conflicts.length + "):\n" + conflicts.join("\n"))
+    return truncate(parts.join("\n\n"))
+  },
+}
+
+// ---------------------------------------------------------------- git_log
+
+const gitLogTool = {
+  name: "git_log",
+  description: DESC("git_log"),
+  parameters: {
+    type: "object",
+    properties: {
+      count: { type: "number", description: "Number of commits (default 10)" },
+      path: { type: "string", description: "File or directory (default all)" },
+      oneline: { type: "boolean", description: "One-line-per-commit format (default false)" },
+    },
+  },
+  readonly: true,
+  execute(args, ctx) {
+    const n = args.count ?? 10
+    const isOneline = args.oneline
+    const cmdArgs = isOneline
+      ? ["log", "-" + n, "--oneline"]
+      : ["log", "-" + n, "--format=%h %ad %an %s", "--date=short"]
+    if (args.path) cmdArgs.push("--", args.path)
+    const out = runGit(ctx.cwd, cmdArgs)
+    return truncate(out || "(no commits)")
+  },
+}
+
+// ---------------------------------------------------------------- question
+
+const questionTool = {
+  name: "question",
+  description: DESC("question"),
+  parameters: {
+    type: "object",
+    properties: {
+      question: { type: "string", description: "The question to ask the user" },
+      options: {
+        type: "array",
+        items: { type: "string" },
+        description: "Single-choice options for the user to pick from (optional)",
+      },
+    },
+    required: ["question"],
+  },
+  readonly: true,
+  async execute(args, ctx) {
+    if (!ctx.onQuestion) throw new Error("question tool not supported in this context (no UI to ask)")
+    return ctx.onQuestion(args.question, args.options ?? [])
+  },
+}
+
+/** 执行 git 命令；非 git 仓库 / git 不可用时返回空字符串 */
+function runGit(cwd, cmdArgs) {
+  try {
+    return execFileSync("git", cmdArgs, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/\r/g, "")
+  } catch {
+    return ""
+  }
+}
+
+export { deleteTool, gitDiffTool, gitStatusTool, gitLogTool, questionTool }
+builtinTools.push(deleteTool, gitDiffTool, gitStatusTool, gitLogTool, questionTool)

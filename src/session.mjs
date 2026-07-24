@@ -23,6 +23,8 @@ export function saveSession(agent) {
     updatedAt: Date.now(),
     history: agent.history,
     tasks: agent.tasks ?? [],
+    planMode: agent.planMode ?? false,
+    goal: agent.goal ?? null,
   }
   const p = sessionPath(agent.cwd)
   mkdirSync(dirname(p), { recursive: true })

@@ -4,7 +4,7 @@
  */
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -12,6 +12,8 @@ import { stringWidth, wrapText } from "../src/tui.mjs"
 import { createMemory, put, search, list, remove, putMarkdown, syncDir } from "../src/memory.mjs"
 import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
 import { builtinTools } from "../src/tools.mjs"
+import { loadSkills, formatSkillListing, readSkill } from "../src/skills.mjs"
+import { planTool, goalTool, verifyTool } from "../src/agent.mjs"
 
 // ---------------------------------------------------------------- tui 纯函数
 
@@ -585,10 +587,193 @@ test("checkpoint: 快照 → 改坏 → 回滚完全恢复", async () => {
     await assert.rejects(access(join(dir, "src", "junk.js"))) // 新建文件被删
     assert.equal(summary.deleted, 1)
 
-    // 回滚可逆：回滚前的"改坏"状态也被存成了新快照
-    const cps = await listCheckpoints(dir)
-    assert.ok(cps.length >= 2)
+    const cps2 = await listCheckpoints(dir)
+    assert.ok(cps2.length >= 2)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------- skills 系统
+
+test("skills: load / list / read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-skills-"))
+  try {
+    const skillDir = join(dir, ".thincoder", "skills")
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, "deploy.md"), "# Deploy\nPush to production.")
+    writeFileSync(join(skillDir, "review.md"), "# Review\nCheck the diff.\n## Steps\n- read diff\n- run tests")
+    writeFileSync(join(skillDir, "not-a-skill.txt"), "ignore me")
+
+    const skills = await loadSkills(dir)
+    assert.equal(skills.length, 2)
+    assert.equal(skills[0].name, "deploy")
+    assert.equal(skills[0].description, "Push to production.")
+    assert.equal(skills[1].name, "review")
+
+    const listing = formatSkillListing(skills)
+    assert.ok(listing.includes("deploy"))
+    assert.ok(listing.includes("review"))
+
+    const body = await readSkill(dir, "deploy")
+    assert.equal(body, "# Deploy\nPush to production.")
+    assert.equal(await readSkill(dir, "nonexistent"), null)
+    assert.equal(await readSkill(dir, "../../etc/passwd"), null) // 路径穿越被正则拦截
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("skills: empty dir returns empty", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-skempty-"))
+  try {
+    assert.deepEqual(await loadSkills(dir), [])
+    assert.equal(formatSkillListing([]), "")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- 内建工具
+
+test("plan: enter/exit toggles agent state", async () => {
+  const agent = {}
+  await planTool.execute({ action: "enter" }, { agent })
+  assert.equal(agent.planMode, true)
+  await planTool.execute({ action: "exit" }, { agent })
+  assert.equal(agent.planMode, false)
+})
+
+test("goal: set / cancel", async () => {
+  const agent = {}
+  const r1 = await goalTool.execute({ action: "set", objective: "完成 MCP", criteria: "全部测试通过" }, { agent })
+  assert.ok(r1.includes("完成 MCP"))
+  assert.equal(agent.goal.objective, "完成 MCP")
+  assert.equal(agent.goal.criteria, "全部测试通过")
+
+  const r2 = await goalTool.execute({ action: "cancel" }, { agent })
+  assert.equal(agent.goal, null)
+  assert.ok(r2.includes("cancelled"))
+})
+
+test("verify: git diff stat in mock repo", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-verify-"))
+  const { execSync } = await import("node:child_process")
+  const git = (...a) => execSync(`git ${a.join(" ")}`, { cwd: dir, stdio: "ignore" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "x.js"), "1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    writeFileSync(join(dir, "x.js"), "2\n")
+
+    const agent = { cwd: dir, tasks: [{ title: "改好了", status: "done" }] }
+    const result = await verifyTool.execute({}, { agent })
+    assert.ok(result.includes("x.js"))
+    assert.ok(result.includes("1/1 done"))
+    assert.ok(result.includes("Self-review checklist"))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- delete / git 工具
+
+test("delete: 未跟踪文件可删，跟踪文件拒绝，force 可删跟踪文件", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-del-"))
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir })
+    execFileSync("git", ["config", "user.name", "t"], { cwd: dir })
+    execFileSync("git", ["config", "user.email", "t@t.dev"], { cwd: dir })
+    writeFileSync(join(dir, "tracked.js"), "1\n")
+    writeFileSync(join(dir, "untracked.js"), "2\n")
+    execFileSync("git", ["add", "tracked.js"], { cwd: dir })
+    execFileSync("git", ["commit", "-qm", "init"], { cwd: dir })
+
+    const del = builtinTools.find((t) => t.name === "delete")
+    const ctx = { cwd: dir }
+
+    // 未跟踪文件可删
+    const r1 = await del.execute({ path: "untracked.js" }, ctx)
+    assert.ok(r1.includes("Deleted"))
+    assert.ok(!existsSync(join(dir, "untracked.js")))
+
+    // 跟踪文件拒绝
+    await assert.rejects(() => del.execute({ path: "tracked.js" }, ctx), /git-tracked/)
+
+    // force 可删跟踪文件
+    await del.execute({ path: "tracked.js", force: true }, ctx)
+    assert.ok(!existsSync(join(dir, "tracked.js")))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("git_diff / git_status / git_log: 只读 git 工具", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-git-"))
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir })
+    execFileSync("git", ["config", "user.name", "t"], { cwd: dir })
+    execFileSync("git", ["config", "user.email", "t@t.dev"], { cwd: dir })
+    // 关闭 autocrlf，避免 Windows 下 git 自动转换导致 porcelain 输出格式变化
+    execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: dir })
+    writeFileSync(join(dir, "a.js"), "1\n")
+    execFileSync("git", ["add", "a.js"], { cwd: dir })
+    execFileSync("git", ["commit", "-qm", "first"], { cwd: dir })
+    writeFileSync(join(dir, "a.js"), "2\n")
+    writeFileSync(join(dir, "b.js"), "3\n")
+
+    const ctx = { cwd: dir }
+    const gitDiff = builtinTools.find((t) => t.name === "git_diff")
+    const gitStatus = builtinTools.find((t) => t.name === "git_status")
+    const gitLog = builtinTools.find((t) => t.name === "git_log")
+
+    // git_diff
+    const diff = await gitDiff.execute({}, ctx)
+    assert.ok(diff.includes("a.js"))
+
+    // git_status — 验证文件出现即可（Staged/Unstaged 分类取决于 git 平台行为）
+    const status = await gitStatus.execute({}, ctx)
+    assert.ok(status.includes("a.js"), `missing a.js: ${status}`)
+    assert.ok(status.includes("b.js"), `missing b.js: ${status}`)
+    assert.ok(
+      status.includes("Staged") || status.includes("Unstaged"),
+      `missing Staged/Unstaged label: ${status}`,
+    )
+    assert.ok(status.includes("Untracked"), `missing Untracked: ${status}`)
+
+    // git_log
+    const log = await gitLog.execute({ count: 1 }, ctx)
+    assert.ok(log.includes("first"))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("question: 回调返回用户回答", async () => {
+  const qTool = builtinTools.find((t) => t.name === "question")
+  // 模拟一个直接返回固定回答的 onQuestion
+  const ctx = { cwd: process.cwd(), onQuestion: async (text) => "选方案A" }
+  const result = await qTool.execute({ question: "选哪个？" }, ctx)
+  assert.equal(result, "选方案A")
+})
+
+test("question: 无回调时抛错", async () => {
+  const qTool = builtinTools.find((t) => t.name === "question")
+  const ctx = { cwd: process.cwd() }
+  await assert.rejects(() => qTool.execute({ question: "?" }, ctx), /not supported/)
+})
+
+// ---------------------------------------------------------------- ContinueError + resume 模式
+
+test("runAgent: ContinueError 类属性正确", async () => {
+  const { ContinueError } = await import("../src/agent.mjs")
+  const err = new ContinueError(100)
+  assert.equal(err.name, "ContinueError")
+  assert.equal(err.turn, 100)
+  assert.ok(err instanceof Error)
 })

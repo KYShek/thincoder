@@ -12,13 +12,18 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 
 ## 特性
 
-- **Agent 主循环**：LLM ↔ 工具调用循环，直到任务完成（上限 50 轮防失控）
-- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch`，全部零依赖实现
+- **Agent 主循环**：LLM ↔ 工具调用循环，直到任务完成（上限 100 轮防失控）
+- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch` + MCP，全部零依赖实现
 - **两段式工具调度**：权限确认串行（一个一个问），只读工具并行执行，有副作用工具串行
 - **会话持久化**：退出自动保存，启动自动恢复（按项目目录隔离），`/new` 开始新会话
-- **子 agent 并发**：`subagent` 工具派发独立子任务（隔离上下文，只带回报告），一批多个走并行通道；普通模式子 agent 只读，AUTO 模式全放行
+- **子 agent 并发**：`subagent` 工具派发独立子任务，`role="explore"`（只读搜索）和 `role="coder"`（全套工具；写操作需 AUTO 模式），并发执行；coder 完成后自动提醒主 agent 校验报告
+- **Plan Mode**：`plan` 工具进入规划模式——只读探索 + 架构设计 + 方案展示，用户确认后退出并实现；TUI 状态栏显示 PLAN 标识
 - **AUTO 模式**：`/auto` 或 `chat --auto` 完全授权，长任务免确认，状态栏黄色 AUTO 标识
-- **任务跟踪**：`task` 工具让 agent 拆解多步任务并跟踪进度（pending/in_progress/done），TUI 状态栏实时显示 ▶n/m
+- **任务跟踪**：`task` 工具让 agent 拆解多步任务并跟踪进度（pending/in_progress/done），TUI 状态栏实时显示 ▶n/m；上下文压缩后自动回注
+- **Goal 跟踪**：`goal` 工具设置长期目标，每 ~10 轮自动提醒，跨压缩会话保持
+- **Skills 系统**：`.thincoder/skills/*.md` 按需加载，可复用工作流
+- **质量验证**：`verify` 工具——完成前自查 git diff + task 列表 + 6 项自检清单
+- **MCP 支持**：在 `config.json` 的 `mcp.servers[]` 配 `command` / `args`，启动时自动连接并发现工具
 - **流式 TUI**：裸 ANSI 实现（无 UI 库），对话流 / 流式输出 / 权限确认（y/n/a，a=批准并转 AUTO）/ 翻页 / 输入历史 / 斜杠命令 Tab 补全
 - **上下文压缩**：对话超阈值时自动摘要（保留最早 2 条 + 最近 10 条，中间 LLM 摘要）
 - **三层记忆 + 团队共享**（见下）
@@ -82,7 +87,7 @@ thincoder upgrade
 
 从源码运行：把上面的 `thincoder` 换成 `node bin/thincoder.mjs`。
 
-TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全部模型；`/model <名称>` 直接切换）、`/provider`（增/删 provider、配 key，支持自定义端点）、`/think`（思维模式开关与推理强度）、`/config`（查看配置、`/config key` 配当前 key）、`/distill`（从当前会话提取知识）、`/clear`、`/exit`。输入 `/` 时状态栏实时提示匹配命令。
+TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全部模型；`/model <名称>` 直接切换）、`/provider`（增/删 provider、配 key，支持自定义端点）、`/think`（思维模式开关与推理强度）、`/config`（查看配置、`/config embedkey` 配 embedding key、`/config set` 改参数）、`/distill`（从当前会话提取知识）、`/clear`、`/exit`。输入 `/` 时状态栏实时提示匹配命令。
 
 环境变量：`THINCODER_API_KEY`（或 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`）、`THINCODER_BASE_URL`、`THINCODER_MODEL`、`SILICONFLOW_API_KEY`。
 
@@ -107,7 +112,7 @@ TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全
     "model": "BAAI/bge-m3"
   },
   "agent": {
-    "maxTurns": 50,                             // 工具循环上限
+    "maxTurns": 100,                             // 工具循环上限
     "compactThreshold": 100000                  // 上下文压缩阈值（约 token 数）
   },
   "memory": {
@@ -117,6 +122,15 @@ TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全
       "name": "myteam",
       "repo": "git@github.com:org/team-memory.git"
     }
+  },
+  "mcp": {                                      // 可选：MCP server 列表
+    "servers": [
+      {
+        "name": "filesystem",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      }
+    ]
   }
 }
 ```
@@ -128,13 +142,16 @@ bin/thincoder.mjs   命令入口（tui / chat / memory / sync / distill）
 src/
   provider.mjs      LLM 调用（fetch, SSE 流式, 重试）
   embedding.mjs     向量嵌入（OpenAI 兼容 /v1/embeddings）
-  tools.mjs         9 个内置工具 + readonly 调度标记
-  agent.mjs         主循环 + 两段式工具执行 + 记忆注入
-  context.mjs       token 粗估 + 历史压缩
+  tools.mjs         14 个内置工具 + MCP 包装 + readonly 调度标记
+  mcp.mjs           MCP 客户端（JSON-RPC + stdio transport，零依赖）
+  agent.mjs         主循环 + 两段式工具执行 + plan/task/goal/skill/subagent/verify 工具
+  context.mjs       token 粗估 + 历史压缩 + task 回注
   memory.mjs        记忆核心：三层合并检索（FTS5 + 向量 + RRF）
+  skills.mjs        技能发现/加载（.thincoder/skills/*.md）
   markdown.mjs      条目格式（frontmatter 解析/序列化）
   gitmem.mjs        Team 层 git 同步（clone/pull --rebase/push，系统 git）
   distill.mjs       会话知识提取（候选 + 人工确认）
+  checkpoint.mjs    git patch 快照 / 回滚
   config.mjs        配置加载
   tui.mjs           裸 ANSI 终端 UI（宽字符折行、滚动、权限确认、斜杠命令）
 test/               node:test 离线单测（npm test）
@@ -161,7 +178,8 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 
 ## 路线图
 
-- v3 候选：checkpoint 断点恢复、子 agent 并行、MCP 接入
+- MCP HTTP transport（当前仅 stdio）
+- 更多内置 skills
 
 ## License
 

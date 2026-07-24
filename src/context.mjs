@@ -30,9 +30,16 @@ const SUMMARIZE_PROMPT = `你是一个对话压缩器。把下面的 agent 工�
 工作记录：
 `
 
+/** 压缩后的上下文前缀，告知 agent 发生了什么 */
+const COMPACTION_PREFIX =
+  "[Context was automatically compacted. Below is a summary of earlier work. " +
+  "Trust its conclusions — don't redo what it reports as done — but re-verify " +
+  "transient state (open files, running processes) with tools.]\n\n"
+
 /**
  * 如果历史超长则压缩。返回是否发生了压缩。
  * 只在循环的安全点调用（history 末尾是 user 消息时）。
+ * 压缩后自动回注 task 列表状态。
  */
 export async function compressIfNeeded(agent, threshold) {
   const history = agent.history
@@ -65,12 +72,31 @@ export async function compressIfNeeded(agent, threshold) {
 
   agent.history = [
     ...head,
-    {
-      role: "user",
-      content: `[前文摘要：以下是更早对话的压缩记录]\n${summary.content}`,
-    },
-    { role: "assistant", content: "了解，我会基于这份摘要和最近的对话继续工作。" },
+    { role: "user", content: COMPACTION_PREFIX + summary.content },
+    { role: "assistant", content: "Understood. I'll continue from this summary, re-verifying anything transient." },
     ...tail,
   ]
+
+  // 压缩后回注 task 列表（agent 需要知道自己做到哪了）
+  if (agent.tasks.length > 0) {
+    const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
+    agent.history.push({
+      role: "user",
+      content: `[System reminder: your current task list after compaction:\n${taskSummary}\nContinue from where you left off.]`,
+    })
+  }
+
+  // 重置跟踪计数器（上下文已重建，从头开始计数）
+  agent._turnsSinceTaskUpdate = 0
+  agent._turnsInPlanMode = 0
+
+  // plan mode 中压缩：重新注入 plan 模式引导
+  if (agent.planMode) {
+    agent.history.push({
+      role: "user",
+      content: "[System reminder: plan mode is active. Explore the codebase read-only, design your solution, then call plan with action='exit' to present it for user approval.]",
+    })
+  }
+
   return true
 }
