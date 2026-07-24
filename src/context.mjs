@@ -24,8 +24,10 @@ const KEEP_TAIL = 10 // 最近的工作现场，不能丢
 
 const SUMMARIZE_PROMPT = `你是一个对话压缩器。把下面的 agent 工作记录压缩成一份紧凑的摘要，供后续对话作为上下文使用。
 要求：
+- 用第一人称、现在时书写——这是"我"的交接笔记，延续自己的思路
 - 保留：用户的原始需求、做出的决策、修改过的文件及原因、未解决的问题、下一步计划
 - 丢弃：客套话、重复内容、工具输出的细枝末节
+- 诚实标注不确定项：没有实际验证过的事必须写"未验证"，不要把猜测写成事实
 - 用中文条目式输出，控制在 500 字以内
 
 工作记录：
@@ -34,8 +36,8 @@ const SUMMARIZE_PROMPT = `你是一个对话压缩器。把下面的 agent 工�
 /** 压缩后的上下文前缀，告知 agent 发生了什么 */
 const COMPACTION_PREFIX =
   "[Context was automatically compacted. Below is a summary of earlier work. " +
-  "Trust its conclusions — don't redo what it reports as done — but re-verify " +
-  "transient state (open files, running processes) with tools.]\n\n"
+  "Treat it as notes, not proof — trust its conclusions (don't redo what it reports as done) " +
+  "but re-verify transient state (open files, running processes) with tools before relying on them.]\n\n"
 
 /**
  * 如果历史超长则压缩。返回是否发生了压缩。
@@ -62,7 +64,9 @@ export async function compressIfNeeded(agent, threshold) {
   const serialized = middle
     .map((m) => {
       const toolNote = m.tool_calls ? ` [调用了工具: ${m.tool_calls.map((t) => t.function.name).join(", ")}]` : ""
-      const content = typeof m.content === "string" ? m.content.slice(0, 2000) : ""
+      // user 消息放宽到 8000：用户粘贴的长需求被切掉会让摘要丢失原始意图；tool/assistant 2000 足够
+      const cap = m.role === "user" ? 8000 : 2000
+      const content = typeof m.content === "string" ? m.content.slice(0, cap) : ""
       return `[${m.role}]${toolNote} ${content}`
     })
     .join("\n")
@@ -71,22 +75,16 @@ export async function compressIfNeeded(agent, threshold) {
     messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
   })
 
-  // 摘要正文内嵌 task 快照（对齐 kimi-code 的 postProcessSummary）——
-  // 否则二次压缩时 task 列表会随旧提醒消息一起被摘要器丢掉
-  let compacted = COMPACTION_PREFIX + summary.content
-  if (agent.tasks.length > 0) {
-    const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
-    compacted += `\n\n## Task List\n${taskSummary}`
-  }
-
   agent.history = [
     ...head,
-    { role: "user", content: compacted },
+    { role: "user", content: COMPACTION_PREFIX + summary.content },
     { role: "assistant", content: "Understood. I'll continue from this summary, re-verifying anything transient." },
     ...tail,
   ]
 
-  // 压缩后回注 task 列表（agent 需要知道自己做到哪了）
+  // 压缩后回注 task 列表（agent 需要知道自己做到哪了）。
+  // 单一信息源：每次压缩都重新注入，始终在历史末尾、内容最新——
+  // 不再嵌入摘要正文（会与这里重复且逐渐过时）
   if (agent.tasks.length > 0) {
     const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
     agent.history.push({

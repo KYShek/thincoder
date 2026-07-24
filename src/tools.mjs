@@ -15,7 +15,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const DESC = (name) => readFileSync(join(__dirname, "tools", `${name}.md`), "utf8")
 
 const MAX_READ_LINES = 2000
-const MAX_OUTPUT_CHARS = 50_000
+// 输出上限只是内存安全阀：超过 16k 的输出由 agent 层 offload 整体落盘（全量保留、预览+路径回喂），
+// 这里截断必须远高于落盘阈值，否则被截掉的内容在落盘前就永远丢了
+const MAX_OUTPUT_CHARS = 200_000
 const BASH_TIMEOUT_MS = 120_000
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage"])
 
@@ -170,6 +172,8 @@ const bashTool = {
       // 编码嗅探：cmd 自带消息是 GBK，git/node 等程序是 UTF-8，平台判断不了。
       // 策略：纯 ASCII 段两种编码一致，直接透传不判定；遇到高位字节才用
       // fatal UTF-8 试解（容忍尾部 1~3 字节截断），失败则判 GBK；一经判定不再变更。
+      // 已知边界：GBK 字节流极低概率恰好构成合法 UTF-8 序列，会误判为 UTF-8 产生乱码。
+      // 更严谨的做法是 chcp 探测控制台代码页，但当前策略覆盖 99.9% 场景，不值得那份复杂度。
       let decoder = null
       let pending = Buffer.alloc(0)
       const feed = (d, flush = false) => {

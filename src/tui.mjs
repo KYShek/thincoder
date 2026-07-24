@@ -782,15 +782,16 @@ export async function startTUI(agent, opts = {}) {
     })
   }
 
-  /** 权限请求的关键信息（按工具定制），返回行数组 */
+  /** 权限请求的关键信息（按工具定制），返回行数组。name 可能带子 agent 前缀（"coder/bash"），取基名匹配 */
   function formatPermission(name, args) {
     const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(共 ${s.length} 字符)` : s)
-    if (name === "bash") return cap(args.command ?? "").split("\n")
-    if (name === "write") {
+    const base = name.includes("/") ? name.split("/").pop() : name
+    if (base === "bash") return cap(args.command ?? "").split("\n")
+    if (base === "write") {
       // 批准写文件必须看得到要写什么：路径 + 内容预览
       return [`${args.path}（写入 ${(args.content ?? "").length} 字符）`, ...cap(args.content ?? "", 1000).split("\n")]
     }
-    if (name === "edit") {
+    if (base === "edit") {
       // 简易 diff：- 旧内容 / + 新内容
       return [
         `${args.path}`,
@@ -799,9 +800,9 @@ export async function startTUI(agent, opts = {}) {
         ...cap(args.new_string ?? "", 500).split("\n").map((l) => `+ ${l}`),
       ]
     }
-    if (name === "delete") return [`${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`]
-    if (name === "subagent") return cap(args.task ?? "", 500).split("\n")
-    if (name === "memory_put") return [`[${args.type ?? ""}] ${args.title ?? ""}`, ...cap(args.content ?? "", 500).split("\n")]
+    if (base === "delete") return [`${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`]
+    if (base === "subagent") return cap(args.task ?? "", 500).split("\n")
+    if (base === "memory_put") return [`[${args.type ?? ""}] ${args.title ?? ""}`, ...cap(args.content ?? "", 500).split("\n")]
     return [cap(summarize(args), 300)]
   }
 
@@ -947,14 +948,15 @@ export async function startTUI(agent, opts = {}) {
         const sub = rest[0]
         if (sub === "set") {
           const text = rest.slice(1).join(" ")
-          if (!text) { pushLine("用法: /goal set <目标描述>（; 分隔完成条件）", C.error); return }
+          if (!text) { pushLine("用法: /goal set <目标描述>（; 分隔完成条件，必须是可机器检查的验证手段）", C.error); return }
           const semi = text.indexOf("；") >= 0 ? "；" : text.indexOf(";") >= 0 ? ";" : null
           const objective = semi ? text.slice(0, semi).trim() : text.trim()
           const criteria = semi ? text.slice(semi + 1).trim() : ""
-          agent.goal = { objective, criteria, setAt: Date.now() }
+          agent.goal = { objective, criteria, setAt: Date.now(), status: "active", turnsUsed: 0, _blockTally: null }
           pushLabel(`❯ Goal`, ansi.bold + C.warn)
           pushLine(`目标已设置: ${objective}`, C.tool)
           if (criteria) pushLine(`  完成条件: ${criteria}`, C.dim)
+          else pushLine(`  ⚠ 未完成条件——agent 用 goal set 设立时会被要求补上可验证的完成条件`, C.warn)
           return
         }
         if (sub === "cancel") {
@@ -964,10 +966,11 @@ export async function startTUI(agent, opts = {}) {
           return
         }
         if (agent.goal) {
+          const statusText = { active: "进行中", complete: "已完成", blocked: "已阻塞" }[agent.goal.status] ?? agent.goal.status
           pushLabel(`❯ Goal`, ansi.bold + C.warn)
           pushLine(`目标: ${agent.goal.objective}`, C.tool)
           if (agent.goal.criteria) pushLine(`  完成条件: ${agent.goal.criteria}`, C.dim)
-          pushLine(`  设置于: ${new Date(agent.goal.setAt).toLocaleString()}`, C.dim)
+          pushLine(`  状态: ${statusText ?? "进行中"} │ 已用轮数: ${agent.goal.turnsUsed ?? 0} │ 设置于: ${new Date(agent.goal.setAt).toLocaleString()}`, C.dim)
           pushLine("操作: /goal set <描述> 覆盖 | /goal cancel 取消", C.dim)
         } else {
           pushLabel(`❯ Goal`, ansi.bold + C.dim)

@@ -50,13 +50,14 @@ export async function loadSkills(cwd) {
 /**
  * 生成技能列表文本，注入 system prompt。
  * 最多 3 个（占位少），超过则标 "... and N more"。
+ * 以 DISREGARD 开头：清单刷新（技能增删）后旧清单自动作废，无需删历史（借鉴 kimi-code）。
  */
 export function formatSkillListing(skills) {
   if (skills.length === 0) return ""
   const listed = skills.slice(0, 3)
   const lines = listed.map((s) => `- **${s.name}**: ${s.description}`)
   if (skills.length > 3) lines.push(`  ... and ${skills.length - 3} more`)
-  return "Available skills (use the skill tool to load one):\n" + lines.join("\n")
+  return "DISREGARD any earlier skill listings. Current available skills (use the skill tool to load one):\n" + lines.join("\n")
 }
 
 /**

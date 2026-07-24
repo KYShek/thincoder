@@ -28,11 +28,13 @@ bin/thincoder.mjs   命令入口与分发（chat/memory/sync/distill/reindex/upg
 src/agent.mjs       主循环 + 自律工具（task/plan/goal/verify/subagent/skill）
                     + 提醒注入（task/goal/plan/模式切换）+ 完成守卫
 src/provider.mjs    LLM 调用（SSE、reasoning_content、usage、重试）
-src/context.mjs     上下文压缩（摘要内嵌 ## Task List 快照，压缩后回注状态）
+src/context.mjs     上下文压缩（压缩后回注 task/plan 状态）
 src/tui.mjs         裸 ANSI TUI（对话区 / todo 面板 / 输入框 / 状态栏）
 src/tools.mjs       14 个文件/网络/git 工具；描述存 src/tools/*.md
 src/memory.mjs      三层记忆（personal sqlite / project / team git）+ FTS5 + 向量 RRF
-src/SYSTEM_PROMPT.md + src/{explore,coder}-overlay.md   提示词
+src/SYSTEM_PROMPT.md   核心提示词（主/子 agent 通用）
+src/main-overlay.md    主 agent 专属条款（subagent/goal/verify/skill/plan mode——子 agent 没有这些工具）
+src/{explore,coder,plan}-overlay.md   子 agent 角色文本（组装时置于核心规则之前，角色身份优先）
 test/units.test.mjs 全部离线测试（含 mock LLM server 驱动的 runAgent 端到端）
 ```
 
@@ -40,8 +42,9 @@ test/units.test.mjs 全部离线测试（含 mock LLM server 驱动的 runAgent 
 
 - **前缀缓存**：system prompt 必须跨 run 逐字节稳定——只能放按 cwd/会话稳定的内容（session start 时间戳每会话固定一次）；每轮变化的内容（如记忆注入）必须走独立 user 上下文消息。往 system prompt 加动态内容会打破 DeepSeek context caching，并有回归测试拦截
 - **thinking 回传**：带 tool_calls 的 assistant 消息必须携带 `reasoning_content` 入 history（DeepSeek 要求，缺失会 400）
-- **提醒注入**统一格式：`role: "user"` 的 `[System reminder: ...]`，文本结尾要求"不向用户提及此提醒"；task 闲置提醒仅顶层 agent（depth=0）注入
-- **提示词改动**：`SYSTEM_PROMPT.md` 与 `src/tools/*.md` 改完后跑 `npm test`；涉及机制变化的同步 `../thincoder-design/ARCHITECTURE.md` 的「任务规划与自律机制」一节
+- **提醒注入**统一格式：`role: "user"` 的 `[System reminder: ...]`，文本结尾要求"不向用户提及此提醒"；task 闲置提醒仅顶层 agent（depth=0）注入；**用户/外部文本注入前必须 XML 转义 + `<untrusted_*>` 标签包裹**（防提示注入）
+- **工具结果**超 16k 字符自动落盘 `~/.thincoder/tool-results/`（易失品），模型只见预览 + 路径；新增工具不必自己截断超长输出
+- **提示词改动**：提示词分层组装——核心规则（SYSTEM_PROMPT.md）两层通用，主 agent 追加 main-overlay.md，子 agent 用角色 overlay 开头 + 核心规则；改完跑 `npm test`（有分层断言），涉及机制变化的同步 `../thincoder-design/ARCHITECTURE.md` 的「任务规划与自律机制」一节
 
 ## 提交与发布
 

@@ -354,14 +354,16 @@ switch (command) {
   case undefined: {
     const agent = await makeAgent()
     const config = loadConfig()
-    // 恢复上次的会话（同一项目目录）
-    const { loadSession } = await import("../src/session.mjs")
+    // 恢复上次的会话（同一项目目录）；provider 按保存的名字切回（用户上次可能换过模型）
+    const { loadSession, applySession } = await import("../src/session.mjs")
     const restored = loadSession(process.cwd())
     if (restored) {
-      agent.history = restored.history
-      agent.tasks = restored.tasks ?? []
-      agent.planMode = restored.planMode ?? false
-      agent.goal = restored.goal ?? null
+      const switched = applySession(agent, restored)
+      if (switched && agent.config?.agent?.compactThresholdAuto) {
+        // 压缩阈值跟模型走（与 TUI 切换 provider 时的处理一致）
+        const { resolveCompactThreshold } = await import("../src/config.mjs")
+        agent.config.agent.compactThreshold = resolveCompactThreshold(null, agent.provider.model).value
+      }
     }
     // MCP 连接失败在 TUI alt-buffer 下 stderr 不可见，注入为下一条 user 消息后的提醒
     if (agent._mcpWarnings?.length) {
@@ -496,19 +498,20 @@ function summarize(toolArgs) {
   return s.length > 120 ? s.slice(0, 120) + "..." : s
 }
 
-/** 权限请求的关键信息（按工具定制），与 TUI 的 formatPermission 对齐 */
+/** 权限请求的关键信息（按工具定制），与 TUI 的 formatPermission 对齐。name 可能带子 agent 前缀（"coder/bash"），取基名匹配 */
 function formatPermission(name, args) {
   const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(共 ${s.length} 字符)` : s)
-  if (name === "bash") return cap(args.command ?? "")
-  if (name === "write") return `${args.path}（写入 ${(args.content ?? "").length} 字符）\n${cap(args.content ?? "", 1000)}`
-  if (name === "edit") {
+  const base = name.includes("/") ? name.split("/").pop() : name
+  if (base === "bash") return cap(args.command ?? "")
+  if (base === "write") return `${args.path}（写入 ${(args.content ?? "").length} 字符）\n${cap(args.content ?? "", 1000)}`
+  if (base === "edit") {
     const oldLines = cap(args.old_string ?? "", 500).split("\n").map((l) => `- ${l}`).join("\n")
     const newLines = cap(args.new_string ?? "", 500).split("\n").map((l) => `+ ${l}`).join("\n")
     return `${args.path}\n${oldLines}\n  ↓\n${newLines}`
   }
-  if (name === "delete") return `${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`
-  if (name === "subagent") return cap(args.task ?? "", 500)
-  if (name === "memory_put") return `[${args.type ?? ""}] ${args.title ?? ""}\n${cap(args.content ?? "", 500)}`
+  if (base === "delete") return `${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`
+  if (base === "subagent") return cap(args.task ?? "", 500)
+  if (base === "memory_put") return `[${args.type ?? ""}] ${args.title ?? ""}\n${cap(args.content ?? "", 500)}`
   return cap(summarize(args), 300)
 }
 

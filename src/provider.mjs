@@ -111,11 +111,7 @@ async function readSSE(response, { onToken, onReasoning }) {
   const decoder = new TextDecoder()
   let buffer = ""
 
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true })
-    const lines = buffer.split("\n")
-    buffer = lines.pop() // 最后半行留到下一轮
-
+  const processLines = (lines) => {
     for (const line of lines) {
       if (!line.startsWith("data:")) continue
       const data = line.slice(5).trim()
@@ -151,6 +147,16 @@ async function readSSE(response, { onToken, onReasoning }) {
       }
     }
   }
+
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true })
+    const lines = buffer.split("\n")
+    buffer = lines.pop() // 最后半行留到下一轮
+    processLines(lines)
+  }
+  // flush 解码器内部残留（流以不完整 UTF-8 序列截断时不丢尾部字节），并处理没有换行结尾的尾行
+  buffer += decoder.decode()
+  processLines(buffer.split("\n"))
   return result
 }
 

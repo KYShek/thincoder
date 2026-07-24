@@ -19,7 +19,7 @@ export function saveSession(agent) {
   const data = {
     version: 2,
     cwd: agent.cwd,
-    activeProvider: agent.provider?.name,
+    activeProvider: agent.activeProvider ?? agent.provider?.name,
     updatedAt: Date.now(),
     history: agent.history,
     tasks: agent.tasks ?? [],
@@ -43,6 +43,27 @@ export function loadSession(cwd) {
   } catch {
     return null
   }
+}
+
+/**
+ * 把恢复的会话数据应用到 agent，返回是否切换了 provider。
+ * 用户在会话中可能用 /provider 换过模型——恢复时按保存的名字切回去
+ * （配置可能已更新，从 agent.providers 取最新条目而非保存时快照）。
+ */
+export function applySession(agent, data) {
+  agent.history = data.history
+  agent.tasks = data.tasks ?? []
+  agent.planMode = data.planMode ?? false
+  agent.goal = data.goal ?? null
+  if (data.activeProvider && data.activeProvider !== agent.activeProvider) {
+    const p = agent.providers?.find((pr) => pr.name === data.activeProvider)
+    if (p) {
+      agent.provider = { ...p }
+      agent.activeProvider = p.name
+      return true
+    }
+  }
+  return false
 }
 
 /** 清空会话（/new） */
