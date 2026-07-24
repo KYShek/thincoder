@@ -1469,11 +1469,11 @@ test("runAgent: 目录树注入仅顶层（depth 0 有，depth 1 无）", async 
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
     const main = createAgent({ provider, tools: [], config: {}, cwd })
     await runAgent(main, "测试")
-    assert.ok(main.history.some((m) => typeof m.content === "string" && m.content.includes("Working directory layout") && m.content.includes("marker-file.js")))
+    assert.ok(main.history.some((m) => typeof m.content === "string" && m.content.includes("System reminder: working directory snapshot") && m.content.includes("marker-file.js")))
 
     const child = createAgent({ provider, tools: [], config: {}, cwd })
     await runAgent(child, "测试", {}, { depth: 1 })
-    assert.ok(!child.history.some((m) => typeof m.content === "string" && m.content.includes("Working directory layout")))
+    assert.ok(!child.history.some((m) => typeof m.content === "string" && m.content.includes("System reminder: working directory snapshot")))
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()

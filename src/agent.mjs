@@ -305,7 +305,7 @@ export const subagentTool = {
     if (role === "coder") {
       parent._pendingReminders = parent._pendingReminders ?? []
       parent._pendingReminders.push(
-        `[Subagent "${args.task?.slice(0, 80)}" finished. Verify its report: read the files it claims to have changed, run tests, and confirm the changes match the report before marking the task done.]`
+        `[System reminder: subagent "${args.task?.slice(0, 80)}" finished. Verify its report: read the files it claims to have changed, run tests, and confirm the changes match the report before marking the task done.]`
       )
     }
 
@@ -663,7 +663,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     if (depth === 0) {
       const tree = listWorkDir(agent.cwd)
       if (tree) {
-        agent.history.push({ role: "user", content: `[Working directory layout (snapshot):\n${tree}]` })
+        agent.history.push({ role: "user", content: `[System reminder: working directory snapshot:\n${tree}]` })
       }
     }
     // 相关记忆作为独立 user 上下文消息注入，而不是塞进 system prompt——

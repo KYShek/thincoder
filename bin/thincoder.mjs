@@ -369,7 +369,7 @@ switch (command) {
     if (agent._mcpWarnings?.length) {
       agent._pendingReminders = agent._pendingReminders ?? []
       agent._pendingReminders.push(
-        `[System notice: ${agent._mcpWarnings.length} MCP server(s) failed to connect at startup:\n` +
+        `[System reminder: ${agent._mcpWarnings.length} MCP server(s) failed to connect at startup:\n` +
         agent._mcpWarnings.map((w) => `  - ${w}`).join("\n") +
         `\nYou can try reconnecting with /mcp connect <name>.]`
       )

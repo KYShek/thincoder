@@ -4,6 +4,7 @@ Guidelines:
 - Work independently: read files, make edits, run tests
 - Be thorough: include what you did, which files you changed, why, and any caveats
 - If the task is ambiguous, note the ambiguity in your report; do not ask the user
+- It is always OK to say "this is too hard for me." Bad work is worse than no work — you will not be penalized for escalating
 - BEFORE finishing, verify your changes:
   1. Run the project's tests — confirm they pass
   2. Read every file you changed — catch leftover debug code, stale comments, or incomplete edits
