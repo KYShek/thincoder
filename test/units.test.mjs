@@ -794,18 +794,23 @@ function mockLLM(script) {
         const reasoningFrame = step.reasoning
           ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: step.reasoning } }] })}\n\n`
           : ""
+        const usageFrame = step.usage
+          ? `data: ${JSON.stringify({ choices: [], usage: step.usage })}\n\n`
+          : ""
         let frames
         if (step.toolCall) {
           frames =
             reasoningFrame +
             `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${i}`, function: { name: step.toolCall.name, arguments: step.toolCall.arguments ?? "{}" } }] } }] })}\n\n` +
             `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\n` +
+            usageFrame +
             `data: [DONE]\n\n`
         } else {
           frames =
             reasoningFrame +
             `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: step.content } }] })}\n\n` +
             `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+            usageFrame +
             `data: [DONE]\n\n`
         }
         res.writeHead(200, { "Content-Type": "text/event-stream" })
@@ -1076,6 +1081,50 @@ test("runAgent: 上下文压缩时触发 onCompress 回调", async () => {
     const out = await runAgent(agent, "继续", { onCompress: () => compressed++ })
     assert.equal(out, "done")
     assert.equal(compressed, 1)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: onUsage 回调透传 token 用量（含缓存命中字段）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const usage = { prompt_tokens: 1000, completion_tokens: 50, prompt_cache_hit_tokens: 800, prompt_cache_miss_tokens: 200 }
+  const { server, port } = await mockLLM([{ content: "答", usage }])
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-usage-test-"))
+    const agent = createAgent({ provider, tools: [], config: {}, cwd })
+    let captured = null
+    await runAgent(agent, "测试", { onUsage: (u) => (captured = u) })
+    assert.deepEqual(captured, usage)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: 子 agent（depth>0）不注入 task 闲置提醒", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const noop = {
+    name: "noop",
+    description: "noop",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "ok",
+  }
+  const script = [...Array.from({ length: 11 }, () => ({ toolCall: { name: "noop" } })), { content: "完成" }]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-depth-test-"))
+    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
+    const out = await runAgent(agent, "测试任务", {}, { depth: 1 })
+    assert.equal(out, "完成")
+    const reminders = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("no task list is being tracked"),
+    )
+    assert.equal(reminders.length, 0) // 子 agent 生命周期短，不打扰
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()

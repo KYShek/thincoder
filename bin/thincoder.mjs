@@ -170,6 +170,8 @@ switch (command) {
       }
     }
     if (auto) agent.autoApprove = true
+    // 累计 token 用量，结束时输出到 stderr（不污染 stdout 管道）
+    const usageTotal = { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }
     try {
       await runAgent(agent, prompt, {
         onToken: (text) => process.stdout.write(text),
@@ -182,9 +184,25 @@ switch (command) {
         },
         onToolOutput: (name, chunk) => process.stderr.write(chunk),
         onCompress: () => console.error(`\n[context] 上下文过长，已自动压缩（早期对话由 LLM 摘要）`),
+        onTaskUpdate: (items) => {
+          const done = items.filter((i) => i.status === "done").length
+          const current = items.find((i) => i.status === "in_progress")
+          console.error(`[task] ${done}/${items.length}${current ? ` ▶ ${current.title}` : ""}`)
+        },
+        onUsage: (usage) => {
+          usageTotal.prompt += usage.prompt_tokens ?? 0
+          usageTotal.completion += usage.completion_tokens ?? 0
+          usageTotal.cacheHit += usage.prompt_cache_hit_tokens ?? 0
+          usageTotal.cacheMiss += usage.prompt_cache_miss_tokens ?? 0
+        },
         onPermissionRequest: (name, toolArgs) => (agent.autoApprove ? true : askPermission(name, toolArgs)),
       })
       process.stdout.write("\n")
+      if (usageTotal.prompt > 0) {
+        const cacheTotal = usageTotal.cacheHit + usageTotal.cacheMiss
+        const hitPart = cacheTotal > 0 ? ` cache-hit ${Math.round((usageTotal.cacheHit / cacheTotal) * 100)}%` : ""
+        console.error(`[usage] prompt ${usageTotal.prompt} + completion ${usageTotal.completion}${hitPart}`)
+      }
     } catch (error) {
       // 用 name 判断而非 instanceof：不依赖"与 runAgent 同一个模块实例"这一隐式约定
       if (error.name === "ContinueError") {
@@ -478,6 +496,22 @@ function summarize(toolArgs) {
   return s.length > 120 ? s.slice(0, 120) + "..." : s
 }
 
+/** 权限请求的关键信息（按工具定制），与 TUI 的 formatPermission 对齐 */
+function formatPermission(name, args) {
+  const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(共 ${s.length} 字符)` : s)
+  if (name === "bash") return cap(args.command ?? "")
+  if (name === "write") return `${args.path}（写入 ${(args.content ?? "").length} 字符）\n${cap(args.content ?? "", 1000)}`
+  if (name === "edit") {
+    const oldLines = cap(args.old_string ?? "", 500).split("\n").map((l) => `- ${l}`).join("\n")
+    const newLines = cap(args.new_string ?? "", 500).split("\n").map((l) => `+ ${l}`).join("\n")
+    return `${args.path}\n${oldLines}\n  ↓\n${newLines}`
+  }
+  if (name === "delete") return `${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`
+  if (name === "subagent") return cap(args.task ?? "", 500)
+  if (name === "memory_put") return `[${args.type ?? ""}] ${args.title ?? ""}\n${cap(args.content ?? "", 500)}`
+  return cap(summarize(args), 300)
+}
+
 /** 权限确认：TTY 下交互询问 y/n；非交互环境默认拒绝（安全优先） */
 async function askPermission(name, toolArgs) {
   if (!process.stdin.isTTY) {
@@ -487,7 +521,7 @@ async function askPermission(name, toolArgs) {
   const rl = createInterface({ input: process.stdin, output: process.stderr })
   try {
     const answer = await new Promise((resolve) => {
-      rl.question(`\n[allow?] ${name} ${summarize(toolArgs)} (y/N) `, resolve)
+      rl.question(`\n[allow?] ${name}\n${formatPermission(name, toolArgs)}\n(y/N) `, resolve)
     })
     return answer.trim().toLowerCase() === "y"
   } finally {

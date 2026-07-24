@@ -319,7 +319,7 @@ export const goalTool = {
   async execute(args, ctx) {
     if (args.action === "cancel") {
       ctx.agent.goal = null
-      return "Goal cancelled."
+      return "Goal cancelled. If the goal was blocked or impossible, explain why in your next message — the user can clarify, adjust scope, or confirm cancellation."
     }
     if (!args.objective) return "Error: 'objective' required for 'set' action."
     ctx.agent.goal = {
@@ -572,6 +572,8 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       onReasoning: callbacks.onReasoning,
       signal,
     })
+    // token 用量（含 DeepSeek 缓存命中/未命中）透传给 UI 层展示
+    if (response.usage) callbacks.onUsage?.(response.usage)
 
     // 无工具调用：最终回答，收尾
     if (response.toolCalls.length === 0) {
@@ -640,9 +642,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       })
     }
 
-    // 每 10 轮注入 task 提醒：不管有没有建列表——
+    // 每 10 轮注入 task 提醒（仅顶层：子 agent 生命周期短、任务单一，提醒建表纯浪费 token）：
     // 有未完成项催更新；从未建列表则建议为多步工作建一个（对齐 kimi-code 的闲置提醒）
-    if (agent._turnsSinceTaskUpdate >= 10) {
+    if (depth === 0 && agent._turnsSinceTaskUpdate >= 10) {
       const hasIncomplete = agent.tasks.some((t) => t.status !== "done")
       if (agent.tasks.length > 0 && hasIncomplete) {
         const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")

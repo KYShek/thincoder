@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream"
 import { basename } from "node:path"
 import { existsSync, readFileSync } from "node:fs"
 import { runAgent, ContinueError } from "./agent.mjs"
+import { estimateTokens } from "./context.mjs"
 import { saveSession, clearSession } from "./session.mjs"
 import { PROVIDER_PRESETS as PRESETS } from "./config.mjs"
 import { closeAllMcp } from "./mcp.mjs"
@@ -144,11 +145,29 @@ function renderTable(block, width) {
     widths[widest]--
   }
 
-  const fmtRow = (cells) =>
-    "│ " + cells.map((c, i) => padByWidth(sliceByWidth(c, widths[i]), widths[i])).join(" │ ") + " │"
+  // 单元格渲染：sliceByWidth 截断（表头单行），padByWidth 补齐
+  const fmtCell = (text, ci) => padByWidth(sliceByWidth(text, widths[ci]), widths[ci])
+  const fmtRow = (cells) => "│ " + cells.map((c, i) => fmtCell(c, i)).join(" │ ") + " │"
+
+  // 分隔线
   const separator = "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤"
 
-  return [fmtRow(rows[0]), separator, ...rows.slice(2).map(fmtRow)]
+  const out = []
+  // 表头：单行截断（表头通常是短标签，折行不如截断直观）
+  out.push(fmtRow(rows[0]))
+  out.push(separator)
+
+  // 数据行：过长单元格按列宽折行，一个逻辑行可能对应多条显示行
+  for (let r = 2; r < rows.length; r++) {
+    // wrapText 返回按 width 折行后的行数组，保留内部 \n
+    const wrapped = rows[r].map((cell, ci) => wrapText(cell, widths[ci]))
+    const height = Math.max(...wrapped.map((lines) => lines.length))
+    for (let lineIdx = 0; lineIdx < height; lineIdx++) {
+      out.push(fmtRow(wrapped.map((lines) => lines[lineIdx] ?? "")))
+    }
+  }
+
+  return out
 }
 
 /** 输入区布局：把输入缓冲折行，同时算出光标的 (行, 列) 位置（显示宽度） */
@@ -234,7 +253,9 @@ export async function startTUI(agent, opts = {}) {
     question: null, // { text, options, resolve } — agent 的 question 工具回调
     picker: null, // 模型选择器 { entries, lines, index, scroll, selectedLine }
     wizard: null, // 首次配置向导 { step, index, scroll, selectedLine, fields, error, lines }
-    tasks: [], // task 工具的任务列表（状态栏显示进度）
+    tasks: agent.tasks ?? [], // task 工具的任务列表（状态栏显示进度）；会话恢复时直接带上
+    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }, // 累计 token 用量（状态栏显示）
+    ctxCache: { len: -1, tokens: 0 }, // 上下文占用估算缓存（estimateTokens 是 O(n)，history 变长才重算）
     reasoning: "", // 思考流缓冲（暗色展示）
     completion: null, // Tab 补全状态 { candidates, index }
     toolStreams: {}, // 各工具的实时输出（按工具名隔离，并行工具互不串扰）
@@ -451,10 +472,10 @@ export async function startTUI(agent, opts = {}) {
       for (let i = shown.length; i < winH; i++) out.push(ansi.clearLine)
     }
 
-    // todo 面板（对话区与输入框之间）：▶ in_progress / ✓ done / ○ pending
+    // todo 面板（对话区与输入框之间）：▶ in_progress / ✓ done(删除线) / ○ pending
     for (const t of visibleTasks) {
       const mark = t.status === "done" ? "✓" : t.status === "in_progress" ? "▶" : "○"
-      const color = t.status === "done" ? C.dim : t.status === "in_progress" ? C.tool : C.text
+      const color = t.status === "done" ? `${C.dim}${ESC}[9m` : t.status === "in_progress" ? C.tool : C.text
       out.push(`${color} ${mark} ${sliceByWidth(t.title, cols - 4)}${ansi.reset}${ansi.clearLine}`)
     }
 
@@ -533,10 +554,28 @@ export async function startTUI(agent, opts = {}) {
       const taskHint = state.tasks.length > 0
         ? ` │ ▶${state.tasks.filter((t) => t.status === "done").length}/${state.tasks.length}`
         : ""
+      // token 用量：↑输入 ↓输出 + 缓存命中率（DeepSeek usage 带 prompt_cache_hit/miss_tokens）
+      const tk = state.tokens
+      const fmtK = (n) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
+      const cacheTotal = tk.cacheHit + tk.cacheMiss
+      const tokenHint = tk.prompt > 0
+        ? ` │ ↑${fmtK(tk.prompt)} ↓${fmtK(tk.completion)}${cacheTotal > 0 ? ` hit${Math.round((tk.cacheHit / cacheTotal) * 100)}%` : ""}`
+        : ""
       const elapsed = state.processing ? ` ${Math.floor((Date.now() - state.processingStarted) / 1000)}s` : ""
       const toolHint = state.currentTool ? ` ${state.currentTool}…` : ""
       const statusText = state.processing ? `${state.status}${toolHint}${elapsed}` : state.status
-      statusLine = ` ${statusText}${taskHint}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
+      // 上下文利用率：占压缩阈值百分比（到 100% 触发压缩；≥80% 变黄提醒该收尾或 /new）
+      if (state.ctxCache.len !== agent.history.length) {
+        state.ctxCache = { len: agent.history.length, tokens: estimateTokens(agent.history) }
+      }
+      const ctxThreshold = agent.config?.agent?.compactThreshold ?? 100_000
+      const ctxPct = Math.round((state.ctxCache.tokens / ctxThreshold) * 100)
+      const ctxHint = ctxPct > 0
+        ? ctxPct >= 80
+          ? ` │ ${ansi.reset}${C.warn}ctx ${ctxPct}%${ansi.reset}${ansi.dim}`
+          : ` │ ctx ${ctxPct}%`
+        : ""
+      statusLine = ` ${statusText}${taskHint}${tokenHint}${ctxHint}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
     }
     const autoBanner = agent.autoApprove ? `${C.warn} AUTO${ansi.reset}${ansi.dim}│` : ""
     const planBanner = agent.planMode ? `${C.tool} PLAN${ansi.reset}${ansi.dim}│` : ""
@@ -643,10 +682,18 @@ export async function startTUI(agent, opts = {}) {
       onCompress: () => {
         pushLine("  [context] 上下文过长，已自动压缩（早期对话由 LLM 摘要，任务状态保留）", C.warn)
       },
+      onUsage: (usage) => {
+        state.tokens.prompt += usage.prompt_tokens ?? 0
+        state.tokens.completion += usage.completion_tokens ?? 0
+        state.tokens.cacheHit += usage.prompt_cache_hit_tokens ?? 0
+        state.tokens.cacheMiss += usage.prompt_cache_miss_tokens ?? 0
+      },
       onTaskUpdate: (items) => {
         state.tasks = items
         const done = items.filter((i) => i.status === "done").length
-        pushLine(`  [task] ${done}/${items.length}`, C.dim)
+        // 留痕带上当前任务标题：回看历史时知道进行到哪一项
+        const current = items.find((i) => i.status === "in_progress")
+        pushLine(`  [task] ${done}/${items.length}${current ? ` ▶ ${current.title}` : ""}`, C.dim)
         render()
       },
     }
@@ -725,8 +772,9 @@ export async function startTUI(agent, opts = {}) {
       return Promise.resolve(true)
     }
     // 把关键参数摆出来：批什么要让人看明白
+    // 内容行用警告色——与正常输出（白）区分，滚动回看也能认出这是待审批内容
     pushLabel(`❯ 权限请求`, ansi.bold + C.warn)
-    for (const line of formatPermission(name, args)) pushLine(`  ${line}`, C.text)
+    for (const line of formatPermission(name, args)) pushLine(`  ${line}`, C.warn)
     return new Promise((resolve) => {
       state.permission = { name, args, resolve }
       state.status = `Waiting: ${name}`
@@ -738,10 +786,22 @@ export async function startTUI(agent, opts = {}) {
   function formatPermission(name, args) {
     const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(共 ${s.length} 字符)` : s)
     if (name === "bash") return cap(args.command ?? "").split("\n")
-    if (name === "write") return [`${args.path}（写入 ${(args.content ?? "").length} 字符）`]
-    if (name === "edit") return [`${args.path}（替换 ${(args.old_string ?? "").length} 字符 → ${(args.new_string ?? "").length} 字符）`]
+    if (name === "write") {
+      // 批准写文件必须看得到要写什么：路径 + 内容预览
+      return [`${args.path}（写入 ${(args.content ?? "").length} 字符）`, ...cap(args.content ?? "", 1000).split("\n")]
+    }
+    if (name === "edit") {
+      // 简易 diff：- 旧内容 / + 新内容
+      return [
+        `${args.path}`,
+        ...cap(args.old_string ?? "", 500).split("\n").map((l) => `- ${l}`),
+        "  ↓",
+        ...cap(args.new_string ?? "", 500).split("\n").map((l) => `+ ${l}`),
+      ]
+    }
+    if (name === "delete") return [`${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`]
     if (name === "subagent") return cap(args.task ?? "", 500).split("\n")
-    if (name === "memory_put") return [`[${args.type ?? ""}] ${args.title ?? ""}`]
+    if (name === "memory_put") return [`[${args.type ?? ""}] ${args.title ?? ""}`, ...cap(args.content ?? "", 500).split("\n")]
     return [cap(summarize(args), 300)]
   }
 
@@ -1719,7 +1779,7 @@ export async function startTUI(agent, opts = {}) {
       const isContinue = state.permission.name === "continue"
       const validKeys = isContinue ? ["y", "n"] : ["y", "n", "a"]
       if (validKeys.includes(answer) || key.name === "escape") {
-        const { resolve } = state.permission
+        const { resolve, name } = state.permission
         state.permission = null
         state.status = "Processing..."
         if (answer === "a" && !isContinue) {
@@ -1728,7 +1788,12 @@ export async function startTUI(agent, opts = {}) {
           agent._pendingReminders.push("[System reminder: AUTO mode is now ON. All tool calls are automatically approved. Use /auto to disable.]")
           pushLine(`  [auto] AUTO 已开启：后续工具调用不再询问（/auto 关闭）`, C.warn)
         }
-        resolve(answer === "y" || (answer === "a" && !isContinue))
+        const approved = answer === "y" || (answer === "a" && !isContinue)
+        // 决定落痕：对话区留下批准/拒绝记录（continue 询问有自己的输出，不重复记）
+        if (!isContinue) {
+          pushLine(`  [${approved ? "approved" : "denied"}] ${name}`, approved ? C.dim : C.error)
+        }
+        resolve(approved)
         render()
       }
       return
