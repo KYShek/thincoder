@@ -5,19 +5,30 @@
  *   thincoder                 启动 TUI
  *   thincoder chat "..."      一次性 agent 问答（可调用工具，流式输出）
  *   thincoder memory <sub>    记忆管理：list / search / put / remove
+ *   thincoder upgrade         从 npm 升级到最新版
  *   thincoder --help          显示帮助
  */
 
+import { existsSync, readFileSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { execSync } from "node:child_process"
 import { join } from "node:path"
 import { createAgent, runAgent } from "../src/agent.mjs"
-import { loadConfig, configDir } from "../src/config.mjs"
+import { loadConfig, saveConfig, configDir, configPath, PROVIDER_PRESETS } from "../src/config.mjs"
 import { createMemory, memoryTools, put, remove, search, list, syncDir } from "../src/memory.mjs"
-import { createProvider } from "../src/provider.mjs"
 import { builtinTools } from "../src/tools.mjs"
 
 const [command, ...args] = process.argv.slice(2)
+
+// 顶层兜底：任何未捕获错误打印一行消息干净退出，不糊用户一脸 stack
+process.on("uncaughtException", (error) => {
+  console.error(`[error] ${error.message}`)
+  exitSoon(1)
+})
+process.on("unhandledRejection", (error) => {
+  console.error(`[error] ${error?.message ?? error}`)
+  exitSoon(1)
+})
 
 const USAGE = `thincoder - thin coding agent
 
@@ -33,16 +44,27 @@ Usage:
   thincoder distill <file> [--yes] [--scope=<s>]
                             Extract knowledge candidates from a session
                             transcript file; confirm each before saving
-  thincoder --help          Show this help
+  thincoder upgrade         Update to the latest version from npm
 
-Config: ~/.thincoder/config.json (provider.baseURL / provider.apiKey / provider.model)
-Env:    THINCODER_API_KEY, THINCODER_BASE_URL, THINCODER_MODEL
+Config: ~/.thincoder/config.json (providers[] + activeProvider；TUI 内用 /provider、/model 管理)
+Env:    THINCODER_API_KEY, THINCODER_BASE_URL, THINCODER_MODEL, THINCODER_ACTIVE_PROVIDER
 `
+
+/** 缺 key 时的统一提示 */
+function noKeyMessage() {
+  return `还没有配置 API key。运行 thincoder 进入 TUI，用 /provider add 和 /provider key 配置；或直接编辑 ${configPath}`
+}
+
+/** 延迟退出：fetch 后立刻 process.exit 在 Windows/Node 24 会触发 libuv 断言，让一句柄关完再走 */
+function exitSoon(code) {
+  setTimeout(() => process.exit(code), 100)
+}
 
 /** 组装一个带记忆的 agent（同步各层索引后返回） */
 async function makeAgent() {
   const config = loadConfig()
-  const provider = createProvider(config.provider)
+  const provider = config.provider
+  const providers = config.providersList
   const memory = createMemory({ dbPath: config.memory.dbPath })
   // 向量检索：配了 embedding 就启用（惰性生成向量，首次搜索时补算）
   if (config.embedding?.apiKey) {
@@ -62,13 +84,16 @@ async function makeAgent() {
     await ensureClone(team)
     await syncDir(memory, { layer: "team", dir: team.dir })
   }
-  return createAgent({
+  const agent = createAgent({
     provider,
     tools: [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team })],
     config,
     cwd,
     memory,
   })
+  agent.providers = providers
+  agent.activeProvider = config.activeProvider
+  return agent
 }
 
 /** 读取 team 配置并补全默认目录；未配置返回 null */
@@ -94,10 +119,30 @@ switch (command) {
     const prompt = args.filter((a) => a !== "--auto").join(" ").trim()
     if (!prompt) {
       console.error('Usage: thincoder chat [--auto] "<prompt>"')
-      process.exit(1)
+      exitSoon(1)
     }
 
     const agent = await makeAgent()
+    if (!agent.provider.apiKey) {
+      if (!process.stdin.isTTY) {
+        console.error(noKeyMessage())
+        exitSoon(1)
+        break
+      }
+      const p = await setupWizard()
+      if (!p) {
+        exitSoon(1)
+        break
+      }
+      agent.provider = p
+      agent.activeProvider = p.name
+      // 向导可能配了 embedding key：挂上向量检索
+      const fresh = loadConfig()
+      if (fresh.embedding?.apiKey && agent.memory && !agent.memory.embedder) {
+        const { createEmbedder } = await import("../src/embedding.mjs")
+        agent.memory.embedder = createEmbedder(fresh.embedding)
+      }
+    }
     if (auto) agent.autoApprove = true
     try {
       await runAgent(agent, prompt, {
@@ -115,7 +160,7 @@ switch (command) {
       process.stdout.write("\n")
     } catch (error) {
       console.error(`\n[error] ${error.message}`)
-      process.exit(1)
+      exitSoon(1)
     }
     break
   }
@@ -140,7 +185,7 @@ switch (command) {
     if (!team) {
       console.error("Team memory not configured. Set memory.team in ~/.thincoder/config.json:")
       console.error('  "team": { "name": "myteam", "repo": "git@github.com:org/team-memory.git" }')
-      process.exit(1)
+      exitSoon(1)
     }
     const memory = createMemory({ dbPath: config.memory.dbPath })
     const { ensureClone, pullTeam } = await import("../src/gitmem.mjs")
@@ -152,7 +197,7 @@ switch (command) {
       console.log(`Synced. Index: +${stats.added} ~${stats.updated} -${stats.removed}`)
     } catch (error) {
       console.error(`[error] ${error.message}`)
-      process.exit(1)
+      exitSoon(1)
     }
     break
   }
@@ -168,19 +213,38 @@ switch (command) {
     const file = positional[0]
     if (!file) {
       console.error("Usage: thincoder distill <transcript-file> [--yes] [--scope=personal|project|team]")
-      process.exit(1)
+      exitSoon(1)
     }
     const { readFile } = await import("node:fs/promises")
     const transcript = await readFile(file, "utf8")
 
     const config = loadConfig()
-    const provider = createProvider(config.provider)
+    let provider = config.provider
+    if (!provider.apiKey) {
+      if (!process.stdin.isTTY) {
+        console.error(noKeyMessage())
+        exitSoon(1)
+        break
+      }
+      provider = await setupWizard()
+      if (!provider) {
+        exitSoon(1)
+        break
+      }
+    }
     const memory = createMemory({ dbPath: config.memory.dbPath })
     const team = teamConfig(config)
     const { extractCandidates, saveCandidate } = await import("../src/distill.mjs")
 
     console.error("[distill] extracting candidates...")
-    const candidates = await extractCandidates(provider, transcript)
+    let candidates
+    try {
+      candidates = await extractCandidates(provider, transcript)
+    } catch (error) {
+      console.error(`[distill] ${error.message}`)
+      exitSoon(1)
+      break
+    }
     if (candidates.length === 0) {
       console.log("No distillable knowledge found in this session.")
       break
@@ -256,7 +320,27 @@ switch (command) {
       })
     } catch (error) {
       console.error(`[error] ${error.message}`)
-      process.exit(1)
+      exitSoon(1)
+    }
+    break
+  }
+
+  case "upgrade": {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+    const local = pkg.version
+    let remote
+    try {
+      remote = execSync("npm view thincoder version", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+    } catch {
+      console.error("[upgrade] 无法查询 npm registry，请确认网络和 npm 已安装")
+      exitSoon(1)
+    }
+    if (remote === local) {
+      console.log(`ThinCoder ${local} 已是最新。`)
+    } else {
+      console.log(`升级: ${local} → ${remote}`)
+      execSync("npm install -g thincoder@latest", { stdio: "inherit" })
+      console.log(`已升级到 ${remote}`)
     }
     break
   }
@@ -270,7 +354,7 @@ switch (command) {
   default: {
     console.error(`Unknown command: ${command}\n`)
     process.stdout.write(USAGE)
-    process.exit(1)
+    exitSoon(1)
   }
 }
 
@@ -297,7 +381,7 @@ async function memoryCommand(memory, args) {
       const query = positional.join(" ")
       if (!query) {
         console.error("Usage: thincoder memory search <query>")
-        process.exit(1)
+        exitSoon(1)
       }
       printEntries(await search(memory, query, { limit: 10 }))
       break
@@ -305,7 +389,7 @@ async function memoryCommand(memory, args) {
     case "put": {
       if (!flags.type || !flags.title || !flags.content) {
         console.error("Usage: thincoder memory put --type=<rule|knowledge|decision|pattern> --title=<t> --content=<c> [--tags=<t>]")
-        process.exit(1)
+        exitSoon(1)
       }
       const id = await put(memory, { type: flags.type, title: flags.title, content: flags.content, tags: flags.tags ?? "" })
       console.log(`Saved (id=${id})`)
@@ -315,14 +399,14 @@ async function memoryCommand(memory, args) {
       const id = Number(positional[0])
       if (!id) {
         console.error("Usage: thincoder memory remove <id>")
-        process.exit(1)
+        exitSoon(1)
       }
       console.log((await remove(memory, id)) ? `Removed #${id}` : `No entry #${id}`)
       break
     }
     default:
       console.error("Usage: thincoder memory <list|search|put|remove>")
-      process.exit(1)
+      exitSoon(1)
   }
 }
 
@@ -356,6 +440,73 @@ async function askPermission(name, toolArgs) {
       rl.question(`\n[allow?] ${name} ${summarize(toolArgs)} (y/N) `, resolve)
     })
     return answer.trim().toLowerCase() === "y"
+  } finally {
+    rl.close()
+  }
+}
+
+/** 首次使用（TTY 下的 chat/distill）：问答式配置一个 provider 并落盘，返回运行时 provider；取消返回 null */
+async function setupWizard() {
+  // 自带缓冲的提问器：rl.question 在输入被管道/快速粘贴时会丢行（问题注册前 line 已到达）
+  const rl = createInterface({ input: process.stdin, terminal: false })
+  const buffered = []
+  let waiter = null
+  rl.on("line", (line) => {
+    if (waiter) {
+      const w = waiter
+      waiter = null
+      w(line)
+    } else {
+      buffered.push(line)
+    }
+  })
+  const ask = (q) =>
+    new Promise((resolve) => {
+      process.stderr.write(q)
+      if (buffered.length) resolve(buffered.shift())
+      else waiter = resolve
+    })
+  try {
+    const presets = Object.entries(PROVIDER_PRESETS)
+    console.error("首次使用，先配置一个模型提供商：")
+    presets.forEach(([n, p], i) => console.error(`  ${i + 1}. ${n.padEnd(10)} ${p.desc}`))
+    console.error(`  ${presets.length + 1}. 自定义端点`)
+    const choice = Number((await ask(`选择 [1-${presets.length + 1}]: `)).trim())
+    let name, baseURL, model
+    if (choice === presets.length + 1) {
+      name = (await ask("名称（如 my-openai）: ")).trim()
+      baseURL = (await ask("baseURL（如 https://api.openai.com/v1）: ")).trim().replace(/\/+$/, "")
+      model = (await ask("模型（如 gpt-4o）: ")).trim()
+      if (!name || !/^https?:\/\//.test(baseURL) || !model) {
+        console.error("输入不完整或 baseURL 不合法，已取消")
+        return null
+      }
+    } else if (choice >= 1 && choice <= presets.length) {
+      name = presets[choice - 1][0]
+      baseURL = presets[choice - 1][1].baseURL
+      model = presets[choice - 1][1].model
+    } else {
+      console.error("无效选择，已取消")
+      return null
+    }
+    const apiKey = (await ask(`${name} 的 API key: `)).trim()
+    if (!apiKey) {
+      console.error("key 不能为空，已取消")
+      return null
+    }
+    const embedKey = (await ask("可选：embedding API key（SiliconFlow，向量检索用；回车跳过）: ")).trim()
+    const raw = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {}
+    const providers = raw.providers?.length ? raw.providers : []
+    const existing = providers.find((p) => p.name === name)
+    if (existing) Object.assign(existing, { baseURL, model, apiKey })
+    else providers.push({ name, baseURL, model, apiKey })
+    raw.providers = providers
+    raw.activeProvider = name
+    if (embedKey) raw.embedding = { ...(raw.embedding ?? {}), apiKey: embedKey }
+    saveConfig(raw)
+    console.error(`配置完成：${name} / ${model}（已写入 ${configPath}）`)
+    console.error(embedKey ? "向量检索已启用\n" : "（未配 embedding key：记忆为纯文本检索，之后在 config.json 的 embedding.apiKey 补上即可开启向量检索）\n")
+    return { name, baseURL, model, apiKey }
   } finally {
     rl.close()
   }

@@ -14,9 +14,12 @@ import { join } from "node:path"
 const DEFAULT_MAX_TURNS = 50
 
 /**
- * 修复断头 tool_calls：assistant 消息带了 tool_calls 但后面缺对应的 tool 结果
- * （进程在工具执行中途被杀、会话中断等）。为每个缺失的 tool_call_id 补一条
- * 中断占位消息，否则 API 会整单拒绝（invalid_request_error）。
+ * 修复历史里的两类毒数据（都会让 API 整单拒绝 invalid_request_error）：
+ * 1. 空 assistant 消息：无正文、无 tool_calls（思考流跑完正文为空、被截断时可能产生），
+ *    直接丢弃——"assistant must not be empty"。
+ * 2. 断头 tool_calls：assistant 消息带了 tool_calls 但后面缺对应的 tool 结果
+ *    （进程在工具执行中途被杀、会话中断等）。为每个缺失的 tool_call_id 补一条
+ *    中断占位消息。
  * 返回修复后的新数组；无问题时返回原数组。
  */
 export function repairHistory(history) {
@@ -24,6 +27,11 @@ export function repairHistory(history) {
   let dirty = false
   for (let i = 0; i < history.length; i++) {
     const m = history[i]
+    // 空 assistant 消息：无正文且无 tool_calls，丢弃
+    if (m.role === "assistant" && !m.tool_calls?.length && !m.content) {
+      dirty = true
+      continue
+    }
     out.push(m)
     if (m.role !== "assistant" || !m.tool_calls?.length) continue
 
@@ -87,7 +95,10 @@ export const subagentTool = {
     const childPermission = parent.autoApprove ? async () => true : async () => false
     const input = args.context ? `背景：\n${args.context}\n\n任务：\n${args.task}` : args.task
     const report = await runAgent(child, input, { onPermissionRequest: childPermission }, { depth: (ctx.depth ?? 0) + 1 })
-    return report.length > 4000 ? report.slice(0, 4000) + "\n... (report truncated)" : report
+    const maxLen = 32000
+    return report.length > maxLen
+      ? report.slice(0, maxLen) + `\n\n[... report truncated: ${report.length} chars total, ${report.length - maxLen} omitted. Ask a follow-up if you need the missing details.]`
+      : report
   },
 }
 
@@ -161,6 +172,7 @@ Rules:
 - When you need multiple independent pieces of information (e.g. reading several files), make all independent tool calls in the SAME response so they can run in parallel.
 - Be concise in your final answers. Report what you did, not what you plan to do.
 - If the request is ambiguous at a decision that matters, stop and ask in your reply instead of guessing—but ask at most once, then proceed with the most reasonable interpretation.
+- When the user shares an observation or opinion, don't mistake it for a command—confirm before making changes.
 - For complex multi-step requests (3+ steps), use the task tool to plan and track progress; keep exactly one item in_progress, and update the list as you complete items—never finish with stale pending items.
 - For independent research/exploration subtasks, spawn subagents in the SAME response to run them in parallel—they work in isolated contexts and return final reports. Delegate breadth-first exploration; do precision edits yourself. Never assign parallel subagents tasks that edit the same files.
 - Never fabricate file contents or command outputs; only trust tool results.
@@ -241,6 +253,10 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0 } = {})
 
     // 无工具调用：最终回答，收尾
     if (response.toolCalls.length === 0) {
+      // 空回复（思考流跑完正文为空、被截断等）不入历史——空 assistant 消息会毒害后续所有请求
+      if (!response.content) {
+        throw new Error("LLM 返回了空回复（可能是思考耗尽或被截断）。可 /think effort 降低推理强度后重试")
+      }
       agent.history.push({ role: "assistant", content: response.content })
       return response.content
     }

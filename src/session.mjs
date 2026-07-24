@@ -17,9 +17,9 @@ export function sessionPath(cwd) {
 /** 保存会话（同步：退出清理路径也能用） */
 export function saveSession(agent) {
   const data = {
-    version: 1,
+    version: 2,
     cwd: agent.cwd,
-    model: agent.provider.model,
+    activeProvider: agent.provider?.name,
     updatedAt: Date.now(),
     history: agent.history,
     tasks: agent.tasks ?? [],
@@ -35,7 +35,8 @@ export function loadSession(cwd) {
     const p = sessionPath(cwd)
     if (!existsSync(p)) return null
     const data = JSON.parse(readFileSync(p, "utf8"))
-    if (data?.version !== 1 || !Array.isArray(data.history)) return null
+    if (data?.version !== 1 && data?.version !== 2) return null
+    if (!Array.isArray(data.history)) return null
     return data
   } catch {
     return null
@@ -46,7 +47,7 @@ export function loadSession(cwd) {
 export function clearSession(cwd) {
   try {
     const p = sessionPath(cwd)
-    if (existsSync(p)) writeFileSync(p, JSON.stringify({ version: 1, cwd, history: [], tasks: [] }), "utf8")
+    if (existsSync(p)) writeFileSync(p, JSON.stringify({ version: 2, cwd, history: [], tasks: [] }), "utf8")
   } catch {
     // 清不掉就算了，下次保存会覆盖
   }

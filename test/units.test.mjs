@@ -416,7 +416,7 @@ test("session: 保存/恢复/清空 往返", async () => {
   const cwd = join(tmpdir(), "thincoder-session-test-" + Date.now())
   const agent = {
     cwd,
-    provider: { model: "test-model" },
+    provider: { name: "test", model: "test-model" },
     history: [
       { role: "user", content: "你好" },
       { role: "assistant", content: "在", tool_calls: [{ id: "c1", type: "function", function: { name: "ls", arguments: "{}" } }] },
@@ -525,6 +525,27 @@ test("repairHistory: 为缺失结果的 tool_calls 补中断占位", async () =>
   assert.deepEqual(roles, ["user", "assistant", "tool", "tool", "user"])
   // 完整的历史原样返回（引用相等）
   assert.equal(repairHistory([{ role: "user", content: "x" }]).length, 1)
+})
+
+test("repairHistory: 丢弃空 assistant 消息", async () => {
+  const { repairHistory } = await import("../src/agent.mjs")
+  const history = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "" }, // 思考流跑完正文为空的毒数据
+    { role: "user", content: "在吗" },
+    { role: "assistant", content: null }, // null 也丢
+    { role: "assistant", content: "在" }, // 正常回复保留
+    { role: "assistant", content: null, tool_calls: [ // 空正文但带 tool_calls 的合法，保留
+      { id: "c1", type: "function", function: { name: "read", arguments: "{}" } },
+    ] },
+    { role: "tool", tool_call_id: "c1", content: "ok" },
+  ]
+  const repaired = repairHistory(history)
+  assert.deepEqual(
+    repaired.map((m) => m.role),
+    ["user", "user", "assistant", "assistant", "tool"],
+  )
+  assert.equal(repaired[2].content, "在")
 })
 
 // ---------------------------------------------------------------- checkpoint 快照与回滚

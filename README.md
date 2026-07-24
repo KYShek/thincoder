@@ -19,7 +19,7 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 - **子 agent 并发**：`subagent` 工具派发独立子任务（隔离上下文，只带回报告），一批多个走并行通道；普通模式子 agent 只读，AUTO 模式全放行
 - **AUTO 模式**：`/auto` 或 `chat --auto` 完全授权，长任务免确认，状态栏黄色 AUTO 标识
 - **任务跟踪**：`task` 工具让 agent 拆解多步任务并跟踪进度（pending/in_progress/done），TUI 状态栏实时显示 ▶n/m
-- **流式 TUI**：裸 ANSI 实现（无 UI 库），对话流 / 流式输出 / 权限确认 / 翻页 / 输入历史 / 斜杠命令
+- **流式 TUI**：裸 ANSI 实现（无 UI 库），对话流 / 流式输出 / 权限确认（y/n/a，a=批准并转 AUTO）/ 翻页 / 输入历史 / 斜杠命令 Tab 补全
 - **上下文压缩**：对话超阈值时自动摘要（保留最早 2 条 + 最近 10 条，中间 LLM 摘要）
 - **三层记忆 + 团队共享**（见下）
 - **LLM 调用**：原生 `fetch` 直连 OpenAI 兼容协议（OpenAI / DeepSeek / Moonshot / Ollama），流式 SSE，指数退避重试，支持 `reasoning_content` 思考流
@@ -49,38 +49,40 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 ## 快速开始
 
 ```bash
-# 配置（首次）
-mkdir -p ~/.thincoder
-cat > ~/.thincoder/config.json <<'EOF'
-{
-  "provider": {
-    "baseURL": "https://api.deepseek.com/v1",
-    "apiKey": "sk-...",
-    "model": "deepseek-chat"
-  }
-}
-EOF
+# 安装
+npm install -g thincoder
 
 # 启动 TUI（默认命令）
-node bin/thincoder.mjs
-
-# 一次性问答（管道友好）
-node bin/thincoder.mjs chat "读一下 package.json 并总结"
-
-# 记忆管理
-node bin/thincoder.mjs memory put --type=rule --title="代码规范" --content="不加分号"
-node bin/thincoder.mjs memory search "代码规范"
-node bin/thincoder.mjs memory list
-node bin/thincoder.mjs memory remove 1
-
-# 团队记忆（可选，配置 memory.team 后可用）
-node bin/thincoder.mjs sync                       # 拉取团队仓库并重建索引
-
-# 从会话记录提取知识（逐条确认后入库）
-node bin/thincoder.mjs distill session.txt
+thincoder
 ```
 
-TUI 内斜杠命令：`/help`、`/model`（查看/切换模型）、`/config`（查看配置）、`/distill`（从当前会话提取知识）、`/clear`、`/exit`。输入 `/` 时状态栏实时提示匹配命令。
+首次启动会自动进入初始配置向导：方向键选提供商（内置预设或自定义端点）→ 输入 API key → 可选填 embedding key（SiliconFlow，开启记忆向量检索，可跳过）→ 方向键选模型，全程不用手编配置文件。之后随时可用 `/provider`、`/model`、`/config embedkey` 调整。`chat`/`distill` 在终端下没配 key 时也会就地问答式配置（管道/CI 环境则报错退出并提示）。
+
+也可以直接手写配置 `~/.thincoder/config.json`（见下文"配置"），然后：
+
+```bash
+# 一次性问答（管道友好）
+thincoder chat "读一下 package.json 并总结"
+
+# 记忆管理
+thincoder memory put --type=rule --title="代码规范" --content="不加分号"
+thincoder memory search "代码规范"
+thincoder memory list
+thincoder memory remove 1
+
+# 团队记忆（可选，配置 memory.team 后可用）
+thincoder sync                       # 拉取团队仓库并重建索引
+
+# 从会话记录提取知识（逐条确认后入库）
+thincoder distill session.txt
+
+# 升级
+thincoder upgrade
+```
+
+从源码运行：把上面的 `thincoder` 换成 `node bin/thincoder.mjs`。
+
+TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全部模型；`/model <名称>` 直接切换）、`/provider`（增/删 provider、配 key，支持自定义端点）、`/think`（思维模式开关与推理强度）、`/config`（查看配置、`/config key` 配当前 key）、`/distill`（从当前会话提取知识）、`/clear`、`/exit`。输入 `/` 时状态栏实时提示匹配命令。
 
 环境变量：`THINCODER_API_KEY`（或 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`）、`THINCODER_BASE_URL`、`THINCODER_MODEL`、`SILICONFLOW_API_KEY`。
 
@@ -90,11 +92,15 @@ TUI 内斜杠命令：`/help`、`/model`（查看/切换模型）、`/config`（
 
 ```jsonc
 {
-  "provider": {
-    "baseURL": "https://api.deepseek.com/v1",  // 任意 OpenAI 兼容端点
-    "apiKey": "sk-...",                         // 或留空走环境变量
-    "model": "deepseek-chat"
-  },
+  "providers": [                              // 可配多个，/model <名称> 切换
+    {
+      "name": "deepseek",
+      "baseURL": "https://api.deepseek.com/v1",  // 任意 OpenAI 兼容端点
+      "apiKey": "sk-...",                         // 或留空走环境变量
+      "model": "deepseek-chat"
+    }
+  ],
+  "activeProvider": "deepseek",               // 当前激活的 provider 名
   "embedding": {                                // 可选：不配则纯 FTS 检索
     "baseURL": "https://api.siliconflow.cn/v1",
     "apiKey": "sk-...",                         // 或 SILICONFLOW_API_KEY

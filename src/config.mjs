@@ -1,6 +1,8 @@
 /**
  * config.mjs — 配置加载与保存
- * 配置文件：~/.thincoder/config.json；API key 可用环境变量兜底。
+ * 多 provider 结构：providers[] + activeProvider
+ * 配置文件：~/.thincoder/config.json
+ * API key 可用环境变量兜底（未在 providers 中配置时）。
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -10,11 +12,20 @@ import { join } from "node:path"
 export const configDir = join(homedir(), ".thincoder")
 export const configPath = join(configDir, "config.json")
 
+/** 内置提供商预设：/provider add <预设名>、首次启动向导共用 */
+export const PROVIDER_PRESETS = {
+  deepseek: { baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "DeepSeek" },
+  kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "high", desc: "Kimi / Moonshot" },
+  glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "智谱 GLM" },
+  qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", desc: "通义千问" },
+}
+
+// 默认 provider 跟 deepseek 预设保持一致（去掉 desc 展示字段）
+const { desc: _presetDesc, ...deepseekPreset } = PROVIDER_PRESETS.deepseek
+
 const DEFAULTS = {
-  provider: {
-    baseURL: "https://api.deepseek.com/v1",
-    model: "deepseek-chat",
-  },
+  providers: [{ name: "deepseek", ...deepseekPreset }],
+  activeProvider: "deepseek",
   agent: {
     maxTurns: 50,
     compactThreshold: 100000,
@@ -39,8 +50,11 @@ const MODEL_CONTEXT_WINDOWS = [
   ["deepseek-v4-flash", 256_000],
   ["deepseek-reasoner", 64_000],
   ["deepseek-chat", 64_000],
-  ["moonshot", 256_000],
-  ["kimi", 256_000],
+  ["kimi-k3", 256_000],
+  ["kimi-k2", 128_000],
+  ["moonshot", 128_000],
+  ["glm-5", 1_000_000],
+  ["glm-4", 128_000],
   ["gpt-4.1", 1_000_000],
   ["gpt-4o", 128_000],
   ["qwen", 128_000],
@@ -63,43 +77,90 @@ export function resolveCompactThreshold(explicit, model) {
 }
 
 /**
- * 加载配置：文件 + 环境变量兜底（key 不明文落盘时走 env）。
- * 环境变量优先级：THINCODER_API_KEY > DEEPSEEK_API_KEY > OPENAI_API_KEY
+ * 从 providers[] 中按 name 查找，找不到返回第一个
+ */
+export function findProvider(providers, name) {
+  if (name) {
+    const found = providers.find((p) => p.name === name)
+    if (found) return found
+  }
+  return providers[0] ?? { name: "default", baseURL: "", model: "" }
+}
+
+/**
+ * 加载配置。
+ * 环境变量优先级：THINCODER_ACTIVE_PROVIDER > 配置文件 activeProvider
+ * THINCODER_API_KEY / THINCODER_BASE_URL / THINCODER_MODEL 覆盖当前激活 provider 的对应字段
  */
 export function loadConfig() {
   let config = {}
   if (existsSync(configPath)) {
-    config = JSON.parse(readFileSync(configPath, "utf8"))
+    try {
+      config = JSON.parse(readFileSync(configPath, "utf8"))
+    } catch (error) {
+      throw new Error(`配置文件不是合法 JSON，请检查或删除: ${configPath}\n  ${error.message}`)
+    }
   }
 
   const merged = {
     ...DEFAULTS,
     ...config,
-    provider: { ...DEFAULTS.provider, ...config.provider },
+    providers: config.providers?.length ? config.providers : DEFAULTS.providers,
+    activeProvider: config.activeProvider ?? DEFAULTS.activeProvider,
     agent: { ...DEFAULTS.agent, ...config.agent },
     memory: { ...DEFAULTS.memory, ...config.memory },
     embedding: { ...DEFAULTS.embedding, ...config.embedding },
   }
 
-  if (!merged.provider.apiKey) {
-    merged.provider.apiKey =
+  // baseURL 尾斜杠归一化（防拼出 //chat/completions）
+  for (const p of merged.providers) {
+    if (p.baseURL) p.baseURL = p.baseURL.replace(/\/+$/, "")
+  }
+
+  // 环境变量覆盖 activeProvider
+  if (process.env.THINCODER_ACTIVE_PROVIDER) {
+    merged.activeProvider = process.env.THINCODER_ACTIVE_PROVIDER
+  }
+
+  // 获取当前激活的 provider
+  const active = findProvider(merged.providers, merged.activeProvider)
+
+  // 构建运行时 provider 对象（供 agent.provider 使用）
+  const runtimeProvider = { ...active }
+
+  // 环境变量覆盖当前激活 provider 的字段
+  if (process.env.THINCODER_API_KEY) runtimeProvider.apiKey = process.env.THINCODER_API_KEY
+  if (process.env.THINCODER_BASE_URL) runtimeProvider.baseURL = process.env.THINCODER_BASE_URL
+  if (process.env.THINCODER_MODEL) runtimeProvider.model = process.env.THINCODER_MODEL
+
+  // apiKey 还可用通用环境变量兜底（当 providers 里没配 key 时）
+  if (!runtimeProvider.apiKey) {
+    runtimeProvider.apiKey =
       process.env.THINCODER_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY
   }
-  if (process.env.THINCODER_BASE_URL) merged.provider.baseURL = process.env.THINCODER_BASE_URL
-  if (process.env.THINCODER_MODEL) merged.provider.model = process.env.THINCODER_MODEL
+
+  // embedding apiKey
   if (!merged.embedding.apiKey) {
     merged.embedding.apiKey = process.env.SILICONFLOW_API_KEY || process.env.THINCODER_EMBEDDING_API_KEY
   }
 
-  // 压缩阈值跟模型走：配置文件显式设置的优先，否则按模型上下文窗口自动推导
+  // 压缩阈值跟模型走
   const explicitThreshold = config.agent?.compactThreshold
-  const { value, auto } = resolveCompactThreshold(explicitThreshold, merged.provider.model)
+  const { value, auto } = resolveCompactThreshold(explicitThreshold, runtimeProvider.model)
   merged.agent.compactThreshold = value
   merged.agent.compactThresholdAuto = auto
+
+  // 回写到 merged 方便上层使用
+  merged.provider = runtimeProvider
+  merged.providersList = merged.providers
 
   return merged
 }
 
+/**
+ * 保存配置。保留 providers 列表结构和 activeProvider 指针。
+ * providers[i].apiKey 仅在显式传入时才写入（不覆盖环境变量兜底的 key）
+ */
 export function saveConfig(config) {
   mkdirSync(configDir, { recursive: true })
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")

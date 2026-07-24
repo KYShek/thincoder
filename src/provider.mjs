@@ -8,7 +8,9 @@ export const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]
 const MAX_RETRIES = 3
 
 /**
- * 创建 provider。config: { baseURL, apiKey, model, maxTokens?, temperature? }
+ * 创建 provider。config: { baseURL, apiKey, model, maxTokens?, temperature?, thinking?, reasoningEffort? }
+ * thinking: { type: "enabled"|"disabled" }  思维模式开关
+ * reasoningEffort: "low"|"high"|"max"       推理强度（DeepSeek/Kimi/GLM 通用）
  */
 export function createProvider(config) {
   if (!config?.baseURL) throw new Error("provider config: baseURL is required")
@@ -20,6 +22,8 @@ export function createProvider(config) {
     model: config.model,
     maxTokens: config.maxTokens,
     temperature: config.temperature,
+    thinking: config.thinking,
+    reasoningEffort: config.reasoningEffort,
   }
 }
 
@@ -40,6 +44,8 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
   }
   if (provider.maxTokens) body.max_tokens = provider.maxTokens
   if (provider.temperature != null) body.temperature = provider.temperature
+  if (provider.thinking) body.thinking = provider.thinking
+  if (provider.reasoningEffort) body.reasoning_effort = provider.reasoningEffort
   if (tools?.length) body.tools = tools
 
   const response = await requestWithRetry(provider, body, signal)
