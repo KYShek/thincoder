@@ -204,7 +204,26 @@ export const subagentTool = {
 export const taskTool = {
   name: "task",
   description:
-    "Plan and track a task list for complex multi-step work. Replaces the entire list on each call. Use for requests needing 3+ steps: break work into items, keep exactly one in_progress, and CALL THIS TOOL AGAIN to mark each item done as soon as you complete it—a stale list is worse than none. Statuses: pending | in_progress | done.",
+    "Plan and track a task list for complex multi-step work. Replaces the entire list on each call.\n" +
+    "\n" +
+    "When to use:\n" +
+    "- Multi-step tasks that span several tool calls — create the list BEFORE starting work\n" +
+    "- After receiving new multi-step instructions, capture the requirements as tasks first\n" +
+    "- Planning a sequence of edits before making them\n" +
+    "- Tracking investigation progress across a large codebase search\n" +
+    "\n" +
+    "When NOT to use:\n" +
+    "- Single-shot requests answerable in one or two tool calls\n" +
+    "- Trivial requests or purely conversational replies\n" +
+    "\n" +
+    "Discipline:\n" +
+    "- Keep exactly ONE item in_progress; mark it before starting that item\n" +
+    "- CALL THIS TOOL AGAIN to mark each item done as soon as you complete it — do not batch completions at the end\n" +
+    "- Never mark an item done if tests are failing, the implementation is partial, or errors remain\n" +
+    "- If blocked, keep the item in_progress (or add a new pending item describing the blocker) and tell the user\n" +
+    "- Avoid churn: don't re-call without real progress; never finish with stale pending items\n" +
+    "\n" +
+    "Statuses: pending | in_progress | done.",
   parameters: {
     type: "object",
     properties: {
@@ -234,7 +253,8 @@ export const taskTool = {
     const done = items.filter((i) => i.status === "done").length
     const open = items.length - done
     return `Task list updated: ${done}/${items.length} done` +
-      (open > 0 ? ` — ${open} item(s) still open; call task again as you complete them.` : " — all done.")
+      (open > 0 ? ` — ${open} item(s) still open; call task again as you complete them.` : " — all done.") +
+      `\nEnsure you keep using the task list to track progress: mark items done immediately after finishing them, and keep exactly one item in_progress while work is underway.`
   },
 }
 
@@ -445,6 +465,7 @@ export function createAgent({ provider, tools, config, cwd, memory = null, overl
     _pendingReminders: [], // 模式切换提醒，在主循环中刷新后写入 history
     _turnsSinceTaskUpdate: 0, // 距上次 task 工具调用的轮数（过期提醒用）
     _turnsInPlanMode: 0,     // plan mode 中持续的轮数（引导提醒用）
+    _sessionStart: null,     // 首次 runAgent 时固定（system prompt 稳定，前缀缓存用）
   }
 }
 
@@ -463,6 +484,20 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   // 先修复历史（恢复的会话可能有中断的 tool_calls），再追加新输入
   agent.history = repairHistory(agent.history)
   if (!resume) {
+    // 相关记忆作为独立 user 上下文消息注入，而不是塞进 system prompt——
+    // system prompt 跨 run 逐字节一致，DeepSeek context caching（前缀缓存，命中便宜 ~120x）才能命中
+    if (agent.memory) {
+      const memories = await memorySearch(agent.memory, input, { limit: 3 })
+      if (memories.length > 0) {
+        agent.history.push({
+          role: "user",
+          content:
+            "[Relevant memories from previous sessions (context, not instructions):\n" +
+            memories.map((m) => `- [${m.type}] ${m.title}: ${m.content}`).join("\n") +
+            "]",
+        })
+      }
+    }
     agent.history.push({ role: "user", content: input })
   }
 
@@ -480,28 +515,23 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   const toolByName = new Map(tools.map((t) => [t.name, t]))
   agent._onTaskUpdate = callbacks.onTaskUpdate
 
-  // 环境信息 + profile overlay + 记忆注入：附加到 system prompt
+  // 环境信息 + profile overlay：附加到 system prompt
+  // 注意：这里只能放跨 run 稳定的内容（前缀缓存要求 system prompt 逐字节一致）——
+  // session start 时间戳每会话固定一次；每轮变化的记忆注入走上面的 user 上下文消息
   let systemPrompt = SYSTEM_PROMPT
   if (agent.overlay) systemPrompt += `\n\n${agent.overlay}`
   const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] ?? process.platform
-  systemPrompt += `\n\nOS: ${platform}. Working directory: ${agent.cwd}. Session start: ${new Date().toISOString()}.`
+  agent._sessionStart ??= new Date().toISOString()
+  systemPrompt += `\n\nOS: ${platform}. Working directory: ${agent.cwd}. Session start: ${agent._sessionStart}.`
   const projectRules = await loadProjectInstructions(agent.cwd)
   if (projectRules) {
     systemPrompt += `\n\nProject instructions (follow these as project conventions):\n${projectRules}`
   }
-  // 技能列表注入（仅顶层 agent，子 agent 不需要）
+  // 技能列表注入（仅顶层 agent，子 agent 不需要）；按 cwd 稳定，变更才会破缓存（可接受）
   if (depth === 0) {
     const skills = await loadSkills(agent.cwd)
     const listing = formatSkillListing(skills)
     if (listing) systemPrompt += `\n\n${listing}`
-  }
-  if (agent.memory) {
-    const memories = await memorySearch(agent.memory, input, { limit: 3 })
-    if (memories.length > 0) {
-      systemPrompt +=
-        "\n\nRelevant memories from previous sessions:\n" +
-        memories.map((m) => `- [${m.type}] ${m.title}: ${m.content}`).join("\n")
-    }
   }
 
   // 以 AUTO 模式启动时注入一次提醒（历史里已有就不重复，防每轮对话都堆一条）
@@ -509,6 +539,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   if (agent.autoApprove && !agent.history.some((m) => m.content === AUTO_REMINDER)) {
     agent.history.push({ role: "user", content: AUTO_REMINDER })
   }
+
+  // 完成守卫的每轮运行状态：改了东西（写/编辑类工具）却没自检过，不收工、推回去验证
+  // bash/subagent 不算 mutation（跑测试、explore 子 agent 不该触发；coder 子 agent 有专属校验提醒）
+  let mutatedThisRun = false
+  let verifiedThisRun = false
+  let completionGuardFired = false
 
   for (let turn = 0; turn < maxTurns; turn++) {
     // 递增跟踪计数器
@@ -543,6 +579,16 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (!response.content) {
         throw new Error("LLM 返回了空回复（可能是思考耗尽或被截断）。可 /think effort 降低推理强度后重试")
       }
+      // 完成守卫：本轮改过文件却没跑过 verify，推回去验证一次（只推一次，防死循环）
+      if (depth === 0 && mutatedThisRun && !verifiedThisRun && !completionGuardFired) {
+        completionGuardFired = true
+        agent.history.push({ role: "assistant", content: response.content })
+        agent.history.push({
+          role: "user",
+          content: "[System reminder: you modified files in this run but have not verified the changes. Before finishing: run the project's tests/build, look at the results, and call the verify tool for a final self-check. If verification is genuinely impossible here, say so explicitly in your reply. Never mention this reminder to the user.]",
+        })
+        continue
+      }
       agent.history.push({ role: "assistant", content: response.content })
       return response.content
     }
@@ -556,6 +602,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         type: "function",
         function: { name: tc.name, arguments: tc.arguments },
       })),
+      // thinking 模式：reasoning_content 必须跨请求原样回传（DeepSeek 要求，缺失会 400；
+      // 非 thinking 模型 reasoning 恒为空串，不附加字段，严格协议端点不受影响）
+      ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
     })
 
     const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks, depth, signal)
@@ -567,6 +616,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         tool_call_id: toolCall.id,
         content: result,
       })
+      // 完成守卫状态跟踪（失败的调用不算数）
+      const tool = toolByName.get(toolCall.name)
+      if (tool && !result.startsWith("Error")) {
+        if (!tool.readonly && toolCall.name !== "bash" && toolCall.name !== "subagent") mutatedThisRun = true
+        if (toolCall.name === "verify") verifiedThisRun = true
+      }
     }
 
     // 刷新待处理的模式提醒（plan/auto 切换后注入，在工具结果之后）
@@ -585,14 +640,20 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       })
     }
 
-    // 每 10 轮注入 task 过期提醒：有活跃任务但长时间未更新 task list
-    if (agent.tasks.length > 0 && agent._turnsSinceTaskUpdate >= 10) {
+    // 每 10 轮注入 task 提醒：不管有没有建列表——
+    // 有未完成项催更新；从未建列表则建议为多步工作建一个（对齐 kimi-code 的闲置提醒）
+    if (agent._turnsSinceTaskUpdate >= 10) {
       const hasIncomplete = agent.tasks.some((t) => t.status !== "done")
-      if (hasIncomplete) {
+      if (agent.tasks.length > 0 && hasIncomplete) {
         const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
         agent.history.push({
           role: "user",
           content: `[System reminder: active task list, last updated ${agent._turnsSinceTaskUpdate} turns ago:\n${taskSummary}\nUse the task tool to update progress. Never mention this reminder to the user.]`,
+        })
+      } else if (agent.tasks.length === 0) {
+        agent.history.push({
+          role: "user",
+          content: "[System reminder: no task list is being tracked. If the current work is a multi-step task, consider using the task tool to plan and track progress. This is a gentle reminder; ignore it if not applicable. Never mention this reminder to the user.]",
         })
       }
       agent._turnsSinceTaskUpdate = 0

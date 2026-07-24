@@ -1,7 +1,7 @@
 /**
  * tui.mjs — 裸 ANSI 终端 UI
  * 零依赖：raw mode 键盘输入、ANSI 转义渲染、自研宽字符换行。
- * 布局：header / 对话区（可滚动）/ 输入框 / 状态栏。
+ * 布局：header / 对话区（可滚动）/ todo 面板（有任务时）/ 输入框 / 状态栏。
  */
 
 import { emitKeypressEvents } from "node:readline"
@@ -371,7 +371,20 @@ export async function startTUI(agent, opts = {}) {
     const pickerH = overlay
       ? Math.min(overlay.lines.length + 1, Math.max(6, rows - 12))
       : 0
-    const convH = Math.max(1, rows - headerH - inputBoxH - statusH - pickerH)
+    // todo 面板：有任务列表时占对话区与输入框之间最多 5 行
+    // 折叠时优先 in_progress，兼顾最早的 pending 和最近的 done
+    const MAX_TASK_LINES = 5
+    let visibleTasks = []
+    if (state.tasks.length <= MAX_TASK_LINES) {
+      visibleTasks = state.tasks
+    } else {
+      const inProgress = state.tasks.filter((t) => t.status === "in_progress")
+      const pending = state.tasks.filter((t) => t.status === "pending")
+      const done = state.tasks.filter((t) => t.status === "done")
+      visibleTasks = [...inProgress, ...pending, ...done].slice(0, MAX_TASK_LINES)
+    }
+    const taskPanelH = visibleTasks.length
+    const convH = Math.max(1, rows - headerH - inputBoxH - statusH - pickerH - taskPanelH)
 
     // 对话区内容行（含流式缓冲）；markdown 表格先按显示宽度重排
     const convLines = []
@@ -436,6 +449,13 @@ export async function startTUI(agent, opts = {}) {
         out.push(`${l.color}${sliceByWidth(l.text, cols - 1)}${ansi.reset}${ansi.clearLine}`)
       }
       for (let i = shown.length; i < winH; i++) out.push(ansi.clearLine)
+    }
+
+    // todo 面板（对话区与输入框之间）：▶ in_progress / ✓ done / ○ pending
+    for (const t of visibleTasks) {
+      const mark = t.status === "done" ? "✓" : t.status === "in_progress" ? "▶" : "○"
+      const color = t.status === "done" ? C.dim : t.status === "in_progress" ? C.tool : C.text
+      out.push(`${color} ${mark} ${sliceByWidth(t.title, cols - 4)}${ansi.reset}${ansi.clearLine}`)
     }
 
     // 输入框（全边框，宽 W）
@@ -536,7 +556,7 @@ export async function startTUI(agent, opts = {}) {
     if (state.processing || state.permission || state.question || state.picker || state.wizard?.step === "provider") {
       process.stdout.write(ansi.hideCursor)
     } else {
-      const cursorRow = 1 + convH + 2 + (layout.cursorLine - inputOffset) // header + 对话区 + 上边框 + 行偏移
+      const cursorRow = 1 + convH + taskPanelH + 2 + (layout.cursorLine - inputOffset) // header + 对话区 + todo 面板 + 上边框 + 行偏移
       const cursorCol = 3 + layout.cursorCol // 左边框 + 空格 + 文本偏移（1 基）
       process.stdout.write(`${ESC}[${cursorRow};${cursorCol}H${ansi.showCursor}`)
     }
@@ -620,6 +640,9 @@ export async function startTUI(agent, opts = {}) {
       },
       onPermissionRequest: (name, args) => askPermission(name, args),
       onQuestion: (text, options) => askQuestion(text, options),
+      onCompress: () => {
+        pushLine("  [context] 上下文过长，已自动压缩（早期对话由 LLM 摘要，任务状态保留）", C.warn)
+      },
       onTaskUpdate: (items) => {
         state.tasks = items
         const done = items.filter((i) => i.status === "done").length
@@ -628,7 +651,6 @@ export async function startTUI(agent, opts = {}) {
       },
     }
 
-    let aborted = false
     for (let resume = false; ; resume = true) {
       try {
         await runAgent(agent, text, callbacks, { signal: state.controller.signal, resume })
@@ -638,7 +660,6 @@ export async function startTUI(agent, opts = {}) {
         flushStream()
         if (error.name === "AbortError" || state.controller?.signal.aborted) {
           pushLine("[已中止]", C.warn)
-          aborted = true
           break
         }
         if (error instanceof ContinueError) {
@@ -660,6 +681,8 @@ export async function startTUI(agent, opts = {}) {
             break
           }
           pushLine("[继续执行…]", C.tool)
+          // 重创新 AbortController：旧 signal 一旦 abort 过，resume 会立即失败（防御性，当前路径不可达但耦合紧）
+          state.controller = new AbortController()
           continue
         }
         pushLine(`[error] ${error.message}`, C.error)
@@ -671,6 +694,10 @@ export async function startTUI(agent, opts = {}) {
     state.processing = false
     state.controller = null
     state.status = "Ready"
+    // 全部完成时自动收起 todo 面板（对齐 kimi-code TUI；agent.tasks 本身保留）
+    if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
+      state.tasks = []
+    }
     // 每轮结束后保存会话（崩溃也不丢）
     try {
       saveSession(agent)

@@ -63,7 +63,9 @@ const MODEL_CONTEXT_WINDOWS = [
   ["qwen", 128_000],
 ]
 const DEFAULT_CONTEXT_WINDOW = 128_000
-const COMPACT_RATIO = 0.6
+// 窗口利用率上限：0.8（DeepSeek 内部即全窗口；压缩本身要花一次 LLM 调用，过早压缩是纯浪费。
+// 留 20% 余量给压缩后的尾部增长与输出 token）
+const COMPACT_RATIO = 0.8
 
 export function contextWindowForModel(model) {
   const m = (model ?? "").toLowerCase()

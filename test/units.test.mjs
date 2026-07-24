@@ -447,9 +447,9 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
 
   // 显式配置优先
   assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
-  // 未配置时按模型推导（窗口 * 0.6）
-  assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 600000, auto: true })
-  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 38400, auto: true })
+  // 未配置时按模型推导（窗口 * 0.8）
+  assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 800000, auto: true })
+  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 51200, auto: true })
 })
 
 // ---------------------------------------------------------------- markdown 表格重排
@@ -776,4 +776,308 @@ test("runAgent: ContinueError 类属性正确", async () => {
   assert.equal(err.name, "ContinueError")
   assert.equal(err.turn, 100)
   assert.ok(err instanceof Error)
+})
+
+// ---------------------------------------------------------------- task 提醒与压缩快照（mock LLM server）
+
+/** 本地 mock LLM server：按脚本依次返回 SSE 响应（{ toolCall: {name, arguments}, reasoning?, content? }）；requests 捕获请求体 */
+function mockLLM(script) {
+  return import("node:http").then(({ createServer }) => {
+    let i = 0
+    const requests = []
+    const server = createServer((req, res) => {
+      let bodyText = ""
+      req.on("data", (c) => (bodyText += c))
+      req.on("end", () => {
+        requests.push(JSON.parse(bodyText))
+        const step = script[Math.min(i++, script.length - 1)]
+        const reasoningFrame = step.reasoning
+          ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: step.reasoning } }] })}\n\n`
+          : ""
+        let frames
+        if (step.toolCall) {
+          frames =
+            reasoningFrame +
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${i}`, function: { name: step.toolCall.name, arguments: step.toolCall.arguments ?? "{}" } }] } }] })}\n\n` +
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\n` +
+            `data: [DONE]\n\n`
+        } else {
+          frames =
+            reasoningFrame +
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: step.content } }] })}\n\n` +
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+            `data: [DONE]\n\n`
+        }
+        res.writeHead(200, { "Content-Type": "text/event-stream" })
+        res.end(frames)
+      })
+    })
+    return new Promise((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port, requests }))
+    })
+  })
+}
+
+test("runAgent: 10 轮未碰 task 工具时注入提醒（未建列表也提醒）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const noop = {
+    name: "noop",
+    description: "noop",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "ok",
+  }
+  // 11 轮工具调用 + 1 轮最终回答；提醒应在第 10 轮后注入
+  const script = [...Array.from({ length: 11 }, () => ({ toolCall: { name: "noop" } })), { content: "完成" }]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-agent-test-"))
+    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
+    const out = await runAgent(agent, "测试任务")
+    assert.equal(out, "完成")
+    const reminders = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("no task list is being tracked"),
+    )
+    assert.equal(reminders.length, 1) // 注入过一次且提醒后计数器重置
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: 有未完成项且 10 轮未更新时注入过期列表提醒", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const noop = {
+    name: "noop",
+    description: "noop",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "ok",
+  }
+  const script = [...Array.from({ length: 11 }, () => ({ toolCall: { name: "noop" } })), { content: "完成" }]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-agent-test-"))
+    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
+    agent.tasks = [{ title: "写实现", status: "in_progress" }]
+    agent._turnsSinceTaskUpdate = 5 // 模拟 5 轮前建过列表
+    await runAgent(agent, "测试任务")
+    const stale = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("active task list, last updated"),
+    )
+    assert.equal(stale.length, 1)
+    assert.match(stale[0].content, /- \[in_progress\] 写实现/)
+    assert.match(stale[0].content, /Never mention this reminder/)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("context: 压缩摘要内嵌 task 列表快照", async () => {
+  const { compressIfNeeded } = await import("../src/context.mjs")
+  const { server, port } = await mockLLM([{ content: "这是摘要" }])
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const agent = {
+      provider,
+      history: Array.from({ length: 14 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(50) })),
+      tasks: [
+        { title: "读代码", status: "done" },
+        { title: "写实现", status: "in_progress" },
+      ],
+      planMode: false,
+      _turnsSinceTaskUpdate: 3,
+      _turnsInPlanMode: 0,
+    }
+    const compacted = await compressIfNeeded(agent, 10)
+    assert.equal(compacted, true)
+    const summaryMsg = agent.history[2] // head(2) 之后第一条即压缩摘要
+    assert.match(summaryMsg.content, /这是摘要/)
+    assert.match(summaryMsg.content, /## Task List/)
+    assert.match(summaryMsg.content, /- \[in_progress\] 写实现/)
+    // 压缩后仍有独立回注提醒（双保险）
+    assert.match(agent.history.at(-1).content, /current task list after compaction/)
+    assert.equal(agent._turnsSinceTaskUpdate, 0)
+  } finally {
+    server.close()
+  }
+})
+
+// ---------------------------------------------------------------- 完成守卫（改了东西未 verify 不直接收工）
+
+function makeMutationTool() {
+  return {
+    name: "mutate",
+    description: "test mutation",
+    parameters: { type: "object", properties: {} },
+    readonly: false,
+    execute: async () => "ok",
+  }
+}
+
+test("runAgent: 完成守卫——改了文件未 verify 时推回去验证（只推一次）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "mutate" } },
+    { content: "完成了" },       // 第一次想收工 → 守卫拦截
+    { content: "验证后完成" },   // 第二次收工 → 放行（守卫只推一次）
+  ]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
+    const agent = createAgent({ provider, tools: [makeMutationTool()], config: {}, cwd })
+    const out = await runAgent(agent, "改点东西", { onPermissionRequest: async () => true })
+    assert.equal(out, "验证后完成")
+    const guards = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("have not verified the changes"),
+    )
+    assert.equal(guards.length, 1)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: 完成守卫——verify 过后直接放行", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "mutate" } },
+    { toolCall: { name: "verify" } },
+    { content: "done" },
+  ]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
+    const agent = createAgent({ provider, tools: [makeMutationTool()], config: {}, cwd })
+    const out = await runAgent(agent, "改点东西", { onPermissionRequest: async () => true })
+    assert.equal(out, "done")
+    const guards = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("have not verified the changes"),
+    )
+    assert.equal(guards.length, 0)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: 完成守卫——只跑 bash 不触发（跑测试不该被催）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const fakeBash = { ...makeMutationTool(), name: "bash" }
+  const script = [{ toolCall: { name: "bash" } }, { content: "测试全绿" }]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
+    const agent = createAgent({ provider, tools: [fakeBash], config: {}, cwd })
+    const out = await runAgent(agent, "跑下测试", { onPermissionRequest: async () => true })
+    assert.equal(out, "测试全绿")
+    const guards = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("have not verified the changes"),
+    )
+    assert.equal(guards.length, 0)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: thinking 模式下 reasoning_content 跨请求回传（DeepSeek 要求）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const noop = {
+    name: "noop",
+    description: "noop",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "ok",
+  }
+  const script = [
+    { toolCall: { name: "noop" }, reasoning: "思考链A" },
+    { content: "最终回复", reasoning: "思考链B" },
+  ]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-reasoning-test-"))
+    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
+    const out = await runAgent(agent, "测试")
+    assert.equal(out, "最终回复")
+
+    // 带 tool_calls 的 assistant 消息必须携带 reasoning_content 入 history
+    const assistantWithTools = agent.history.find((m) => m.role === "assistant" && m.tool_calls?.length)
+    assert.equal(assistantWithTools.reasoning_content, "思考链A")
+
+    // 第二个请求发出的 messages 里必须原样回传（DeepSeek 缺失会 400）
+    const sentAssistant = requests[1].messages.find((m) => m.role === "assistant" && m.tool_calls?.length)
+    assert.equal(sentAssistant.reasoning_content, "思考链A")
+
+    // 最终回复（无 tool_calls 的轮次）不附加该字段——DeepSeek 只要求 tool-call 轮回传
+    assert.ok(!("reasoning_content" in agent.history.at(-1)))
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("context: estimateTokens 计入 reasoning_content", async () => {
+  const { estimateTokens } = await import("../src/context.mjs")
+  const without = estimateTokens([{ role: "assistant", content: "abcd" }])
+  const withReasoning = estimateTokens([{ role: "assistant", content: "abcd", reasoning_content: "x".repeat(400) }])
+  assert.equal(withReasoning - without, 100)
+})
+
+test("runAgent: system prompt 跨 run 逐字节稳定（前缀缓存），记忆走 user 上下文消息", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const memory = freshMemory()
+  await put(memory, { type: "knowledge", title: "installs", content: "use pnpm for installs" })
+  const script = [{ content: "回答1" }, { content: "回答2" }]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-cache-test-"))
+    const agent = createAgent({ provider, tools: [], config: {}, cwd, memory })
+    await runAgent(agent, "pnpm 相关问题1")
+    await new Promise((r) => setTimeout(r, 5)) // 若时间戳未固定，这里足以让它不同
+    await runAgent(agent, "pnpm 相关问题2")
+
+    assert.equal(requests.length, 2)
+    const sys1 = requests[0].messages[0]
+    const sys2 = requests[1].messages[0]
+    assert.equal(sys1.role, "system")
+    assert.equal(sys1.content, sys2.content) // 逐字节一致 → DeepSeek 前缀缓存可命中
+    assert.ok(!sys1.content.includes("use pnpm")) // 记忆不在 system prompt 里
+
+    // 记忆以独立 user 上下文消息进入历史
+    const memMsg = agent.history.find((m) => typeof m.content === "string" && m.content.includes("use pnpm"))
+    assert.equal(memMsg.role, "user")
+    assert.match(memMsg.content, /Relevant memories/)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: 上下文压缩时触发 onCompress 回调", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  // 第 1 个请求是压缩摘要调用，第 2 个是主循环调用
+  const script = [{ content: "摘要" }, { content: "done" }]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-compress-test-"))
+    const agent = createAgent({ provider, tools: [], config: { agent: { compactThreshold: 10 } }, cwd })
+    agent.history = Array.from({ length: 14 }, (_, i) => ({ role: "user", content: `历史消息 ${i} ` + "x".repeat(50) }))
+    let compressed = 0
+    const out = await runAgent(agent, "继续", { onCompress: () => compressed++ })
+    assert.equal(out, "done")
+    assert.equal(compressed, 1)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
 })

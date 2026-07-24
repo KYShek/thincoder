@@ -6,11 +6,12 @@
 
 import { chat } from "./provider.mjs"
 
-/** 粗估一组消息的 token 数（正文 + tool_calls 参数） */
+/** 粗估一组消息的 token 数（正文 + 思考链 + tool_calls 参数） */
 export function estimateTokens(messages) {
   let chars = 0
   for (const m of messages) {
     if (typeof m.content === "string") chars += m.content.length
+    if (typeof m.reasoning_content === "string") chars += m.reasoning_content.length
     for (const tc of m.tool_calls ?? []) {
       chars += (tc.function?.name?.length ?? 0) + (tc.function?.arguments?.length ?? 0)
     }
@@ -70,9 +71,17 @@ export async function compressIfNeeded(agent, threshold) {
     messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
   })
 
+  // 摘要正文内嵌 task 快照（对齐 kimi-code 的 postProcessSummary）——
+  // 否则二次压缩时 task 列表会随旧提醒消息一起被摘要器丢掉
+  let compacted = COMPACTION_PREFIX + summary.content
+  if (agent.tasks.length > 0) {
+    const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
+    compacted += `\n\n## Task List\n${taskSummary}`
+  }
+
   agent.history = [
     ...head,
-    { role: "user", content: COMPACTION_PREFIX + summary.content },
+    { role: "user", content: compacted },
     { role: "assistant", content: "Understood. I'll continue from this summary, re-verifying anything transient." },
     ...tail,
   ]

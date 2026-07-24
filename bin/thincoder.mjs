@@ -6,6 +6,7 @@
  *   thincoder chat "..."      一次性 agent 问答（可调用工具，流式输出）
  *   thincoder memory <sub>    记忆管理：list / search / put / remove
  *   thincoder upgrade         从 npm 升级到最新版
+ *   thincoder -v              显示版本号
  *   thincoder --help          显示帮助
  */
 
@@ -19,6 +20,7 @@ import { createMemory, memoryTools, put, remove, search, list, syncDir } from ".
 import { builtinTools } from "../src/tools.mjs"
 
 const [command, ...args] = process.argv.slice(2)
+const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
 
 // 顶层兜底：任何未捕获错误打印一行消息干净退出，不糊用户一脸 stack
 process.on("uncaughtException", (error) => {
@@ -45,6 +47,7 @@ Usage:
                             Extract knowledge candidates from a session
                             transcript file; confirm each before saving
   thincoder upgrade         Update to the latest version from npm
+  thincoder -v, --version   Print version
 
 Config: ~/.thincoder/config.json (providers[] + activeProvider；TUI 内用 /provider、/model 管理)
 Env:    THINCODER_API_KEY, THINCODER_BASE_URL, THINCODER_MODEL, THINCODER_ACTIVE_PROVIDER
@@ -167,7 +170,6 @@ switch (command) {
       }
     }
     if (auto) agent.autoApprove = true
-    const { ContinueError } = await import("../src/agent.mjs")
     try {
       await runAgent(agent, prompt, {
         onToken: (text) => process.stdout.write(text),
@@ -179,11 +181,13 @@ switch (command) {
           console.error(`[done] ${name} -> ${preview.split("\n")[0]}`)
         },
         onToolOutput: (name, chunk) => process.stderr.write(chunk),
+        onCompress: () => console.error(`\n[context] 上下文过长，已自动压缩（早期对话由 LLM 摘要）`),
         onPermissionRequest: (name, toolArgs) => (agent.autoApprove ? true : askPermission(name, toolArgs)),
       })
       process.stdout.write("\n")
     } catch (error) {
-      if (error instanceof ContinueError) {
+      // 用 name 判断而非 instanceof：不依赖"与 runAgent 同一个模块实例"这一隐式约定
+      if (error.name === "ContinueError") {
         console.error(`\n[paused] Agent stopped after ${error.turn} turns. Run in TUI to continue.`)
         exitSoon(0)
       } else {
@@ -388,6 +392,12 @@ switch (command) {
   case "--help":
   case "-h": {
     process.stdout.write(USAGE)
+    break
+  }
+
+  case "--version":
+  case "-v": {
+    console.log(VERSION)
     break
   }
 

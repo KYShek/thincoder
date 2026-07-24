@@ -1,8 +1,17 @@
 {
   "name": "thincoder",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Thin coding agent - zero dependencies, no build step, Node.js native. Sharp code, zero bloat.",
-  "keywords": ["ai", "agent", "coding", "cli", "llm", "deepseek", "openai", "tui"],
+  "keywords": [
+    "ai",
+    "agent",
+    "coding",
+    "cli",
+    "llm",
+    "deepseek",
+    "openai",
+    "tui"
+  ],
   "type": "module",
   "bin": {
     "thincoder": "./bin/thincoder.mjs"
