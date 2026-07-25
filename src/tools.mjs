@@ -38,7 +38,7 @@ export function toOpenAISchema(tool) {
 /** 剥离 ANSI 转义序列（vim/less/颜色码会冲花 TUI 渲染），并把 \r 进度条改写转成换行 */
 function sanitizeOutput(s) {
   return s
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g, "")
+    .replace(/\x1b\[[0-9;?]*[\x40-\x7E]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g, "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
 }
@@ -49,7 +49,9 @@ function truncate(text, max = MAX_OUTPUT_CHARS) {
 }
 
 function resolveInCwd(ctx, p) {
-  return resolve(ctx.cwd, p)
+  const resolved = resolve(ctx.cwd, p)
+  if (relative(ctx.cwd, resolved).startsWith("..")) throw new Error(`Access denied outside working directory: ${p}`)
+  return resolved
 }
 
 // ---------------------------------------------------------------- read
@@ -97,6 +99,8 @@ const writeTool = {
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     await mkdir(dirname(abs), { recursive: true })
+    const st = await stat(abs).catch(() => null)
+    if (st?.isDirectory()) throw new Error(`Path is a directory: ${abs}`)
     await writeFile(abs, args.content, "utf8")
     return `Wrote ${args.content.length} chars to ${abs}`
   },
@@ -151,6 +155,20 @@ const bashTool = {
   },
   readonly: false,
   async execute(args, ctx) {
+    // 安全预检：销毁性 git 操作（checkout -- / reset --hard）先检查未提交改动，
+    // 有则拒绝——防一键清掉几小时工作（像今天 git checkout -- 六个文件那次）
+    const DESTRUCTIVE_GIT = /^git\s+(?:checkout\s+--?\s+|reset\s+--hard\b)/
+    if (DESTRUCTIVE_GIT.test(args.command)) {
+      const status = execFileSync("git", ["status", "--porcelain"], {
+        cwd: ctx.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+      }).trim()
+      if (status) {
+        throw new Error(
+          `Refusing destructive git command: uncommitted changes exist. Commit or stash first.\n\n${status}`
+        )
+      }
+    }
+
     return new Promise((resolve) => {
       const child = spawn(args.command, {
         cwd: ctx.cwd,
@@ -378,14 +396,16 @@ const websearchTool = {
     required: ["query"],
   },
   readonly: true,
-  async execute(args) {
+  async execute(args, ctx) {
     const limit = args.limit ?? 8
     const url = `https://www.bing.com/search?q=${encodeURIComponent(args.query)}`
     let html
     try {
       const response = await fetch(url, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-        signal: AbortSignal.timeout(15_000),
+        signal: ctx?.signal
+          ? AbortSignal.any([ctx.signal, AbortSignal.timeout(15_000)])
+          : AbortSignal.timeout(15_000),
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       html = await response.text()
@@ -475,14 +495,16 @@ const fetchTool = {
     required: ["url"],
   },
   readonly: true,
-  async execute(args) {
+  async execute(args, ctx) {
     if (!/^https?:\/\//.test(args.url)) throw new Error("url must start with http:// or https://")
     let response
     try {
       response = await fetch(args.url, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
         redirect: "follow",
-        signal: AbortSignal.timeout(20_000),
+        signal: ctx?.signal
+          ? AbortSignal.any([ctx.signal, AbortSignal.timeout(20_000)])
+          : AbortSignal.timeout(20_000),
       })
     } catch (error) {
       throw new Error(`fetch failed: ${error.cause?.code ?? error.message}`)

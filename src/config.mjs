@@ -74,7 +74,7 @@ const COMPACT_RATIO = 0.8
 /** 按模型名前缀查规格（大小写不敏感），未知模型给保守默认 */
 export function specForModel(model) {
   const m = (model ?? "").toLowerCase()
-  for (const [prefix, spec] of MODEL_SPECS) {
+  for (const [prefix, spec] of [...MODEL_SPECS].sort((a,b) => b[0].length - a[0].length)) {
     if (m.startsWith(prefix)) return spec
   }
   return DEFAULT_SPEC
@@ -149,7 +149,7 @@ export function loadConfig() {
 
   // apiKey 还可用环境变量兜底（当 providers 里没配 key 时）
   // 提供商专用的环境变量只对同名 provider 生效，避免 key 串到错误的端点
-  if (!runtimeProvider.apiKey) {
+  if (!runtimeProvider.apiKey?.trim()) {
     const envMap = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }
     const keyVar = envMap[merged.activeProvider]
     if (keyVar && process.env[keyVar]) runtimeProvider.apiKey = process.env[keyVar]

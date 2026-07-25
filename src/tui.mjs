@@ -207,6 +207,21 @@ export function layoutInput(chars, cursor, width) {
 }
 
 /** 文本按宽度折行（保留 \n），返回行数组 */
+/**
+ * 显示净化：控制字符会破坏终端网格数学（\r 回车覆盖、\t 宽度误判致整帧错位、ANSI/响铃冲屏）。
+ * 只动显示层——模型看到的工具结果原文不变；session 里已存的脏 display 回放时也经此净化。
+ */
+const ANSI_SEQUENCE_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g
+export function sanitizeDisplay(s) {
+  return s
+    .replace(ANSI_SEQUENCE_RE, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\t/g, "    ")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .replace(/\n+$/, "")
+}
+
 export function wrapText(text, width) {
   const lines = []
   for (const rawLine of text.split("\n")) {
@@ -301,10 +316,13 @@ export async function startTUI(agent, opts = {}) {
     if (text) keyStream.write(text)
   })
 
+  let cleanedUp = false
   const cleanup = () => {
+    if (cleanedUp) return
+    cleanedUp = true
     // 退出前保存会话（同步写，保证 exit 路径也能落盘）
     try {
-      saveSession(agent)
+      saveSession(agent, state.lines)
     } catch {
       // 存失败不耽误退出
     }
@@ -410,7 +428,7 @@ export async function startTUI(agent, opts = {}) {
     // 对话区内容行（含流式缓冲）；markdown 表格先按显示宽度重排
     const convLines = []
     for (const l of state.lines) {
-      for (const line of formatTables(l.text, cols - 1)) {
+      for (const line of formatTables(sanitizeDisplay(l.text), cols - 1)) {
         for (const wrapped of wrapText(line, cols - 1)) {
           convLines.push({ text: wrapped, color: l.color })
         }
@@ -418,12 +436,12 @@ export async function startTUI(agent, opts = {}) {
     }
     // 思考流（暗色）在正文流之前
     if (state.reasoning) {
-      for (const wrapped of wrapText(state.reasoning, cols - 1)) {
+      for (const wrapped of wrapText(sanitizeDisplay(state.reasoning), cols - 1)) {
         convLines.push({ text: wrapped, color: C.reason })
       }
     }
     if (state.streaming) {
-      for (const line of formatTables(state.streaming, cols - 1)) {
+      for (const line of formatTables(sanitizeDisplay(state.streaming), cols - 1)) {
         for (const wrapped of wrapText(line, cols - 1)) {
           convLines.push({ text: wrapped, color: C.text })
         }
@@ -432,7 +450,7 @@ export async function startTUI(agent, opts = {}) {
     // 工具实时输出（暗色，只保留末尾防刷屏；按工具名隔离防止并行工具串扰）
     const allStreams = Object.values(state.toolStreams).join("")
     if (allStreams) {
-      const tail = allStreams.slice(-4000)
+      const tail = sanitizeDisplay(allStreams.slice(-4000))
       for (const wrapped of wrapText(tail, cols - 1)) {
         convLines.push({ text: wrapped, color: C.dim })
       }
@@ -595,7 +613,7 @@ export async function startTUI(agent, opts = {}) {
     if (state.processing || state.permission || state.question || state.picker || state.wizard?.step === "provider") {
       process.stdout.write(ansi.hideCursor)
     } else {
-      const cursorRow = 1 + convH + taskPanelH + 2 + (layout.cursorLine - inputOffset) // header + 对话区 + todo 面板 + 上边框 + 行偏移
+      const cursorRow = 1 + convH + pickerH + taskPanelH + 2 + (layout.cursorLine - inputOffset) // header + 对话区 + todo 面板 + 上边框 + 行偏移
       const cursorCol = 3 + layout.cursorCol // 左边框 + 空格 + 文本偏移（1 基）
       process.stdout.write(`${ESC}[${cursorRow};${cursorCol}H${ansi.showCursor}`)
     }
@@ -696,6 +714,14 @@ export async function startTUI(agent, opts = {}) {
         pushLine(`  [task] ${done}/${items.length}${current ? ` ▶ ${current.title}` : ""}`, C.dim)
         render()
       },
+      // 增量保存：每 5 个工具 turn 落一次盘，中途崩溃丢失窗口从一整轮缩到几轮
+      onTurnEnd: (() => {
+        let n = 0
+        return () => {
+          if (++n % 5 !== 0) return
+          try { saveSession(agent, state.lines) } catch {}
+        }
+      })(),
     }
 
     for (let resume = false; ; resume = true) {
@@ -747,7 +773,7 @@ export async function startTUI(agent, opts = {}) {
     }
     // 每轮结束后保存会话（崩溃也不丢）
     try {
-      saveSession(agent)
+      saveSession(agent, state.lines)
     } catch {
       // 存失败不打断使用
     }
@@ -2014,9 +2040,14 @@ export async function startTUI(agent, opts = {}) {
   }
   pushLine(`Tools: ${agent.tools.map((t) => t.name).join(", ")}`, C.dim)
   // 恢复上次会话：重建对话区显示（tool 结果行省略，保持清爽）
-  if (opts.restored?.history?.length) {
+  if (opts.restored?.display?.length) {
+    // 用户视角的恢复：display 是退出前对话区的原样快照，所见即所得
+    state.lines = [...opts.restored.display.map((l) => ({ text: l.text, color: l.color })), ...state.lines]
+    pushLabel(`── 已恢复上次会话（退出前原样回放）；/new 开始新会话 ──`, C.warn)
+  } else if (opts.restored?.history?.length) {
     for (const m of opts.restored.history) {
       if (m.role === "user") {
+        if (typeof m.content === "string" && m.content.startsWith("[System reminder:")) continue
         pushLabel(`❯ You:`, ansi.bold + C.user)
         if (typeof m.content === "string" && m.content) pushLine(m.content, C.text)
       } else if (m.role === "assistant") {

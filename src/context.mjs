@@ -1,22 +1,30 @@
 /**
  * context.mjs — 上下文管理与压缩
- * token 用 length/4 粗估（不引 tokenizer 依赖）。
+ * token 无实测值时用估算兜底（ASCII/4 + 非 ASCII/1，不引 tokenizer 依赖）；
+ * 有实测值（响应 usage.prompt_tokens）以实测为准——估算对 CJK 低估 3-4 倍，靠它触发可能永远来不及压缩。
  * 压缩策略：保留最早 2 条 + 最近 N 条，中间由 LLM 摘要成一条（学 kimi-code，简化版）。
  */
 
 import { chat } from "./provider.mjs"
 
+/** 粗估一段文本的 token 数：ASCII 约 4 字符 1 token，CJK 等非 ASCII 约 1 字符 1 token */
+function estimateText(s) {
+  let nonAscii = 0
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) nonAscii++
+  return Math.ceil((s.length - nonAscii) / 4) + nonAscii
+}
+
 /** 粗估一组消息的 token 数（正文 + 思考链 + tool_calls 参数） */
 export function estimateTokens(messages) {
-  let chars = 0
+  let tokens = 0
   for (const m of messages) {
-    if (typeof m.content === "string") chars += m.content.length
-    if (typeof m.reasoning_content === "string") chars += m.reasoning_content.length
+    if (typeof m.content === "string") tokens += estimateText(m.content)
+    if (typeof m.reasoning_content === "string") tokens += estimateText(m.reasoning_content)
     for (const tc of m.tool_calls ?? []) {
-      chars += (tc.function?.name?.length ?? 0) + (tc.function?.arguments?.length ?? 0)
+      tokens += estimateText(tc.function?.name ?? "") + estimateText(tc.function?.arguments ?? "")
     }
   }
-  return Math.ceil(chars / 4)
+  return tokens
 }
 
 const KEEP_HEAD = 2 // 最早的用户意图，不能丢
@@ -39,19 +47,27 @@ const COMPACTION_PREFIX =
   "Treat it as notes, not proof — trust its conclusions (don't redo what it reports as done) " +
   "but re-verify transient state (open files, running processes) with tools before relying on them.]\n\n"
 
-/**
- * 如果历史超长则压缩。返回是否发生了压缩。
- * 只在循环的安全点调用（history 末尾是 user 消息时）。
- * 压缩后自动回注 task 列表状态。
- */
-export async function compressIfNeeded(agent, threshold) {
-  const history = agent.history
-  if (estimateTokens(history) <= threshold) return false
-  if (history.length <= KEEP_HEAD + KEEP_TAIL + 1) return false
+/** 压缩摘要调用连续失败达到此次数后，降级为确定性截断（丢信息好过任务被 400 打死） */
+export const COMPRESS_FAILURE_LIMIT = 3
 
-  // 切分：head / middle(被摘要) / tail
-  // head 终点必须避开断头 tool_calls：assistant 带了 tool_calls 时其 tool 响应必须留在 head，
-  // 否则响应被摘要成纯文本后协议校验 400（tool_calls must be followed by tool messages）
+/** task 回注提醒前缀（压缩后重新注入前，先清掉历史里的旧版本，保持单一信息源） */
+const TASK_REINJECT_PREFIX = "[System reminder: your current task list after compaction:"
+
+/** 截断兜底笔记（摘要 LLM 连续失败时用，无 LLM 调用） */
+const FALLBACK_NOTE =
+  "[Context was truncated after repeated summarization failures. " +
+  "The middle portion of earlier work was dropped WITHOUT a summary. " +
+  "Re-verify any state you need with tools before relying on it.]\n\n"
+
+/**
+ * 切分 head / middle(被摘要) / tail；没有可压缩的中间段返回 null。
+ * head 终点必须避开断头 tool_calls：assistant 带了 tool_calls 时其 tool 响应必须留在 head，
+ * 否则响应被摘要成纯文本后协议校验 400（tool_calls must be followed by tool messages）。
+ * tail 起点必须包含 tool 结果对应的 assistant——tool 在 tail、assistant 在 middle 时，
+ * 摘要会把 assistant 吞掉，留下 orphan tool 结果 → 协议 400。
+ */
+function splitHistory(history) {
+  if (history.length <= KEEP_HEAD + KEEP_TAIL + 1) return null
   let headEnd = KEEP_HEAD
   while (
     headEnd < history.length &&
@@ -61,46 +77,55 @@ export async function compressIfNeeded(agent, threshold) {
   ) {
     headEnd++
   }
-  // tail 起点必须避开孤儿 tool 消息（其 assistant tool_calls 在 middle 里无妨，middle 会被整体摘要成纯文本）
   let tailStart = history.length - KEEP_TAIL
+
+  // tail 区域内的 tool 消息对应的 assistant tool_calls 若在 middle 里，摘要会把 assistant 吞掉，
+  // 剩下 orphan tool 结果 → 协议 400。从 tail 收集 tool_call_id，往前找回所属 assistant 拉进 tail
+  const tailToolIds = new Set()
+  for (let i = tailStart; i < history.length; i++) {
+    if (history[i].role === "tool") tailToolIds.add(history[i].tool_call_id)
+  }
+  for (let i = tailStart - 1; i > headEnd; i--) {
+    const m = history[i]
+    if (m.role === "assistant" && m.tool_calls?.some((tc) => tailToolIds.has(tc.id))) {
+      tailStart = i
+      break
+    }
+  }
+
+  // skip orphan tool messages at the new tail boundary (tool whose assistant was pulled in above)
   while (tailStart > headEnd && history[tailStart].role === "tool") {
     tailStart++
   }
-  if (tailStart <= headEnd) return false // 没有可压缩的中间段
+  if (tailStart <= headEnd) return null
+  return { headEnd, tailStart }
+}
 
-  const head = history.slice(0, headEnd)
-  const middle = history.slice(headEnd, tailStart)
-  const tail = history.slice(tailStart)
-
-  const serialized = middle
-    .map((m) => {
-      const toolNote = m.tool_calls ? ` [调用了工具: ${m.tool_calls.map((t) => t.function.name).join(", ")}]` : ""
-      // user 消息放宽到 8000：用户粘贴的长需求被切掉会让摘要丢失原始意图；tool/assistant 2000 足够
-      const cap = m.role === "user" ? 8000 : 2000
-      const content = typeof m.content === "string" ? m.content.slice(0, cap) : ""
-      return `[${m.role}]${toolNote} ${content}`
-    })
-    .join("\n")
-
-  const summary = await chat(agent.provider, {
-    messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
-  })
-
+/** 用一条笔记替换 middle，并回注 task/plan 状态（LLM 摘要与截断兜底共用） */
+function applyCompression(agent, headEnd, tailStart, note) {
+  const head = agent.history.slice(0, headEnd)
+  const tail = agent.history.slice(tailStart)
   agent.history = [
     ...head,
-    { role: "user", content: COMPACTION_PREFIX + summary.content },
-    { role: "assistant", content: "Understood. I'll continue from this summary, re-verifying anything transient." },
+    { role: "user", content: note },
+    { role: "assistant", content: "Understood. I'll continue from these notes, re-verifying anything transient." },
     ...tail,
   ]
+  // 实测 token 基准随旧历史一起失效（prompt_tokens 对应的是压缩前的上下文），退回估算直到下次响应
+  agent._lastPromptTokens = null
+  agent._usageAtLen = null
 
   // 压缩后回注 task 列表（agent 需要知道自己做到哪了）。
-  // 单一信息源：每次压缩都重新注入，始终在历史末尾、内容最新——
+  // 单一信息源：先清掉 tail 里残留的旧回注，再注入最新版本——
   // 不再嵌入摘要正文（会与这里重复且逐渐过时）
+  agent.history = agent.history.filter(
+    (m) => !(m.role === "user" && typeof m.content === "string" && m.content.startsWith(TASK_REINJECT_PREFIX))
+  )
   if (agent.tasks.length > 0) {
     const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
     agent.history.push({
       role: "user",
-      content: `[System reminder: your current task list after compaction:\n${taskSummary}\nContinue from where you left off.]`,
+      content: `${TASK_REINJECT_PREFIX}\n${taskSummary}\nContinue from where you left off.]`,
     })
   }
 
@@ -115,6 +140,52 @@ export async function compressIfNeeded(agent, threshold) {
       content: "[System reminder: plan mode is active. Explore the codebase read-only, design your solution, then call plan with action='exit' to present it for user approval.]",
     })
   }
+}
 
+/**
+ * 如果历史超长则压缩。返回是否发生了压缩。
+ * 只在循环的安全点调用（history 末尾是 user 或 tool 消息——完整交换的边界）。
+ * 压缩后自动回注 task 列表状态。
+ */
+export async function compressIfNeeded(agent, threshold) {
+  const history = agent.history
+  // 真实基准优先：上次响应的 prompt_tokens 是完整上下文（system+tools+history）的实测值，
+  // 之后追加的消息用估算补增量；无实测（首轮/恢复后/刚压缩完）退化为纯估算
+  const tokens =
+    agent._lastPromptTokens != null
+      ? agent._lastPromptTokens + estimateTokens(history.slice(agent._usageAtLen ?? history.length))
+      : estimateTokens(history)
+  if (tokens <= threshold) return false
+
+  const split = splitHistory(history)
+  if (!split) return false
+
+  const middle = history.slice(split.headEnd, split.tailStart)
+  const serialized = middle
+    .map((m) => {
+      const toolNote = m.tool_calls ? ` [调用了工具: ${m.tool_calls.map((t) => t.function.name).join(", ")}]` : ""
+      // user 消息放宽到 8000：用户粘贴的长需求被切掉会让摘要丢失原始意图；tool/assistant 2000 足够
+      const cap = m.role === "user" ? 8000 : 2000
+      const content = typeof m.content === "string" ? m.content.slice(0, cap) : ""
+      return `[${m.role}]${toolNote} ${content}`
+    })
+    .join("\n")
+
+  const summary = await chat(agent.provider, {
+    messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
+  })
+
+  applyCompression(agent, split.headEnd, split.tailStart, COMPACTION_PREFIX + summary.content)
+  return true
+}
+
+/**
+ * 确定性截断兜底：摘要 LLM 连续失败时调用，不碰网络。
+ * 丢掉 middle 换任务能继续跑。返回是否发生了截断。
+ */
+export function compressFallback(agent) {
+  const split = splitHistory(agent.history)
+  if (!split) return false
+  applyCompression(agent, split.headEnd, split.tailStart, FALLBACK_NOTE)
   return true
 }

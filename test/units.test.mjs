@@ -6,7 +6,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 
 import { stringWidth, wrapText } from "../src/tui.mjs"
 import { createMemory, put, search, list, remove, putMarkdown, syncDir } from "../src/memory.mjs"
@@ -28,6 +28,24 @@ test("wrapText: 按宽度折行，保留空行", () => {
   assert.deepEqual(wrapText("abcdefgh", 3), ["abc", "def", "gh"])
   assert.deepEqual(wrapText("你好吗朋友", 4), ["你好", "吗朋", "友"])
   assert.deepEqual(wrapText("a\n\nb", 10), ["a", "", "b"])
+})
+
+test("sanitizeDisplay: 控制字符不破坏终端网格（\\r 覆盖、\\t 超宽、ANSI/响铃冲屏）", async () => {
+  const { sanitizeDisplay } = await import("../src/tui.mjs")
+  // CRLF 文件的 read 预览行：\r 残留会把光标打回行首，clearLine 误清整行
+  assert.equal(sanitizeDisplay("1\tconst a = 1;\r"), "1    const a = 1;")
+  // 行中间的 \r（老 Mac 文件）：后续字符会从行首覆盖前面内容
+  assert.equal(sanitizeDisplay("abc\rdef"), "abc\ndef")
+  assert.equal(sanitizeDisplay("a\r\nb"), "a\nb")
+  // \t 终端渲染宽 1~8，按宽 1 折行会物理超宽 → 整帧错位；展开为 4 空格
+  assert.equal(sanitizeDisplay("12\tx"), "12    x")
+  // ANSI 颜色/光标序列、响铃、其他 C0 控制字符
+  assert.equal(sanitizeDisplay("\x1b[31mred\x1b[0m"), "red")
+  assert.equal(sanitizeDisplay("\x1b[2Aup"), "up")
+  assert.equal(sanitizeDisplay("bell\x07end"), "bellend")
+  assert.equal(sanitizeDisplay("a\x00\x08\x0b\x7fb"), "ab")
+  // 干净文本原样通过
+  assert.equal(sanitizeDisplay("正常文本 normal text"), "正常文本 normal text")
 })
 
 // ---------------------------------------------------------------- memory
@@ -425,15 +443,77 @@ test("session: 保存/恢复/清空 往返", async () => {
       { role: "tool", tool_call_id: "c1", content: "src/" },
     ],
     tasks: [{ title: "t", status: "done" }],
+    _pendingReminders: ["[System reminder: plan mode is now ON. ...]"],
+    _sessionStart: "2026-01-01T00:00:00.000Z",
   }
+  agent.history.push({ role: "user", content: "[System reminder: working directory snapshot:\nsrc/]", transient: true })
   assert.equal(loadSession(cwd), null) // 不存在时 null
-  saveSession(agent)
+  // display：用户视角的对话区快照，与 agent 的 history 分开持久化
+  const display = [
+    { text: "❯ You:", color: "bold" },
+    { text: "你好", color: "white" },
+    { text: "  [done] ls → src/", color: "dim" },
+  ]
+  saveSession(agent, display)
   const restored = loadSession(cwd)
-  assert.equal(restored.history.length, 3)
+  assert.equal(restored.history.length, 3) // transient 标记的临时上下文不持久化
   assert.equal(restored.history[1].tool_calls[0].function.name, "ls")
   assert.equal(restored.tasks[0].status, "done")
+  // 待注入的提醒也随会话持久化，退出不丢
+  assert.deepEqual(restored.pendingReminders, ["[System reminder: plan mode is now ON. ...]"])
+  // sessionStart 带回：跨重启 system prompt 逐字节稳定，前缀缓存保持热
+  assert.equal(restored.sessionStart, "2026-01-01T00:00:00.000Z")
+  // display 原样往返（所见即所得回放的数据源）
+  assert.deepEqual(restored.display, display)
+  // 原子写不残留临时文件
+  const { readdirSync } = await import("node:fs")
+  const { sessionPath } = await import("../src/session.mjs")
+  const { dirname } = await import("node:path")
+  assert.ok(readdirSync(dirname(sessionPath(cwd))).every((f) => !f.endsWith(".tmp")))
   clearSession(cwd)
   assert.equal(loadSession(cwd).history.length, 0)
+})
+
+test("session: 旧存档的前缀型临时上下文在加载时清理，cwd 不匹配拒绝恢复", async () => {
+  const { loadSession, sessionPath } = await import("../src/session.mjs")
+  const cwd = join(tmpdir(), "thincoder-session-legacy-" + Date.now())
+  const p = sessionPath(cwd)
+  mkdirSync(dirname(p), { recursive: true })
+  // 旧版本存档：临时上下文没有 transient 标记，只能按文本前缀识别
+  writeFileSync(p, JSON.stringify({
+    version: 2,
+    cwd,
+    history: [
+      { role: "user", content: "[System reminder: working directory snapshot:\nsrc/]" },
+      { role: "user", content: "真正的需求" },
+    ],
+    tasks: [],
+  }), "utf8")
+  const restored = loadSession(cwd)
+  assert.equal(restored.history.length, 1)
+  assert.equal(restored.history[0].content, "真正的需求")
+  // cwd 不匹配（哈希碰撞/手工拷贝）拒绝恢复
+  writeFileSync(p, JSON.stringify({ version: 2, cwd: "D:\\other-project", history: [], tasks: [] }), "utf8")
+  assert.equal(loadSession(cwd), null)
+})
+
+test("session: 畸形 display 不让 TUI 启动崩溃（schema 校验+净化）", async () => {
+  const { loadSession, sessionPath } = await import("../src/session.mjs")
+  const cwd = join(tmpdir(), "thincoder-session-display-" + Date.now())
+  const p = sessionPath(cwd)
+  mkdirSync(dirname(p), { recursive: true })
+  // display 不是数组：旧版/手工损坏的存档
+  writeFileSync(p, JSON.stringify({ version: 2, cwd, history: [], tasks: [], display: "not-an-array" }), "utf8")
+  assert.deepEqual(loadSession(cwd).display, [])
+  // 畸形元素被滤掉，合法元素净化为 {text, color}
+  writeFileSync(p, JSON.stringify({
+    version: 2,
+    cwd,
+    history: [],
+    tasks: [],
+    display: [{ text: "ok", color: "dim", extra: 1 }, { noText: true }, null, "str", { text: 42 }],
+  }), "utf8")
+  assert.deepEqual(loadSession(cwd).display, [{ text: "ok", color: "dim" }])
 })
 
 // ---------------------------------------------------------------- 模型上下文窗口 / 阈值推导
@@ -944,6 +1024,113 @@ test("context: 压缩时 head 不以断头 tool_calls 结尾（防 400）", asyn
   }
 })
 
+test("context: 压缩判定用实测 prompt_tokens 基准（估算远低于阈值也触发），压缩后基准失效", async () => {
+  const { compressIfNeeded } = await import("../src/context.mjs")
+  const { server, port } = await mockLLM([{ content: "这是摘要" }])
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const agent = {
+      provider,
+      // 估算只有约 28 token，远低于阈值 100——但实测基准 10000 已超，必须压缩
+      history: Array.from({ length: 14 }, (_, i) => ({ role: "user", content: `m${i} ` + "x".repeat(4) })),
+      tasks: [],
+      planMode: false,
+      _turnsSinceTaskUpdate: 0,
+      _turnsInPlanMode: 0,
+      _lastPromptTokens: 10_000,
+      _usageAtLen: 0,
+    }
+    const compacted = await compressIfNeeded(agent, 100)
+    assert.equal(compacted, true)
+    assert.match(agent.history[2].content, /这是摘要/)
+    assert.equal(agent._lastPromptTokens, null) // 旧基准随历史一起失效，退回估算
+    assert.equal(agent._usageAtLen, null)
+  } finally {
+    server.close()
+  }
+})
+
+test("context: 截断兜底不碰网络，结构合法且 task 回注去重", async () => {
+  const { compressFallback } = await import("../src/context.mjs")
+  const agent = {
+    provider: { baseURL: "http://127.0.0.1:1", apiKey: "x", model: "m" }, // 不应被调用
+    history: [
+      ...Array.from({ length: 12 }, (_, i) => ({ role: "user", content: `消息 ${i}` })),
+      { role: "user", content: "[System reminder: your current task list after compaction:\n- [done] 旧任务\nContinue from where you left off.]" },
+      { role: "user", content: "最近一条" },
+    ],
+    tasks: [{ title: "新任务", status: "in_progress" }],
+    planMode: false,
+    _turnsSinceTaskUpdate: 5,
+    _turnsInPlanMode: 0,
+    _lastPromptTokens: 999,
+    _usageAtLen: 3,
+  }
+  assert.equal(compressFallback(agent), true)
+  assert.equal(agent.history.length, 14) // head(2) + 笔记 + ack + tail(10)
+  assert.match(agent.history[2].content, /truncated after repeated summarization failures/)
+  // tail 里残留的旧回注被清掉，只留末尾最新的一份
+  const reinjects = agent.history.filter((m) => typeof m.content === "string" && m.content.includes("current task list after compaction"))
+  assert.equal(reinjects.length, 1)
+  assert.match(reinjects[0].content, /- \[in_progress\] 新任务/)
+  assert.equal(agent._lastPromptTokens, null)
+  assert.equal(agent._turnsSinceTaskUpdate, 0)
+})
+
+test("runAgent: 工具链末尾（last=tool）也是压缩安全点", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const bigNoop = {
+    name: "noop",
+    description: "noop",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "x".repeat(400), // 100 token，把上下文推过阈值
+  }
+  // 主循环第 1 次调用 → 工具；工具结果落尾（last=tool）→ 触发压缩（第 2 次调用是摘要）；第 3 次返回最终答案
+  const script = [{ toolCall: { name: "noop" } }, { content: "这是摘要" }, { content: "done" }]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-compress-tool-"))
+    const agent = createAgent({ provider, tools: [bigNoop], config: { agent: { compactThreshold: 200 } }, cwd })
+    // 预填 12 条小消息：turn 0 估算 ~140 低于阈值不压缩，工具结果把下一轮推过 200
+    agent.history = Array.from({ length: 12 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(32) }))
+    let compressed = 0
+    const out = await runAgent(agent, "继续", { onCompress: () => compressed++ })
+    assert.equal(out, "done")
+    assert.equal(compressed, 1)
+    assert.equal(requests.length, 3) // 主调用 + 摘要调用 + 主调用
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: 每个工具 turn 结束触发 onTurnEnd（TUI 增量保存钩子）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const noop = {
+    name: "noop",
+    description: "noop",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "ok",
+  }
+  const script = [{ toolCall: { name: "noop" } }, { toolCall: { name: "noop" } }, { content: "done" }]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-turnend-test-"))
+    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
+    let turns = 0
+    const out = await runAgent(agent, "测试", { onTurnEnd: () => turns++ })
+    assert.equal(out, "done")
+    assert.equal(turns, 2) // 两个工具 turn，最终回答轮不触发
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
 test("provider: CJK 字符跨 chunk 边界时正确拼装（TextDecoder 流式解码）", async () => {
   const { createServer } = await import("node:http")
   const { chat } = await import("../src/provider.mjs")
@@ -1189,6 +1376,12 @@ test("context: estimateTokens 计入 reasoning_content", async () => {
   assert.equal(withReasoning - without, 100)
 })
 
+test("context: estimateTokens 对 CJK 按约 1 字 1 token 估算（chars/4 会低估 3-4 倍）", async () => {
+  const { estimateTokens } = await import("../src/context.mjs")
+  assert.equal(estimateTokens([{ role: "user", content: "中".repeat(100) }]), 100)
+  assert.equal(estimateTokens([{ role: "user", content: "a".repeat(100) }]), 25) // ASCII 仍按 4 字符 1 token
+})
+
 test("runAgent: system prompt 跨 run 逐字节稳定（前缀缓存），记忆走 user 上下文消息", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const memory = freshMemory()
@@ -1300,6 +1493,7 @@ test("session: applySession 恢复状态并按名切回 provider", async () => {
     history: [{ role: "user", content: "hi" }],
     tasks: [{ title: "t", status: "in_progress" }],
     planMode: true,
+    autoApprove: true,
     goal: { objective: "g" },
     activeProvider: "kimi",
   }
@@ -1310,6 +1504,7 @@ test("session: applySession 恢复状态并按名切回 provider", async () => {
   assert.equal(agent.history.length, 1)
   assert.equal(agent.tasks[0].status, "in_progress")
   assert.equal(agent.planMode, true)
+  assert.equal(agent.autoApprove, true) // AUTO 模式随会话恢复，与 history 账本里的 ON 提醒一致
   assert.equal(agent.goal.objective, "g")
 })
 

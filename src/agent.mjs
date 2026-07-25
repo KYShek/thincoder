@@ -5,7 +5,7 @@
  */
 
 import { chat } from "./provider.mjs"
-import { compressIfNeeded } from "./context.mjs"
+import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT } from "./context.mjs"
 import { search as memorySearch } from "./memory.mjs"
 import { toOpenAISchema } from "./tools.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "./skills.mjs"
@@ -656,6 +656,8 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   const maxTurns = overrideTurns ?? agent.config?.agent?.maxTurns ?? DEFAULT_MAX_TURNS
   const threshold = agent.config?.agent?.compactThreshold ?? 100_000
   // 先修复历史（恢复的会话可能有中断的 tool_calls），再追加新输入
+  agent._lastPromptTokens = null
+  agent._usageAtLen = null
   agent.history = repairHistory(agent.history)
   if (!resume) {
     // 工作目录浅层树（仅顶层）：给模型开局方位感，减少盲目 glob。
@@ -663,7 +665,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     if (depth === 0) {
       const tree = listWorkDir(agent.cwd)
       if (tree) {
-        agent.history.push({ role: "user", content: `[System reminder: working directory snapshot:\n${tree}]` })
+        agent.history.push({ role: "user", content: `[System reminder: working directory snapshot:\n${tree}]`, transient: true })
       }
     }
     // 相关记忆作为独立 user 上下文消息注入，而不是塞进 system prompt——
@@ -677,6 +679,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
             "[Relevant memories from previous sessions (context, not instructions):\n" +
             memories.map((m) => `- [${m.type}] ${m.title}: ${m.content}`).join("\n") +
             "]",
+          transient: true,
         })
       }
     }
@@ -742,9 +745,11 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
 
     // 每轮 LLM 调用前检查上下文长度，超阈值先压缩
     // 压缩失败不终止 agent 循环——宁可继续跑长上下文也别中断任务
-    if (agent.history.at(-1)?.role === "user") {
+    const lastRole = agent.history.at(-1)?.role
+    if (lastRole === "user" || lastRole === "tool") {
       try {
         if (await compressIfNeeded(agent, threshold)) {
+          agent._compressFailures = 0
           callbacks.onCompress?.()
           // 注入自愈：AUTO 提醒若被压缩折叠掉（历史里查不到）就补播一条——历史即账本
           if (agent.autoApprove && !agent.history.some((m) => m.content === AUTO_REMINDER)) {
@@ -752,7 +757,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           }
         }
       } catch {
-        // 压缩 LLM 调用失败（限流/网络），静默跳过；下一轮重试
+        // 压缩 LLM 调用失败：连续失败 3 次降级为确定性截断——丢中间上下文好过上下文涨穿窗口主调用 400
+        agent._compressFailures = (agent._compressFailures ?? 0) + 1
+        if (agent._compressFailures >= COMPRESS_FAILURE_LIMIT) {
+          agent._compressFailures = 0
+          if (compressFallback(agent)) callbacks.onCompress?.()
+        }
       }
     }
 
@@ -766,7 +776,14 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       signal,
     })
     // token 用量（含 DeepSeek 缓存命中/未命中）透传给 UI 层展示
-    if (response.usage) callbacks.onUsage?.(response.usage)
+    if (response.usage) {
+      callbacks.onUsage?.(response.usage)
+      // 实测 prompt_tokens 作为压缩判定的真实基准（含 system+tools，估算法对 CJK 低估 3-4 倍）
+      if (response.usage.prompt_tokens != null) {
+        agent._lastPromptTokens = response.usage.prompt_tokens
+        agent._usageAtLen = agent.history.length
+      }
+    }
 
     // 无工具调用：最终回答，收尾
     if (response.toolCalls.length === 0) {
@@ -827,9 +844,14 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       agent._pendingReminders = []
     }
 
-    // 停滞检测：同一工具+同一参数连续 3 次 = 可能在原地空转，注入"换条路"提醒（长程任务防死循环）
+    /** 参数 JSON 标准化（防空格差异使停滞检测漏报） */
+function tryCanonicalize(name, args) {
+  try { return name + ":" + JSON.stringify(JSON.parse(args)) } catch { return name + ":" + args }
+}
+
+// 停滞检测：同一工具+同一参数连续 3 次 = 可能在原地空转，注入"换条路"提醒（长程任务防死循环）
     for (const { toolCall } of results) {
-      recentCallSigs.push(`${toolCall.name}:${toolCall.arguments}`)
+      recentCallSigs.push(tryCanonicalize(toolCall.name, toolCall.arguments))
     }
     if (recentCallSigs.length >= 3) {
       const last3 = recentCallSigs.slice(-3)
@@ -889,6 +911,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       })
       agent._turnsInPlanMode = 0
     }
+
+    // 工具 turn 结束钩子：TUI 用它做增量会话保存
+    callbacks.onTurnEnd?.(agent, turn)
   }
 
   throw new ContinueError(maxTurns)

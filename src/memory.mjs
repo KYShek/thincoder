@@ -402,7 +402,7 @@ export async function remove(memory, id) {
  */
 function buildFtsQuery(query) {
   const terms = segmentCJK(query)
-    .split(/[\s,，。、;；!！?？()（）"'`]+/)
+    .split(/[\s,，。、;；!！?？()（）"`]+/)
     .map((t) => t.trim())
     .filter(Boolean)
     .slice(0, 16)

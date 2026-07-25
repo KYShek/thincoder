@@ -87,10 +87,22 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
       signal,
     })
     result.content += continued.content
-    result.reasoning += continued.reasoning
-    result.toolCalls = continued.toolCalls.length > 0 ? continued.toolCalls : result.toolCalls
+    result.reasoning += continued.reasoning ?? ""
+    for (const tc of continued.toolCalls ?? []) {
+    if (tc.index == null) { result.toolCalls = continued.toolCalls; break }
+    const s = result.toolCalls[tc.index] ??= { id: "", name: "", arguments: "" }
+    if (tc.id) s.id = tc.id
+    s.name += tc.name ?? ""
+    s.arguments += tc.arguments ?? ""
+  }
     result.finishReason = continued.finishReason
-    result.usage = continued.usage ?? result.usage
+    if (continued.usage) {
+    result.usage = {
+      prompt_tokens: (result.usage?.prompt_tokens??0) + (continued.usage.prompt_tokens??0),
+      completion_tokens: (result.usage?.completion_tokens??0) + (continued.usage.completion_tokens??0),
+      total_tokens: (result.usage?.total_tokens??0) + (continued.usage.total_tokens??0),
+    }
+  }
   }
   return result
 }
@@ -191,7 +203,8 @@ async function readSSE(response, { onToken, onReasoning }) {
     }
   }
 
-  for await (const chunk of response.body) {
+  if (!response.body) throw new Error("No stream response body")
+    for await (const chunk of response.body) {
     buffer += decoder.decode(chunk, { stream: true })
     const lines = buffer.split("\n")
     buffer = lines.pop() // 最后半行留到下一轮
