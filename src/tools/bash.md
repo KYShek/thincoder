@@ -4,10 +4,22 @@ Parameters:
 - command (required): Shell command to execute
 - timeout: Timeout in milliseconds (default 120000, max ~300000)
 
+Output format:
+```
+[stdout]:
+<standard output, or "(empty)">
+
+[stderr]:
+<standard error, only present if non-empty>
+
+(exit code N)
+```
+
 Notes:
 - There is NO TTY — editors, pagers (vim, less), and interactive prompts WILL hang. Always pass non-interactive flags: `git commit -m`, `git --no-pager`, `-y`/`--yes` where applicable
 - The environment sets GIT_PAGER=cat, PAGER=cat, EDITOR=true, TERM=dumb — but still always use non-interactive flags
-- Output is capped at ~50000 chars; if you need more, redirect to a file and read it
+- Output is capped at ~200K chars; if you need more, redirect to a file and read it. Truncated output ends with a `[... truncated: N chars omitted]` marker — the missing tail may contain errors.
+- Check `[stderr]` for error messages, warnings, and diagnostic output — it is separated from `[stdout]` so you can quickly identify problems.
 - On Windows, use Unix shell syntax inside bash commands (Git Bash): forward slashes, `/dev/null` not `NUL`
 - Never use bash to read, copy, or transmit secret files (.env, keys, tokens)
 - Do NOT run destructive commands (rm -rf, force-push, drop table) without explicit user confirmation

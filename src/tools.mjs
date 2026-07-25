@@ -45,7 +45,34 @@ function sanitizeOutput(s) {
 
 function truncate(text, max = MAX_OUTPUT_CHARS) {
   if (text.length <= max) return text
-  return text.slice(0, max) + `\n... (truncated, ${text.length - max} chars omitted)`
+  return text.slice(0, max) + `\n[... truncated: ${text.length - max} chars omitted — redirect to a file if you need the full output]`
+}
+
+/** 创建独立的流解码器（编码嗅探：ASCII → UTF-8 → GBK 回退） */
+function makeDecoder() {
+  let decoder = null
+  let pending = Buffer.alloc(0)
+  return (d, flush = false) => {
+    pending = Buffer.concat([pending, d])
+    if (!decoder) {
+      const hasHighByte = pending.some((b) => b >= 0x80)
+      if (!hasHighByte) {
+        const s = pending.toString("ascii")
+        pending = Buffer.alloc(0)
+        return s
+      }
+      for (let trim = 0; trim <= 3 && !decoder; trim++) {
+        try {
+          new TextDecoder("utf-8", { fatal: true }).decode(pending.subarray(0, pending.length - trim))
+          decoder = new TextDecoder("utf-8")
+        } catch { /* 继续尝试 */ }
+      }
+      if (!decoder) decoder = new TextDecoder("gbk")
+    }
+    const s = decoder.decode(pending, { stream: !flush })
+    pending = Buffer.alloc(0)
+    return s
+  }
 }
 
 /** 对单个文件取 git diff，失败静默返回空 */
@@ -164,6 +191,85 @@ const editTool = {
   },
 }
 
+// ---------------------------------------------------------------- insert_after
+
+const insertAfterTool = {
+  name: "insert_after",
+  description: DESC("insert_after"),
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path" },
+      after_line: { type: "number", description: "Line number to insert after (1-based). Takes priority over after_regex." },
+      after_regex: { type: "string", description: "JavaScript regex to find the line to insert after (must match exactly one line)" },
+      content: { type: "string", description: "Text to insert (with leading newline if you need a blank line)" },
+    },
+    required: ["path", "content"],
+  },
+  readonly: false,
+  async execute(args, ctx) {
+    const abs = resolveInCwd(ctx, args.path)
+    const text = await readFile(abs, "utf8")
+    const lines = text.split("\n")
+
+    let targetLine
+    if (args.after_line != null) {
+      targetLine = args.after_line
+      if (targetLine < 0 || targetLine > lines.length) {
+        throw new Error(`after_line ${targetLine} out of range (file has ${lines.length} lines)`)
+      }
+    } else if (args.after_regex) {
+      const regex = new RegExp(args.after_regex)
+      const matches = []
+      for (let i = 0; i < lines.length; i++) {
+        if (regex.test(lines[i])) matches.push(i + 1)
+      }
+      if (matches.length === 0) throw new Error(`after_regex /${args.after_regex}/ matched no lines in ${abs}`)
+      if (matches.length > 1) throw new Error(`after_regex /${args.after_regex}/ matched ${matches.length} lines (${matches.slice(0, 5).join(", ")}${matches.length > 5 ? "…" : ""}); use a more specific pattern or after_line instead`)
+      targetLine = matches[0]
+    } else {
+      throw new Error("Either after_line or after_regex is required")
+    }
+
+    lines.splice(targetLine, 0, args.content)
+    const updated = lines.join("\n")
+    await writeFile(abs, updated, "utf8")
+    const diff = gitDiffOne(ctx.cwd, abs)
+    return `Inserted after line ${targetLine} in ${abs}${diff ? "\n" + diff : ""}`
+  },
+}
+
+// ---------------------------------------------------------------- syntax_check
+
+const syntaxCheckTool = {
+  name: "syntax_check",
+  description: DESC("syntax_check"),
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path (.js/.mjs/.cjs only)" },
+    },
+    required: ["path"],
+  },
+  readonly: true,
+  execute(args, ctx) {
+    const abs = resolveInCwd(ctx, args.path)
+    if (!/\.(?:[mc]?js)$/.test(abs)) {
+      return `syntax_check only supports .js/.mjs/.cjs files; ${abs} skipped.`
+    }
+    try {
+      execFileSync(process.execPath, ["--check", abs], {
+        cwd: ctx.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      })
+      return `Syntax OK: ${abs}`
+    } catch (e) {
+      // node --check 把错误写到 stderr
+      const msg = (e.stderr || e.stdout || e.message || "").trim()
+      return `Syntax error in ${abs}:\n${msg || "(unknown)"}`
+    }
+  },
+}
+
 // ---------------------------------------------------------------- bash
 
 const bashTool = {
@@ -198,8 +304,6 @@ const bashTool = {
         cwd: ctx.cwd,
         shell: true,
         windowsHide: true,
-        // 无 TTY 环境：stdin 置空（vim/less 这类交互程序立刻吃到 EOF 退出，而不是干等），
-        // 并通过环境变量缴械编辑器/分页器/花哨输出
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
@@ -211,71 +315,49 @@ const bashTool = {
           TERM: "dumb",
         },
       })
-      // 编码嗅探：cmd 自带消息是 GBK，git/node 等程序是 UTF-8，平台判断不了。
-      // 策略：纯 ASCII 段两种编码一致，直接透传不判定；遇到高位字节才用
-      // fatal UTF-8 试解（容忍尾部 1~3 字节截断），失败则判 GBK；一经判定不再变更。
-      // 已知边界：GBK 字节流极低概率恰好构成合法 UTF-8 序列，会误判为 UTF-8 产生乱码。
-      // 更严谨的做法是 chcp 探测控制台代码页，但当前策略覆盖 99.9% 场景，不值得那份复杂度。
-      let decoder = null
-      let pending = Buffer.alloc(0)
-      const feed = (d, flush = false) => {
-        pending = Buffer.concat([pending, d])
-        if (!decoder) {
-          const hasHighByte = pending.some((b) => b >= 0x80)
-          if (!hasHighByte) {
-            // 纯 ASCII：UTF-8/GBK 完全一致，透传即可（无需判定）
-            const s = pending.toString("ascii")
-            pending = Buffer.alloc(0)
-            return s
-          }
-          for (let trim = 0; trim <= 3 && !decoder; trim++) {
-            try {
-              new TextDecoder("utf-8", { fatal: true }).decode(pending.subarray(0, pending.length - trim))
-              decoder = new TextDecoder("utf-8")
-            } catch {
-              // 继续尝试
-            }
-          }
-          if (!decoder) decoder = new TextDecoder("gbk")
+      // stdout / stderr 各自独立解码（同进程通常同编码，但分开收集更干净，
+      // 且允许模型按 stderr 快速定位错误）
+      const outDecoder = makeDecoder()
+      const errDecoder = makeDecoder()
+      let outBuf = ""
+      let errBuf = ""
+      let truncatedNote = ""
+
+      const onStdout = (d) => {
+        const s = sanitizeOutput(outDecoder(d))
+        if (s) {
+          ctx.onOutput?.(s)
+          if (outBuf.length < 2_000_000) outBuf += s
+          else if (!truncatedNote) truncatedNote = "\n[... output exceeded 2MB, remainder discarded]"
         }
-        const s = decoder.decode(pending, { stream: !flush })
-        pending = Buffer.alloc(0)
-        return s
+      }
+      const onStderr = (d) => {
+        errBuf += sanitizeOutput(errDecoder(d))
       }
 
-      let out = ""
-      let truncatedNote = ""
-      const onData = (d) => {
-        const s = sanitizeOutput(feed(d))
-        // 输出实时透传给 UI；本地缓冲超 2MB 后停止累积（防内存爆炸）
-        if (s) ctx.onOutput?.(s)
-        if (out.length < 2_000_000) {
-          out += s
-        } else if (!truncatedNote) {
-          truncatedNote = "\n... (output exceeded 2MB, remainder discarded)"
-        }
-      }
-      child.stdout.on("data", onData)
-      child.stderr.on("data", onData)
+      child.stdout.on("data", onStdout)
+      child.stderr.on("data", onStderr)
 
       const timer = setTimeout(() => child.kill(), args.timeout ?? BASH_TIMEOUT_MS)
-      // 用户中止：杀进程
       if (ctx.signal) {
         ctx.signal.addEventListener("abort", () => child.kill(), { once: true })
       }
       child.on("error", (error) => {
         clearTimeout(timer)
-        resolve(truncate(`Command failed: ${error.message}\n${out}`))
+        resolve(truncate(`Command failed: ${error.message}\n[stdout]:\n${outBuf || "(empty)"}`))
       })
       child.on("close", (code, signal) => {
         clearTimeout(timer)
-        out += sanitizeOutput(feed(Buffer.alloc(0), true)) // 最终判定 + 冲刷解码器尾部
-        const suffix = signal
-          ? `\n(killed: ${ctx.signal?.aborted ? "user interrupted" : "timeout"})`
-          : code !== 0
-            ? `\n(exit code ${code})`
-            : ""
-        resolve(truncate((out.trim() || "(no output)") + suffix + truncatedNote))
+        // 冲刷解码器尾部
+        outBuf += sanitizeOutput(outDecoder(Buffer.alloc(0), true))
+        errBuf += sanitizeOutput(errDecoder(Buffer.alloc(0), true))
+        const status = signal
+          ? `killed: ${ctx.signal?.aborted ? "user interrupted" : "timeout"}`
+          : `exit code ${code}`
+        const parts = [`[stdout]:\n${outBuf.trim() || "(empty)"}`]
+        if (errBuf.trim()) parts.push(`[stderr]:\n${errBuf.trim()}`)
+        parts.push(`(${status})`)
+        resolve(truncate(parts.join("\n\n") + truncatedNote))
       })
     })
   },
@@ -355,6 +437,8 @@ const grepTool = {
       pattern: { type: "string", description: "Regular expression" },
       path: { type: "string", description: "Directory or file to search (default cwd)" },
       glob: { type: "string", description: "Only search files matching this glob (e.g. '*.mjs')" },
+      before: { type: "integer", description: "Lines of context to show before each match (grep -B). Default 0" },
+      after: { type: "integer", description: "Lines of context to show after each match (grep -A). Default 0" },
     },
     required: ["pattern"],
   },
@@ -363,7 +447,11 @@ const grepTool = {
     const base = resolveInCwd(ctx, args.path ?? ".")
     const regex = new RegExp(args.pattern)
     const fileFilter = args.glob ? globToRegex(args.glob) : null
-    const matches = []
+    const before = Math.max(0, Math.floor(args.before ?? 0))
+    const after = Math.max(0, Math.floor(args.after ?? 0))
+    const wantCtx = before > 0 || after > 0
+    const hits = [] // { file, line(1-based), text }
+    const fileLines = new Map() // file -> string[]（仅 wantCtx 时缓存）
 
     async function search(file) {
       let content
@@ -373,16 +461,17 @@ const grepTool = {
         return // 二进制/不可读文件跳过
       }
       const lines = content.split("\n")
+      if (wantCtx) fileLines.set(file, lines)
       for (let i = 0; i < lines.length; i++) {
         if (regex.test(lines[i])) {
-          matches.push(`${file}:${i + 1}: ${lines[i]}`)
-          if (matches.length >= 200) return
+          hits.push({ file, line: i + 1, text: lines[i] })
+          if (hits.length >= 200) return
         }
       }
     }
 
     async function walk(target) {
-      if (matches.length >= 200) return
+      if (hits.length >= 200) return
       const s = await stat(target)
       if (!s.isDirectory()) {
         if (!fileFilter || fileFilter.test(target.split(/[\\/]/).pop())) await search(target)
@@ -401,8 +490,32 @@ const grepTool = {
     }
 
     await walk(base)
-    if (matches.length === 0) return "(no matches)"
-    return truncate(matches.join("\n"))
+    if (hits.length === 0) return "(no matches)"
+
+    // 无上下文：保持原 path:line: content 格式
+    if (!wantCtx) {
+      return truncate(hits.map((h) => `${h.file}:${h.line}: ${h.text}`).join("\n"))
+    }
+
+    // 带上下文：匹配行用 ':'，上下文行用 '-'（同 ripgrep）；同文件相邻区间去重合并
+    const fileMatched = new Map() // file -> Set<line>
+    for (const h of hits) {
+      if (!fileMatched.has(h.file)) fileMatched.set(h.file, new Set())
+      fileMatched.get(h.file).add(h.line)
+    }
+    const out = []
+    for (const [file, matchedLines] of fileMatched) {
+      const lines = fileLines.get(file) ?? []
+      const lineSet = new Set()
+      for (const ml of matchedLines) {
+        for (let l = Math.max(1, ml - before); l <= Math.min(lines.length, ml + after); l++) lineSet.add(l)
+      }
+      for (const l of [...lineSet].sort((a, b) => a - b)) {
+        const sep = matchedLines.has(l) ? ":" : "-"
+        out.push(`${file}${sep}${l}${sep} ${lines[l - 1]}`)
+      }
+    }
+    return truncate(out.join("\n"))
   },
 }
 
@@ -564,7 +677,7 @@ function htmlToText(html) {
     .trim()
 }
 
-export const builtinTools = [readTool, writeTool, editTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]
+export const builtinTools = [readTool, writeTool, editTool, insertAfterTool, syntaxCheckTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]
 
 // ---------------------------------------------------------------- delete
 

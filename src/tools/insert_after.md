@@ -1,0 +1,13 @@
+Insert a line of text after a specific line in a file. Safer than `edit` for adding new content — no need to copy surrounding context for exact string matching.
+
+Parameters:
+- path (required): File path
+- content (required): Text to insert (will be placed as a new line after the target line)
+- after_line: Line number to insert after (1-based). Preferred when you know the exact line number from `read`.
+- after_regex: JavaScript regex to find the line to insert after. Must match exactly one line; if it matches multiple, the tool errors and shows the matching line numbers.
+
+Notes:
+- Either after_line or after_regex is required; if both are given, after_line wins.
+- Use this instead of `edit` when you're adding a new function, import, or block — no need to fabricate surrounding context for exact matching.
+- The inserted content becomes its own line; it's equivalent to `lines.splice(targetLine, 0, content)`.
+- Returns a diff of the change.

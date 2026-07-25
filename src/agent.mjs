@@ -6,7 +6,7 @@
 
 import { chat } from "./provider.mjs"
 import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT } from "./context.mjs"
-import { search as memorySearch } from "./memory.mjs"
+import { search as memorySearch, docSearch } from "./memory.mjs"
 let _reindexFile = null // 惰性加载，避免启动时循环依赖
 import { toOpenAISchema } from "./tools.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "./skills.mjs"
@@ -593,6 +593,30 @@ export const verifyTool = {
   },
 }
 
+/**
+ * recent_changes 工具：列出本轮 agent 触碰过的文件（write/edit/insert_after/delete）。
+ * 比 git status 更精确——只看本会话的变更，不关心 git 追踪状态。
+ * 帮助模型在长任务中回顾自己改了什么。
+ */
+export const recentChangesTool = {
+  name: "recent_changes",
+  description:
+    "Show files modified in this agent run (write/edit/insert_after/delete). " +
+    "Use when you need to remember which files you've already touched — during long multi-file tasks, " +
+    "it's easy to lose track. This is scoped to the current run, unlike git status which shows all uncommitted changes.",
+  parameters: {
+    type: "object",
+    properties: {},
+  },
+  readonly: true,
+  execute(args, ctx) {
+    const files = ctx.agent._touchedFiles ?? []
+    if (files.length === 0) return "(no files modified in this run yet)"
+    const deduped = [...new Set(files)]
+    return `Touched ${deduped.length} file(s) this run:\n${deduped.join("\n")}`
+  },
+}
+
 /** 项目指令文件候选（cwd 本地，按优先级拼接） */
 const INSTRUCTION_FILES = ["AGENTS.md", "agents.md", "PROJECT_RULES.md", "project_rules.md", ".thincoder/rules.md"]
 // 软上限（对齐 kimi-code 的 32KB）：超限不截断——用户写的规范不该被悄悄剪掉
@@ -661,6 +685,7 @@ export function createAgent({ provider, tools, config, cwd, memory = null, overl
     _turnsSinceTaskUpdate: 0, // 距上次 task 工具调用的轮数（过期提醒用）
     _turnsInPlanMode: 0,     // plan mode 中持续的轮数（引导提醒用）
     _sessionStart: null,     // 首次 runAgent 时固定（system prompt 稳定，前缀缓存用）
+    _touchedFiles: [],       // 本轮 write/edit/delete 触碰的文件绝对路径（recent_changes 工具用）
   }
 }
 
@@ -702,6 +727,20 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     // 相关记忆作为独立 user 上下文消息注入，而不是塞进 system prompt——
     // system prompt 跨 run 逐字节一致，DeepSeek context caching（前缀缓存，命中便宜 ~120x）才能命中
     if (agent.memory) {
+      // 项目文档自动注入（与记忆平行的通道）：top-5 相关文档块
+      const docs = await docSearch(agent.memory, input, { limit: 5 })
+      if (docs.length > 0) {
+        const count = agent.memory.db.prepare(`SELECT COUNT(*) AS n FROM doc_chunks`).get()?.n ?? 0
+        const more = count > docs.length ? ` (${count} chunks indexed total — call doc_search if you need more)` : ""
+        agent.history.push({
+          role: "user",
+          content:
+            `[Relevant documentation${more}:\n` +
+            docs.map((d) => `- ${d.path}${d.heading ? " > " + d.heading : ""}: ${d.content.slice(0, 300)}`).join("\n") +
+            "]",
+          transient: true,
+        })
+      }
       const memories = await memorySearch(agent.memory, input, { limit: 3 })
       if (memories.length > 0) {
         agent.history.push({
@@ -726,7 +765,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   }
 
   // task/plan 工具随主循环注入（内建能力）；subagent/skill/goal/verify 只在顶层注入（禁止递归）
-  const tools = [...agent.tools, taskTool, planTool, ...(depth === 0 ? [subagentTool, skillTool, goalTool, verifyTool] : [])]
+  const tools = [...agent.tools, taskTool, planTool, ...(depth === 0 ? [subagentTool, skillTool, goalTool, verifyTool, recentChangesTool] : [])]
   const toolSchemas = tools.map(toOpenAISchema)
   const toolByName = new Map(tools.map((t) => [t.name, t]))
   agent._onTaskUpdate = callbacks.onTaskUpdate
@@ -766,6 +805,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   // bash/subagent 不算 mutation（跑测试、explore 子 agent 不该触发；coder 子 agent 有专属校验提醒）
   agent._mutatedThisRun = false
   agent._verifiedThisRun = false
+  agent._touchedFiles = []
   let completionGuardFired = false
   const recentCallSigs = [] // 停滞检测：最近的工具调用签名（同一调用连续 3 次即提醒）
 
@@ -864,16 +904,20 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (tool && !result.startsWith("Error")) {
         if (!tool.readonly && toolCall.name !== "bash" && toolCall.name !== "subagent") agent._mutatedThisRun = true
         if (toolCall.name === "verify") agent._verifiedThisRun = true
-        // 增量索引：write/edit/delete 后自动重建该文件索引
-        if (agent.memory && (toolCall.name === "write" || toolCall.name === "edit" || toolCall.name === "delete")) {
+        // 文件触碰追踪 + 增量索引：write/edit/insert_after/delete 后记录路径
+        const fileMutators = new Set(["write", "edit", "insert_after", "delete"])
+        if (fileMutators.has(toolCall.name)) {
           try {
             const args = JSON.parse(toolCall.arguments)
             const abs = join(agent.cwd, args.path)
-            if (!_reindexFile) {
-              const mod = await import("./memory.mjs")
-              _reindexFile = mod.reindexFile
+            agent._touchedFiles.push(abs)
+            if (agent.memory) {
+              if (!_reindexFile) {
+                const mod = await import("./memory.mjs")
+                _reindexFile = mod.reindexFile
+              }
+              await _reindexFile(agent.memory, agent.cwd, abs)
             }
-            await _reindexFile(agent.memory, agent.cwd, abs)
           } catch { /* 索引失败不阻塞 agent */ }
         }
       }

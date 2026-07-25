@@ -665,29 +665,48 @@ function extractLeadingDoc(lines, lineNum, ext) {
 }
 
 /** 单文件入索引：删除旧块 → 分块 → 插入新块（codeSync 和 reindexFile 共用） */
+/** 将控制权交还给事件循环一个 tick（让键盘输入有机会被处理） */
+function yieldTick() {
+  return new Promise((r) => setTimeout(r, 0))
+}
+
 function _upsertCodeFile(memory, rel, lines, lang, mtimeMs) {
   const chunks = chunkCode(lines, rel)
-  memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
-  const insert = memory.db.prepare(`
-    INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  for (const c of chunks) {
-    const isFile = c.name === rel
-    insert.run(rel, lang, isFile ? "file" : "symbol", isFile ? "" : c.name.slice(rel.length + 1), c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+  memory.db.exec("BEGIN")
+  try {
+    memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
+    const insert = memory.db.prepare(`
+      INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const c of chunks) {
+      const isFile = c.name === rel
+      insert.run(rel, lang, isFile ? "file" : "symbol", isFile ? "" : c.name.slice(rel.length + 1), c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+    }
+    memory.db.exec("COMMIT")
+  } catch (e) {
+    memory.db.exec("ROLLBACK")
+    throw e
   }
 }
 
 function _upsertDocFile(memory, rel, lines, mtimeMs) {
   const chunks = chunkMarkdown(lines, rel)
   const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"
-  memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
-  const insert = memory.db.prepare(`
-    INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  for (const c of chunks) {
-    insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+  memory.db.exec("BEGIN")
+  try {
+    memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+    const insert = memory.db.prepare(`
+      INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const c of chunks) {
+      insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+    }
+    memory.db.exec("COMMIT")
+  } catch (e) {
+    memory.db.exec("ROLLBACK")
+    throw e
   }
 }
 
@@ -742,6 +761,7 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
     const lang = detectLanguage(abs)
     _upsertCodeFile(memory, rel, lines, lang, mtimeMs)
     updated++
+    await yieldTick()
 
     if (onProgress && i % 10 === 0) {
       onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped })
@@ -955,6 +975,7 @@ export async function docSync(memory, dir, { onProgress } = {}) {
     const lines = text.split("\n")
     _upsertDocFile(memory, rel, lines, mtimeMs)
     updated++
+    await yieldTick()
 
     if (onProgress && i % 10 === 0) {
       onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped })

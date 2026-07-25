@@ -115,6 +115,38 @@ test("tools: write / read / edit / glob / grep", async () => {
   }
 })
 
+test("tools: grep before/after 上下文行（匹配行 : 上下文行 -，相邻区间合并）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-grep-ctx-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    // 两处匹配相邻（line2 / line4），before=1 after=1 → line3 同时是 line2 的 after 与 line4 的 before，应去重合并
+    await byName.write.execute({
+      path: "c.txt",
+      content: "alpha\nMATCH one\nmid\nMATCH two\nomega\n",
+    }, ctx)
+
+    // 无上下文：仍是 path:line: content，不出现 -N- 上下文分隔
+    const plain = await byName.grep.execute({ pattern: "MATCH", path: "c.txt" }, ctx)
+    assert.match(plain, /c\.txt:2: MATCH one/)
+    assert.match(plain, /c\.txt:4: MATCH two/)
+    assert.doesNotMatch(plain, /c\.txt-\d+-/)
+
+    // before=1 after=1：匹配行用 ':'，上下文行用 '-'，line3 只出现一次
+    const ctxOut = await byName.grep.execute({ pattern: "MATCH", path: "c.txt", before: 1, after: 1 }, ctx)
+    const lines = ctxOut.split("\n")
+    // 顺序：c-1- alpha / c:2: MATCH one / c-3- mid / c:4: MATCH two / c-5- omega
+    assert.equal(lines.length, 5)
+    assert.match(lines[0], /c\.txt-1- alpha/)
+    assert.match(lines[1], /c\.txt:2: MATCH one/)
+    assert.match(lines[2], /c\.txt-3- mid/)        // line3 合并去重，只一行
+    assert.match(lines[3], /c\.txt:4: MATCH two/)
+    assert.match(lines[4], /c\.txt-5- omega/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ---------------------------------------------------------------- markdown
 
 test("markdown: serialize → parse 往返一致", () => {

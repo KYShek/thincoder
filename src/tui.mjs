@@ -917,6 +917,7 @@ export async function startTUI(agent, opts = {}) {
     { name: "/model", group: "Agent", desc: "选择模型" },
     { name: "/goal", group: "Agent", desc: "设置/查看/取消长期目标" },
     { name: "/think", group: "Agent", desc: "思维模式与推理强度" },
+    { name: "/init", group: "Tools", desc: "生成项目 AGENTS.md 骨架" },
     { name: "/skills", group: "Tools", desc: "列出项目技能" },
     { name: "/mcp", group: "Tools", desc: "管理 MCP server" },
     { name: "/provider", group: "Config", desc: "管理 provider（增/删/配 key）" },
@@ -1032,6 +1033,74 @@ export async function startTUI(agent, opts = {}) {
       case "/distill":
         await runDistill()
         return
+      case "/init": {
+        const { existsSync } = await import("node:fs")
+        const { writeFile, readFile } = await import("node:fs/promises")
+        const { join, basename } = await import("node:path")
+        const agPath = join(agent.cwd, "AGENTS.md")
+        if (existsSync(agPath)) {
+          pushLine(`AGENTS.md 已存在: ${agPath}`, C.warn)
+          return
+        }
+
+        // 探测项目类型与关键信息
+        let name = basename(agent.cwd)
+        let lang = "", cmds = ""
+
+        // Node.js
+        try {
+          const pkg = JSON.parse(await readFile(join(agent.cwd, "package.json"), "utf8"))
+          if (pkg.name) name = pkg.name
+          lang = "Node.js"
+          const ks = Object.keys(pkg.scripts ?? {})
+          if (ks.length) cmds = ks.slice(0, 5).map(k => `- \`npm run ${k}\``).join("\n")
+        } catch {}
+
+        // Python
+        if (!lang) {
+          for (const f of ["requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"]) {
+            if (existsSync(join(agent.cwd, f))) { lang = "Python"; break }
+          }
+          if (lang) cmds = "- `pip install -r requirements.txt`\n- `python -m pytest`"
+        }
+
+        // Go
+        if (!lang) {
+          if (existsSync(join(agent.cwd, "go.mod"))) {
+            lang = "Go"
+            cmds = "- `go build ./...`\n- `go test ./...`"
+          }
+        }
+
+        // Rust
+        if (!lang) {
+          if (existsSync(join(agent.cwd, "Cargo.toml"))) {
+            lang = "Rust"
+            cmds = "- `cargo build`\n- `cargo test`"
+          }
+        }
+
+        // Java / Kotlin
+        if (!lang) {
+          if (existsSync(join(agent.cwd, "pom.xml"))) { lang = "Java (Maven)"; cmds = "- `mvn test`" }
+          else if (existsSync(join(agent.cwd, "build.gradle")) || existsSync(join(agent.cwd, "build.gradle.kts"))) {
+            lang = "Java/Kotlin (Gradle)"; cmds = "- `gradle test`"
+          }
+        }
+
+        const lines = [`# ${name}`, ""]
+        if (lang) {
+          lines.push(`## 技术栈`, "", lang, "")
+          if (cmds) lines.push(`## 命令`, "", cmds, "")
+        }
+
+        const template = lines.join("\n")
+        await writeFile(agPath, template, "utf8")
+        pushLabel(`❯ Init`, ansi.bold + C.tool)
+        pushLine(`已生成 AGENTS.md → ${agPath}${lang ? ` (${lang})` : ""}`, C.tool)
+        if (lang) pushLine("可继续告诉我项目信息，我来补充约定和结构", C.dim)
+        return
+      }
       case "/rewind": {
         const { listCheckpoints, rewind, isGitRepo } = await import("./checkpoint.mjs")
         if (!isGitRepo(agent.cwd)) {
@@ -1132,60 +1201,52 @@ export async function startTUI(agent, opts = {}) {
           const servers = agent.config?.mcp?.servers ?? []
           pushLabel(`❯ MCP Servers`, ansi.bold + C.tool)
           if (servers.length === 0) {
-            pushLine("（无 MCP server——使用 /mcp add <name> <command> [args] 添加）", C.dim)
+            pushLine("（无 MCP server——使用 /mcp add <name> <url|command> 添加）", C.dim)
           }
           for (const srv of servers) {
             const connected = agent.tools.some((t) => t._mcpName === srv.name)
             const mark = connected ? "●" : "○"
             const color = connected ? C.tool : C.dim
             const toolCount = agent.tools.filter((t) => t._mcpName === srv.name).length
-            const desc = srv.url ? srv.url : `${srv.command} ${(srv.args ?? []).join(" ")}`
+            const desc = srv.wsUrl ? srv.wsUrl : srv.url ? srv.url : `${srv.command} ${(srv.args ?? []).join(" ")}`
             pushLine(`  ${mark} ${srv.name}: ${desc}  (${toolCount} tools)`, color)
           }
           pushLabel(`❯ 操作`, ansi.bold + C.tool)
-          pushLine(`/mcp add <name> <command> [args...]    添加 stdio server`, C.dim)
-          pushLine(`/mcp url <name> <url> [headers...]     添加 HTTP server`, C.dim)
-          pushLine(`/mcp remove <name>                     断开并移除 server`, C.dim)
-          pushLine(`/mcp connect <name>                   重连已配置的 server`, C.dim)
-          pushLine("配置持久化到 config.json 的 mcp.servers[]", C.dim)
+          pushLine("/mcp add <name> <url|command> [args|headers...]", C.dim)
+          pushLine("  URL 自动识别: https://… → HTTP, ws://… → WebSocket, 其他 → stdio 命令", C.dim)
+          pushLine("  例: /mcp add myapi https://api.example.com/mcp Authorization=\"Bearer x\"", C.dim)
+          pushLine("  例: /mcp add github npx -y @modelcontextprotocol/server-github", C.dim)
+          pushLine(`/mcp remove <name>   断开并移除`, C.dim)
+          pushLine(`/mcp connect <name>  重连已配置的 server`, C.dim)
           return
         }
-        // ---- /mcp add <name> <command> [args...] (stdio) ----
-        if (sub === "add") {
+        // ---- /mcp add <name> <url|command> [args|headers...] (统一入口，自动识别传输类型) ----
+        // url / ws 子命令作为别名保留（兼容旧配置）
+        if (sub === "add" || sub === "url" || sub === "ws") {
           const args = rest.slice(1)
           if (args.length < 2) {
-            pushLine("用法: /mcp add <name> <command> [args...]", C.error)
-            pushLine("  例: /mcp add github npx -y @modelcontextprotocol/server-github", C.dim)
+            pushLine("用法: /mcp add <name> <url|command> [args|headers...]", C.error)
+            pushLine("  URL 自动识别: https://… → HTTP, ws://… → WebSocket, 其他 → stdio 命令", C.dim)
             return
           }
           const name = args[0]
-          const command = args[1]
-          const cmdArgs = args.slice(2)
+          const second = args[1]
+          const extras = args.slice(2)
           const existing = (agent.config?.mcp?.servers ?? []).find((s) => s.name === name)
           if (existing) { pushLine(`[mcp] "${name}" 已存在，用 /mcp remove ${name} 先移除`, C.error); return }
-          const srv = { name, command, args: cmdArgs.length > 0 ? cmdArgs : undefined }
-          await addAndConnect(srv)
-          return
-        }
-        // ---- /mcp url <name> <url> [key=value...] (HTTP) ----
-        if (sub === "url") {
-          const args = rest.slice(1)
-          if (args.length < 2) {
-            pushLine("用法: /mcp url <name> <url> [header=value...]", C.error)
-            pushLine("  例: /mcp url myapi https://api.example.com/mcp Authorization=\"Bearer token123\"", C.dim)
-            return
+
+          const isWS = /^wss?:\/\//.test(second)
+          const isHTTP = /^https?:\/\//.test(second)
+          let srv
+          if (isWS || sub === "ws") {
+            const headers = parseHeaders(extras)
+            srv = { name, wsUrl: second, headers: Object.keys(headers).length > 0 ? headers : undefined }
+          } else if (isHTTP || sub === "url") {
+            const headers = parseHeaders(extras)
+            srv = { name, url: second, headers: Object.keys(headers).length > 0 ? headers : undefined }
+          } else {
+            srv = { name, command: second, args: extras.length > 0 ? extras : undefined }
           }
-          const name = args[0]
-          const url = args[1]
-          const headerPairs = args.slice(2)
-          const existing = (agent.config?.mcp?.servers ?? []).find((s) => s.name === name)
-          if (existing) { pushLine(`[mcp] "${name}" 已存在，用 /mcp remove ${name} 先移除`, C.error); return }
-          const headers = {}
-          for (const pair of headerPairs) {
-            const eq = pair.indexOf("=")
-            if (eq > 0) headers[pair.slice(0, eq)] = pair.slice(eq + 1).replace(/^["']|["']$/g, "")
-          }
-          const srv = { name, url, headers: Object.keys(headers).length > 0 ? headers : undefined }
           await addAndConnect(srv)
           return
         }
@@ -1206,7 +1267,7 @@ export async function startTUI(agent, opts = {}) {
           const name = rest[1]
           if (!name) { pushLine("用法: /mcp connect <name>", C.error); return }
           const srv = (agent.config?.mcp?.servers ?? []).find((s) => s.name === name)
-          if (!srv) { pushLine(`[mcp] "${name}" 未在配置中找到（先用 /mcp add 或 /mcp url）`, C.error); return }
+          if (!srv) { pushLine(`[mcp] "${name}" 未在配置中找到（先用 /mcp add 添加）`, C.error); return }
           const { removeMcpTools, connectMcpServer } = await import("./mcp.mjs")
           removeMcpTools(agent, name)
           try {
@@ -1220,8 +1281,18 @@ export async function startTUI(agent, opts = {}) {
           }
           return
         }
-        pushLine(`未知子命令: ${sub}（/mcp list | add | url | remove | connect）`, C.error)
+        pushLine(`未知子命令: ${sub}（/mcp list | add | remove | connect）`, C.error)
         return
+      }
+
+      // ---- header 解析（/mcp add 共享）----
+      function parseHeaders(pairs) {
+        const headers = {}
+        for (const pair of pairs) {
+          const eq = pair.indexOf("=")
+          if (eq > 0) headers[pair.slice(0, eq)] = pair.slice(eq + 1).replace(/^["']|["']$/g, "")
+        }
+        return headers
       }
 
       // ---- /mcp 共享 helper: 保存配置 + 连接 ----
@@ -1230,6 +1301,7 @@ export async function startTUI(agent, opts = {}) {
           raw.mcp ??= { servers: [] }
           const entry = { name: srv.name }
           if (srv.url) { entry.url = srv.url; if (srv.headers) entry.headers = srv.headers }
+          else if (srv.wsUrl) { entry.wsUrl = srv.wsUrl; if (srv.headers) entry.headers = srv.headers }
           else { entry.command = srv.command; if (srv.args) entry.args = srv.args }
           raw.mcp.servers.push(entry)
         })
@@ -1242,7 +1314,7 @@ export async function startTUI(agent, opts = {}) {
           const tools = await connectMcpServer(srv)
           agent.tools.push(...tools)
           pushLabel(`❯ MCP`, ansi.bold + C.tool)
-          const desc = srv.url ? srv.url : `${srv.command} ${(srv.args ?? []).join(" ")}`
+          const desc = srv.wsUrl ? srv.wsUrl : srv.url ? srv.url : `${srv.command} ${(srv.args ?? []).join(" ")}`
           pushLine(`${srv.name} (${desc}) 已连接，${tools.length} 个工具:`, C.tool)
           for (const t of tools) pushLine(`  ${t.name}: ${t.description.slice(0, 100)}`, C.dim)
         } catch (error) {
@@ -1557,7 +1629,7 @@ export async function startTUI(agent, opts = {}) {
     if (cmd === "/config" && argIndex === 0) return match(["embedkey", "set"])
     if (cmd === "/goal" && argIndex === 0) return match(["set", "cancel"])
     if (cmd === "/mcp") {
-      if (argIndex === 0) return match(["add", "url", "remove", "connect", "list"])
+      if (argIndex === 0) return match(["add", "url", "ws", "remove", "connect", "list"])
       if (argIndex === 1 && (parts[1] === "remove" || parts[1] === "connect")) return match((agent.config?.mcp?.servers ?? []).map((s) => s.name))
     }
     return []

@@ -1,7 +1,7 @@
 /**
  * mcp.mjs — MCP (Model Context Protocol) client
- * 零依赖：stdio transport (spawn + JSON-RPC) + HTTP transport (fetch + SSE)。
- * config: { command, args?, name } 或 { url, name, headers? }
+ * 零依赖：stdio transport (spawn + JSON-RPC) + HTTP transport (fetch + SSE) + WebSocket transport (global WebSocket)。
+ * config: { command, args?, name } 或 { url, name, headers? } 或 { wsUrl, name, headers? }
  */
 
 import { spawn } from "node:child_process"
@@ -249,6 +249,90 @@ function httpTransport(baseURL, extraHeaders = {}) {
   return { send, notify, close, openSSE, url, headers: extraHeaders }
 }
 
+// ---- WebSocket transport ----
+
+function wsTransport(wsUrl, extraHeaders = {}) {
+  const pending = new Map()
+  let closed = false
+  let ws = null
+
+  const failAll = (message) => {
+    for (const [, resolve] of pending) resolve({ id: null, error: { code: -32000, message } })
+    pending.clear()
+  }
+
+  const connect = () => {
+    if (closed) throw new Error("MCP WebSocket connection closed")
+    // WebSocket API 不支持自定义 header，如需 auth 走 query param 或子协议
+    ws = extraHeaders.Authorization
+      ? new WebSocket(wsUrl, extraHeaders.Authorization)
+      : new WebSocket(wsUrl)
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ws.close()
+        reject(new Error(`WebSocket connect timeout: ${wsUrl}`))
+      }, INIT_TIMEOUT_MS)
+
+      ws.on("open", () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+
+      ws.on("message", (data) => {
+        try {
+          const msg = JSON.parse(data.toString())
+          const resolver = pending.get(msg.id)
+          if (resolver) {
+            pending.delete(msg.id)
+            resolver(msg)
+          }
+          // 没有 resoler 的是通知，忽略
+        } catch { /* 非 JSON，忽略 */ }
+      })
+
+      ws.on("error", (error) => {
+        clearTimeout(timeout)
+        closed = true
+        const errMsg = error.message || "WebSocket error"
+        if (pending.size > 0) {
+          failAll(errMsg)
+        } else {
+          reject(new Error(errMsg))
+        }
+      })
+
+      ws.on("close", () => {
+        clearTimeout(timeout)
+        closed = true
+        failAll("WebSocket closed")
+      })
+    })
+  }
+
+  const send = (method, params) => {
+    if (closed) return Promise.reject(new Error("MCP WebSocket connection closed"))
+    const id = rpcId()
+    const promise = new Promise((resolve) => pending.set(id, resolve))
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+    return withTimeout(promise, CALL_TIMEOUT_MS).finally(() => pending.delete(id))
+  }
+
+  const notify = (method, params) => {
+    if (!closed && ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }))
+    }
+  }
+
+  const close = () => {
+    closed = true
+    failAll("Connection closed")
+    try { ws?.close() } catch { /* 忽略 */ }
+  }
+
+  return { send, notify, close, connect }
+}
+
 // ---- MCP lifecycle ----
 
 function buildTools(mcpTools, transport, config) {
@@ -294,6 +378,13 @@ async function doInitialize(transport, name) {
  * http:  { name, url, headers? }
  */
 export async function connectMcpServer(config) {
+  if (config.wsUrl) {
+    const transport = wsTransport(config.wsUrl, config.headers ?? {})
+    await transport.connect()
+    const mcpTools = await doInitialize(transport, config.name ?? config.wsUrl)
+    return buildTools(mcpTools, transport, config)
+  }
+
   if (config.url) {
     const transport = httpTransport(config.url, config.headers ?? {})
     try {
@@ -316,7 +407,7 @@ export async function connectMcpServer(config) {
     }
   }
 
-  throw new Error(`MCP server "${config.name}": needs either 'command' (stdio) or 'url' (http)`)
+  throw new Error(`MCP server "${config.name}": needs either 'wsUrl' (websocket), 'command' (stdio), or 'url' (http)`)
 }
 
 export function closeAllMcp(agent) {
