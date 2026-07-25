@@ -1285,6 +1285,39 @@ test("provider: Partial Mode 续写不处理思考阶段截断（content 为空�
   }
 })
 
+test("provider: tempRange 裁剪——GLM temperature 超范围裁到 [0,1] 两位小数", async () => {
+  const { chat } = await import("../src/provider.mjs")
+  const script = [{ content: "ok", finishReason: "stop" }]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const glm = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "glm-5.2", temperature: 1.58 }
+    await chat(glm, { messages: [{ role: "user", content: "hi" }] })
+    assert.equal(requests[0].temperature, 1) // 1.58 → 裁到 1.0
+  } finally {
+    server.close()
+  }
+})
+
+test("provider: reasoningEffortEnum 校验——非法值报错，合法值透传", async () => {
+  const { chat } = await import("../src/provider.mjs")
+  const script = [{ content: "ok", finishReason: "stop" }]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    // 非法值 → 抛错
+    const glm = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "glm-5.2", reasoningEffort: "ultra" }
+    await assert.rejects(
+      () => chat(glm, { messages: [{ role: "user", content: "hi" }] }),
+      /reasoning_effort "ultra" not supported by model "glm-5.2"/
+    )
+    // 合法值透传
+    const glm2 = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "glm-5.2", reasoningEffort: "medium" }
+    await chat(glm2, { messages: [{ role: "user", content: "hi" }] })
+    assert.equal(requests[0].reasoning_effort, "medium")
+  } finally {
+    server.close()
+  }
+})
+
 // ---------------------------------------------------------------- 完成守卫（改了东西未 verify 不直接收工）
 
 function makeMutationTool() {
@@ -1381,13 +1414,13 @@ test("runAgent: thinking 模式下 reasoning_content 跨请求回传（DeepSeek 
   ]
   const { server, port, requests } = await mockLLM(script)
   try {
-    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "deepseek-v4-pro" }
     const cwd = mkdtempSync(join(tmpdir(), "thincoder-reasoning-test-"))
     const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
     const out = await runAgent(agent, "测试")
     assert.equal(out, "最终回复")
 
-    // 带 tool_calls 的 assistant 消息必须携带 reasoning_content 入 history
+    // 带 tool_calls 的 assistant 消息必须携带 reasoning_content 入 history（DeepSeek reasoningEcho: "required"）
     const assistantWithTools = agent.history.find((m) => m.role === "assistant" && m.tool_calls?.length)
     assert.equal(assistantWithTools.reasoning_content, "思考链A")
 
@@ -1397,6 +1430,41 @@ test("runAgent: thinking 模式下 reasoning_content 跨请求回传（DeepSeek 
 
     // 最终回复（无 tool_calls 的轮次）不附加该字段——DeepSeek 只要求 tool-call 轮回传
     assert.ok(!("reasoning_content" in agent.history.at(-1)))
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: GLM reasoning_content 不回传（clear_thinking 默认清除历史 reasoning）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const noop = {
+    name: "noop",
+    description: "noop",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "ok",
+  }
+  const script = [
+    { toolCall: { name: "noop" }, reasoning: "思考链A" },
+    { content: "最终回复", reasoning: "思考链B" },
+  ]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "glm-5.2" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-glm-reasoning-test-"))
+    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
+    const out = await runAgent(agent, "测试")
+    assert.equal(out, "最终回复")
+
+    // GLM reasoningEcho: "optional" → history 里的 assistant 消息不携带 reasoning_content
+    const assistantWithTools = agent.history.find((m) => m.role === "assistant" && m.tool_calls?.length)
+    assert.ok(!assistantWithTools.reasoning_content, "GLM 不应回传 reasoning_content")
+
+    // 第二个请求发出的 messages 里也不含 reasoning_content
+    const sentAssistant = requests[1].messages.find((m) => m.role === "assistant" && m.tool_calls?.length)
+    assert.ok(!sentAssistant.reasoning_content, "GLM 请求体不应含 reasoning_content")
+
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()

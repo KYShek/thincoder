@@ -49,29 +49,32 @@ const DEFAULTS = {
  * 已知模型的能力规格表（前缀匹配，长的在前）。
  * 用于压缩阈值推导、截断续写协议选择、能力感知优化。
  *
- * context:     上下文窗口（tokens）
- * maxOutput:   最大输出 tokens（默认 context）
- * thinking:    是否支持思考/推理模式
- * partialMode: Kimi/Qwen Partial Mode 截断续写（assistant 消息带 partial:true）
- * prefixMode:  DeepSeek Prefix Completion 截断续写（走 /beta 端点，带 prefix:true）
- * multimodal:  是否多模态（支持图片/视觉输入）
- * cacheMode:   上下文缓存方式："auto"=自动/"prompt"=需显式/"none"=不支持
- * thinkApi:    思考模式 API 类型："type"=thinking.type 字段 / "effort"=reasoning_effort 字段
+ * context:           上下文窗口（tokens）
+ * maxOutput:         最大输出 tokens（默认 context）
+ * thinking:          是否支持思考/推理模式
+ * partialMode:       Kimi/Qwen Partial Mode 截断续写（assistant 消息带 partial:true）
+ * prefixMode:        DeepSeek Prefix Completion 截断续写（走 /beta 端点，带 prefix:true）
+ * multimodal:        是否多模态（支持图片/视觉输入）
+ * cacheMode:         上下文缓存方式："auto"=自动/"prompt"=需显式/"none"=不支持
+ * thinkApi:          思考模式 API 类型："type"=thinking.type 字段 / "effort"=reasoning_effort 字段
+ * reasoningEcho:     reasoning_content 跨轮回传策略："required"=必须回传(缺失报错)/"optional"=回传可选(默认不回传)
+ * reasoningEffortEnum: reasoning_effort 合法枚举值（未声明则不校验，原样透传）
+ * tempRange:         temperature 合法范围 [min, max]（未声明则不裁剪）
  */
 const MODEL_SPECS = [
   // DeepSeek V4 系列
-  ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
-  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
-  ["deepseek-reasoner", { context: 256_000,   maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
-  ["deepseek-chat",     { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
+  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
+  ["deepseek-reasoner", { context: 256_000,   maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
+  ["deepseek-chat",     { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   // Kimi 系列
-  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt", thinkApi: "effort" }],
+  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt", thinkApi: "effort", reasoningEcho: "required", reasoningEffortEnum: ["low", "high", "max"] }],
   ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none" }],
   ["moonshot",          { context: 128_000,   maxOutput: 32_000,  thinking: false, cacheMode: "none" }],
   // GLM 系列
-  ["glm-5.2",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type" }],
-  ["glm-5",             { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type" }],
-  ["glm-4",             { context: 128_000,   maxOutput: 32_000,  thinking: true,  cacheMode: "auto", thinkApi: "type" }],
+  ["glm-5.2",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type", reasoningEcho: "optional", reasoningEffortEnum: ["max", "xhigh", "high", "medium", "low", "minimal", "none"], tempRange: [0, 1] }],
+  ["glm-5",             { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type", reasoningEcho: "optional", reasoningEffortEnum: ["max", "xhigh", "high", "medium", "low", "minimal", "none"], tempRange: [0, 1] }],
+  ["glm-4",             { context: 128_000,   maxOutput: 32_000,  thinking: true,  cacheMode: "auto", thinkApi: "type", reasoningEcho: "optional", tempRange: [0, 1] }],
   // GPT 系列
   ["gpt-4.1",           { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "prompt" }],
   ["gpt-4o",            { context: 128_000,   maxOutput: 16_000,  thinking: false, multimodal: true, cacheMode: "prompt" }],

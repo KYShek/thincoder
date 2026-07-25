@@ -10,7 +10,7 @@ import { search as memorySearch, docSearch } from "./memory.mjs"
 let _reindexFile = null // 惰性加载，避免启动时循环依赖
 import { toOpenAISchema } from "./tools.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "./skills.mjs"
-import { configDir } from "./config.mjs"
+import { configDir, specForModel } from "./config.mjs"
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { readFileSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
@@ -885,9 +885,13 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         type: "function",
         function: { name: tc.name, arguments: tc.arguments },
       })),
-      // thinking 模式：reasoning_content 必须跨请求原样回传（DeepSeek 要求，缺失会 400；
-      // 非 thinking 模型 reasoning 恒为空串，不附加字段，严格协议端点不受影响）
-      ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
+      // thinking 模式：reasoning_content 跨请求回传策略由规格表 reasoningEcho 决定
+      // - "required"(DeepSeek/Kimi K3)：必须回传，缺失会 400 / Preserved Thinking 要求保留
+      // - "optional"(GLM)：clear_thinking 默认 true 会自动清除历史 reasoning，回传多余且可能干扰，不回传
+      // - 未声明(未知模型)：保守不回传
+      ...(response.reasoning && specForModel(agent.provider.model).reasoningEcho === "required"
+        ? { reasoning_content: response.reasoning }
+        : {}),
     })
 
     const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks, depth, signal)

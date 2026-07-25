@@ -47,6 +47,7 @@ export function createProvider(config) {
  *   思考模式不支持前缀续写，已产出 reasoning 时放弃续写
  */
 export async function chat(provider, { messages, tools, onToken, onReasoning, signal }) {
+  const spec = specForModel(provider.model)
   const body = {
     model: provider.model,
     messages,
@@ -54,16 +55,32 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
     stream_options: { include_usage: true },
   }
   if (provider.maxTokens) body.max_tokens = provider.maxTokens
-  if (provider.temperature != null) body.temperature = provider.temperature
+  if (provider.temperature != null) {
+    // 按规格表裁剪 temperature：GLM [0,1] 限两位小数，DeepSeek ≤2，未声明则不裁剪
+    let t = provider.temperature
+    if (spec.tempRange) {
+      t = Math.min(spec.tempRange[1], Math.max(spec.tempRange[0], t))
+      t = Math.round(t * 100) / 100
+    }
+    body.temperature = t
+  }
   if (provider.thinking) body.thinking = provider.thinking
-  if (provider.reasoningEffort) body.reasoning_effort = provider.reasoningEffort
+  if (provider.reasoningEffort) {
+    // 按规格表校验 reasoning_effort 枚举：不在枚举内则报错，不映射、不猜测
+    if (spec.reasoningEffortEnum && !spec.reasoningEffortEnum.includes(provider.reasoningEffort)) {
+      throw new Error(
+        `reasoning_effort "${provider.reasoningEffort}" not supported by model "${provider.model}"; ` +
+        `valid values: ${spec.reasoningEffortEnum.join(", ")}`
+      )
+    }
+    body.reasoning_effort = provider.reasoningEffort
+  }
   if (tools?.length) body.tools = tools
 
   const response = await requestWithRetry(provider, body, signal)
   const result = await readSSE(response, { onToken, onReasoning })
 
   // 截断续写：仅规格表声明续写协议的模型（其他端点不认识 partial/prefix 字段，可能 400）
-  const spec = specForModel(provider.model)
   if (!spec.partialMode && !spec.prefixMode) return result
   // DeepSeek prefix 续写不支持思考模式，已产出 reasoning 时无前缀协议可用
   if (spec.prefixMode && !spec.partialMode && result.reasoning) return result
