@@ -64,8 +64,8 @@ const MODEL_SPECS = [
   ["deepseek-reasoner", { context: 256_000,   maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt" }],
   ["deepseek-chat",     { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt" }],
   // Kimi 系列
-  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, cacheMode: "none" }],
-  ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
+  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt" }],
+  ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none" }],
   ["moonshot",          { context: 128_000,   maxOutput: 32_000,  thinking: false, cacheMode: "none" }],
   // GLM 系列
   ["glm-5.2",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto" }],
