@@ -19,7 +19,6 @@ export const PROVIDER_PRESETS = {
   glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "智谱 GLM" },
   qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", desc: "通义千问" },
   minimax:  { baseURL: "https://api.minimax.chat/v1", model: "minimax-m3", desc: "MiniMax" },
-  doubao:   { baseURL: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seed-1-6", desc: "豆包 / 火山引擎" },
 }
 
 // 默认 provider 跟 deepseek 预设保持一致（去掉 desc 展示字段）
@@ -69,7 +68,6 @@ const MODEL_SPECS = [
   ["qwen", { context: 1_000_000, partialMode: true }],
   ["minimax-m3", { context: 256_000 }],
   ["minimax-m1", { context: 256_000 }],
-  ["doubao", { context: 128_000 }],
 ]
 const DEFAULT_SPEC = { context: 128_000 }
 // 窗口利用率上限：0.8（DeepSeek 内部即全窗口；压缩本身要花一次 LLM 调用，过早压缩是纯浪费。
