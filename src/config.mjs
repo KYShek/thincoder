@@ -18,7 +18,7 @@ export const PROVIDER_PRESETS = {
   kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "high", desc: "Kimi / Moonshot" },
   glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "智谱 GLM" },
   qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", desc: "通义千问" },
-  minimax:  { baseURL: "https://api.minimax.chat/v1", model: "minimax-m3", desc: "MiniMax" },
+  minimax:  { baseURL: "https://api.minimax.chat/v1", chatPath: "/text/chatcompletion_v2", model: "MiniMax-M3", desc: "MiniMax" },
 }
 
 // 默认 provider 跟 deepseek 预设保持一致（去掉 desc 展示字段）
@@ -71,6 +71,7 @@ const MODEL_SPECS = [
   ["qwen-max", { context: 1_000_000, partialMode: true }],
   ["qwen-plus", { context: 1_000_000, partialMode: true }],
   ["qwen", { context: 1_000_000, partialMode: true }],
+  ["MiniMax-M3", { context: 1_000_000 }],
   ["minimax-m3", { context: 1_000_000 }],
   ["minimax-m1", { context: 256_000 }],
 ]

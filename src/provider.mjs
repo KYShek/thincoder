@@ -132,7 +132,7 @@ async function requestWithRetry(provider, body, signal) {
 
     let response
     try {
-      response = await fetch(`${provider.baseURL}/chat/completions`, {
+      response = await fetch(`${provider.baseURL}${provider.chatPath ?? "/chat/completions"}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
