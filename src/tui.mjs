@@ -268,7 +268,7 @@ export async function startTUI(agent, opts = {}) {
     question: null, // { text, options, resolve } — agent 的 question 工具回调
     picker: null, // 模型选择器 { entries, lines, index, scroll, selectedLine }
     wizard: null, // 首次配置向导 { step, index, scroll, selectedLine, fields, error, lines }
-    tasks: agent.tasks ?? [], // task 工具的任务列表（状态栏显示进度）；会话恢复时直接带上
+    tasks: agent.tasks ?? [], // task 工具的任务列表（状态栏显示进度）；会话恢复时直接带上，全完成自动收起
     tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }, // 累计 token 用量（状态栏显示）
     ctxCache: { len: -1, tokens: 0 }, // 上下文占用估算缓存（estimateTokens 是 O(n)，history 变长才重算）
     reasoning: "", // 思考流缓冲（暗色展示）
@@ -277,6 +277,11 @@ export async function startTUI(agent, opts = {}) {
     currentTool: null, // 正在执行的工具名（状态栏显示）
     processingStarted: 0, // 本轮处理开始时间（状态栏计时）
     status: "Ready",
+  }
+
+  // 恢复的会话如果所有任务已完成，自动收起 todo 面板（对齐运行时行为）
+  if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
+    state.tasks = []
   }
 
   // 输入流先过一道滤网：鼠标序列（滚轮）在这里拦截处理，剥净后才交给 keypress 解析，
@@ -918,6 +923,10 @@ export async function startTUI(agent, opts = {}) {
               ? data.display.map((l) => ({ text: l.text, color: l.color }))
               : []
             state.tasks = agent.tasks ?? []
+            // 切换过来的会话如果任务全完成，自动收起面板
+            if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
+              state.tasks = []
+            }
             pushLabel(`── 已切换到槽位 ${slotNum}（${data.history.length} 条消息）──`, C.warn)
             render()
           }

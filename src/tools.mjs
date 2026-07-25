@@ -272,7 +272,7 @@ const globTool = {
   },
   readonly: true,
   async execute(args, ctx) {
-    const base = resolve(ctx.cwd, args.path ?? ".")
+    const base = resolveInCwd(ctx, args.path ?? ".")
     const regex = globToRegex(args.pattern)
     const results = []
     for await (const relPath of walkFiles(base)) {
@@ -336,7 +336,7 @@ const grepTool = {
   },
   readonly: true,
   async execute(args, ctx) {
-    const base = resolve(ctx.cwd, args.path ?? ".")
+    const base = resolveInCwd(ctx, args.path ?? ".")
     const regex = new RegExp(args.pattern)
     const fileFilter = args.glob ? globToRegex(args.glob) : null
     const matches = []
@@ -461,7 +461,7 @@ const lsTool = {
   },
   readonly: true,
   async execute(args, ctx) {
-    const abs = resolve(ctx.cwd, args.path ?? ".")
+    const abs = resolveInCwd(ctx, args.path ?? ".")
     const entries = await readdir(abs, { withFileTypes: true })
     const rows = await Promise.all(
       entries.slice(0, 500).map(async (e) => {
