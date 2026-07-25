@@ -722,10 +722,16 @@ export async function startTUI(agent, opts = {}) {
       },
       onToolResult: (name, result) => {
         state.currentTool = null
-        // 子 agent 结束：清空流式缓冲
-        if (name.startsWith("explore/") || name.startsWith("coder/") || name.startsWith("plan/")) {
+        // 子 agent 结束：清空流式缓冲，报告进对话区
+        const isSubagent = name.startsWith("explore/") || name.startsWith("coder/") || name.startsWith("plan/")
+        if (isSubagent) {
           state.subOutput = ""
           state.currentSub = null
+          // 子 agent 报告摘要（最多 8 行）直接展示在对话区
+          const lines = result.split("\n")
+          const preview = lines.slice(0, 8).map((l) => l.slice(0, 120)).join("\n")
+          if (preview) pushLine(preview, C.dim)
+          if (lines.length > 8) pushLine(`  ... (${lines.length - 8} more lines)`, C.dim)
         }
         const stream = state.toolStreams[name]
         if (stream) {
@@ -733,8 +739,10 @@ export async function startTUI(agent, opts = {}) {
           if (tail) pushLine(tail, C.dim)
           delete state.toolStreams[name]
         }
-        const first = result.split("\n")[0]
-        pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
+        if (!isSubagent) {
+          const first = result.split("\n")[0]
+          pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
+        }
       },
       onToolOutput: (name, chunk) => {
         state.toolStreams[name] = (state.toolStreams[name] ?? "") + chunk
@@ -2158,7 +2166,9 @@ export async function startTUI(agent, opts = {}) {
     state.lines = [...opts.restored.display.map((l) => ({ text: l.text, color: l.color })), ...state.lines]
     pushLabel(`── 已恢复上次会话（退出前原样回放）；/new 开始新会话 ──`, C.warn)
   } else if (opts.restored?.history?.length) {
-    for (const m of opts.restored.history) {
+    // 重建对话区：user/assistant 消息逐条展示，tool 结果行只保留首行摘要
+    for (let i = 0; i < opts.restored.history.length; i++) {
+      const m = opts.restored.history[i]
       if (m.role === "user") {
         if (typeof m.content === "string" && m.content.startsWith("[System reminder:")) continue
         pushLabel(`❯ You:`, ansi.bold + C.user)
@@ -2167,10 +2177,14 @@ export async function startTUI(agent, opts = {}) {
         pushLabel(`❯ ThinCoder:`, ansi.bold + C.assistant)
         if (typeof m.content === "string" && m.content) pushLine(m.content, C.text)
         for (const tc of m.tool_calls ?? []) {
-          pushLine(`  [tool] ${tc.function?.name ?? "?"}`, C.tool)
+          // 找到下一条对应的 tool 结果，显示首行摘要
+          const toolResult = opts.restored.history[i + 1]
+          const hasResult = toolResult?.role === "tool" && toolResult?.tool_call_id === tc.id
+          const summary = hasResult ? " → " + sliceByWidth(String(toolResult.content).split("\n")[0], 80) : ""
+          pushLine(`  [tool] ${tc.function?.name ?? "?"}${summary}`, C.tool)
         }
       }
-      // tool 角色的结果行省略：调用行已足够还原现场
+      // tool 消息本身不单独渲染——已在 assistant 的 tool_calls 后以摘要形式展示
     }
     pushLabel(`── 已恢复上次会话（${opts.restored.history.length} 条消息）；/new 开始新会话 ──`, C.warn)
   }

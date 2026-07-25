@@ -688,6 +688,16 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (tree) {
         agent.history.push({ role: "user", content: `[System reminder: working directory snapshot:\n${tree}]`, transient: true })
       }
+      // 依赖大纲：模型开局就能看见谁 import 谁，不用盲调 repo_outline
+      if (agent.memory) {
+        try {
+          const { buildOutline } = await import("./repomap.mjs")
+          const outline = buildOutline(agent.memory.db, agent.cwd, null)
+          if (outline && !outline.startsWith("(no indexed")) {
+            agent.history.push({ role: "user", content: `[System reminder: project dependency outline:\n${outline}]`, transient: true })
+          }
+        } catch { /* 索引未就绪不报错 */ }
+      }
     }
     // 相关记忆作为独立 user 上下文消息注入，而不是塞进 system prompt——
     // system prompt 跨 run 逐字节一致，DeepSeek context caching（前缀缓存，命中便宜 ~120x）才能命中
