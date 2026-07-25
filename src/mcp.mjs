@@ -274,14 +274,14 @@ function wsTransport(wsUrl, extraHeaders = {}) {
         reject(new Error(`WebSocket connect timeout: ${wsUrl}`))
       }, INIT_TIMEOUT_MS)
 
-      ws.on("open", () => {
+      ws.addEventListener("open", () => {
         clearTimeout(timeout)
         resolve()
       })
 
-      ws.on("message", (data) => {
+      ws.addEventListener("message", (event) => {
         try {
-          const msg = JSON.parse(data.toString())
+          const msg = JSON.parse(event.data.toString())
           const resolver = pending.get(msg.id)
           if (resolver) {
             pending.delete(msg.id)
@@ -291,10 +291,10 @@ function wsTransport(wsUrl, extraHeaders = {}) {
         } catch { /* 非 JSON，忽略 */ }
       })
 
-      ws.on("error", (error) => {
+      ws.addEventListener("error", (event) => {
         clearTimeout(timeout)
         closed = true
-        const errMsg = error.message || "WebSocket error"
+        const errMsg = event.message || "WebSocket error"
         if (pending.size > 0) {
           failAll(errMsg)
         } else {
@@ -302,7 +302,7 @@ function wsTransport(wsUrl, extraHeaders = {}) {
         }
       })
 
-      ws.on("close", () => {
+      ws.addEventListener("close", () => {
         clearTimeout(timeout)
         closed = true
         failAll("WebSocket closed")
