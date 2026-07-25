@@ -1,4 +1,4 @@
-Find files by glob pattern (e.g. 'src/**/*.mjs'). Returns matching paths.
+Find files by glob pattern. Returns matching paths. Supports `**` for recursive matching (e.g. `src/**/*.mjs` for all .mjs in src/, `**/*.test.mjs` for all test files).
 
 Parameters:
 - pattern (required): Glob pattern — supports **, *, ?, and character classes

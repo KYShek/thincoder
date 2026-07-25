@@ -2,7 +2,7 @@
 
 **Sharp Code, Zero Bloat.**
 
-**一个"薄"的 AI 编程 agent：纯 `.mjs`、无构建、零 npm 依赖、Node.js 原生。**
+**一个"薄"的 AI 编程 agent：纯** `.mjs`**、无构建、零 npm 依赖、Node.js 原生。**
 
 ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害**——像刀刃。
 在 AI agent 都在卷"全能"的今天，ThinCoder 打的是反面那张牌：**克制、精准、不废话**。
@@ -12,32 +12,27 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 
 ## 特性
 
-- **Agent 主循环**：LLM ↔ 工具调用循环，直到任务完成（上限 100 轮防失控）
-- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch` + `code_search` / `doc_search` / `repo_outline` + MCP，全部零依赖实现
-- **代码库理解**：`repo_outline`（依赖大纲）、`code_search`（源码 FTS5 + 向量 + JSDoc）、`doc_search`（文档分块检索）——启动时后台索引，状态栏显示进度；write/edit/delete 后自动增量更新
-- **两段式工具调度**：权限确认串行（一个一个问），只读工具并行执行，有副作用工具串行
-- **会话持久化**：退出自动保存，启动自动恢复（按项目目录隔离），`/new` 开始新会话
-- **子 agent 并发**：`subagent` 工具派发独立子任务，`role="explore"`（只读搜索）和 `role="coder"`（全套工具；写操作需 AUTO 模式），并发执行；coder 完成后自动提醒主 agent 校验报告
-- **Plan Mode**：`plan` 工具进入规划模式——只读探索 + 架构设计 + 方案展示，用户确认后退出并实现；TUI 状态栏显示 PLAN 标识
-- **AUTO 模式**：`/auto` 或 `chat --auto` 完全授权，长任务免确认，状态栏黄色 AUTO 标识
-- **任务跟踪**：`task` 工具让 agent 拆解多步任务并跟踪进度（pending/in_progress/done），TUI 状态栏实时显示 ▶n/m；上下文压缩后自动回注
-- **Goal 跟踪**：`goal` 工具设置长期目标，每 ~10 轮自动提醒，跨压缩会话保持
-- **Skills 系统**：`.thincoder/skills/*.md` 按需加载，可复用工作流
-- **质量验证**：`verify` 工具——完成前自查 git diff + task 列表 + 6 项自检清单
-- **MCP 支持**：在 `config.json` 的 `mcp.servers[]` 配 `command` / `args`，启动时自动连接并发现工具
-- **流式 TUI**：裸 ANSI 实现（无 UI 库），对话流 / 流式输出 / 权限确认（y/n/a，a=批准并转 AUTO）/ 翻页 / 输入历史 / 斜杠命令 Tab 补全
-- **上下文压缩**：对话超阈值时自动摘要（保留最早 2 条 + 最近 10 条，中间 LLM 摘要）
-- **三层记忆 + 团队共享**（见下）
-- **LLM 调用**：原生 `fetch` 直连 OpenAI 兼容协议（OpenAI / DeepSeek / Moonshot / Ollama），流式 SSE，指数退避重试，支持 `reasoning_content` 思考流
+- **Agent 主循环**：LLM ↔ 工具调用循环，上限 100 轮防失控，完成守卫拦截未验证的改动
+- **代码库理解** ⭐0.5.0：`repo_outline`（依赖大纲，实时解析 import/export）、`code_search`（源码 FTS5 + 向量 + JSDoc 提取）、`doc_search`（文档按 ## 标题分块检索）——启动后台索引、状态栏显示进度、写文件后自动增量更新。三工具按"结构→意图→细节"引导 LLM 探索代码库
+- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch` + 上述三个检索工具 + MCP，全部零依赖，文件工具目录隔离
+- **记忆系统**：三层（personal/project/team），FTS5 + 向量 RRF 混合检索，markdown 格式 git 友好
+- **两段式工具调度**：权限确认串行，只读工具并行，副作用工具串行
+- **会话持久化** ⭐0.5.0：最多 5 个归档槽位，`/session` 随时切换，退出自动保存
+- **子 agent 并发**：`explore`（只读搜索）、`plan`（只读规划）、`coder`（实现）三种角色，并行派发，coder 完成自动校验提醒，子 agent 流式输出可见
+- **Plan Mode**：只读探索 + 方案设计，用户确认后实现
+- **AUTO 模式**：`/auto` 完全授权，长任务免确认
+- **任务跟踪**：`task` 工具拆解多步任务，状态栏 ✓n/m 实时进度，自动过滤已完成项
+- **Goal/Verify/Skills**：长目标跟踪、完成验证、可复用技能
+- **流式 TUI**：裸 ANSI，权限预览紧挨输入框，Windows 安全（raw mode 冲页面修复）
 
 ## 记忆系统：一人学到，全队皆知
 
 三层记忆，全部"有就查、没有就跳过"，统一混合检索：
 
-| 层 | 位置 | 同步方式 |
-|---|---|---|
-| **Personal** | `~/.thincoder/memory.db`（sqlite） | 不同步，私有 |
-| **Project** | 项目仓库 `.thincoder/memory/*.md` | 随项目 git（ThinCoder **只写文件，绝不替你 commit**） |
+| 层               | 位置                                                | 同步方式                                                                          |
+| ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| **Personal**     | `~/.thincoder/memory.db`（sqlite）                  | 不同步，私有                                                                      |
+| **Project**      | 项目仓库 `.thincoder/memory/*.md`                   | 随项目 git（ThinCoder **只写文件，绝不替你 commit**）                             |
 | **Team**（可选） | 独立记忆仓库，clone 到 `~/.thincoder/teams/<name>/` | `thincoder sync`（pull --rebase）；写入时自动 commit + push（专用设施，可选启用） |
 
 - **混合检索**：FTS5（BM25，中文逐字索引，双字词可命中）+ embedding 向量（暴力余弦）+ RRF(k=60) 融合排序
@@ -48,7 +43,7 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 
 ## 要求
 
-- Node.js >= 22（记忆功能用到 `node:sqlite`；推荐 24）
+- Node.js >= 24
 - 一个 OpenAI 兼容端点的 API key
 - 可选：embedding 服务的 key（不配置则退化为纯 FTS 检索）
 
@@ -88,7 +83,7 @@ thincoder upgrade
 
 从源码运行：把上面的 `thincoder` 换成 `node bin/thincoder.mjs`。
 
-TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全部模型；`/model <名称>` 直接切换）、`/provider`（增/删 provider、配 key，支持自定义端点）、`/think`（思维模式开关与推理强度）、`/config`（查看配置、`/config embedkey` 配 embedding key、`/config set` 改参数）、`/distill`（从当前会话提取知识）、`/clear`、`/exit`。输入 `/` 时状态栏实时提示匹配命令。
+TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全部模型；`/model <名称>` 直接切换）、`/provider`（增/删 provider、配 key，支持自定义端点）、`/think`（思维模式开关与推理强度）、`/config`（查看配置、`/config embedkey` 配 embedding key、`/config set` 改参数）、`/session`（列出/切换归档会话）、`/reindex`（重建索引）、`/distill`（从当前会话提取知识）、`/clear`、`/exit`。输入 `/` 时状态栏实时提示匹配命令。
 
 环境变量：`THINCODER_API_KEY`（或 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`）、`THINCODER_BASE_URL`、`THINCODER_MODEL`、`SILICONFLOW_API_KEY`。
 
@@ -98,41 +93,45 @@ TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全
 
 ```jsonc
 {
-  "providers": [                              // 可配多个，/model <名称> 切换
+  "providers": [
+    // 可配多个，/model <名称> 切换
     {
       "name": "deepseek",
-      "baseURL": "https://api.deepseek.com/v1",  // 任意 OpenAI 兼容端点
-      "apiKey": "sk-...",                         // 或留空走环境变量
-      "model": "deepseek-chat"
-    }
+      "baseURL": "https://api.deepseek.com/v1", // 任意 OpenAI 兼容端点
+      "apiKey": "sk-...", // 或留空走环境变量
+      "model": "deepseek-chat",
+    },
   ],
-  "activeProvider": "deepseek",               // 当前激活的 provider 名
-  "embedding": {                                // 可选：不配则纯 FTS 检索
+  "activeProvider": "deepseek", // 当前激活的 provider 名
+  "embedding": {
+    // 可选：不配则纯 FTS 检索
     "baseURL": "https://api.siliconflow.cn/v1",
-    "apiKey": "sk-...",                         // 或 SILICONFLOW_API_KEY
-    "model": "BAAI/bge-m3"
+    "apiKey": "sk-...", // 或 SILICONFLOW_API_KEY
+    "model": "BAAI/bge-m3",
   },
   "agent": {
-    "maxTurns": 100,                             // 工具循环上限
-    "compactThreshold": 100000                  // 上下文压缩阈值（约 token 数）
+    "maxTurns": 100, // 工具循环上限
+    "compactThreshold": 100000, // 上下文压缩阈值（约 token 数）
   },
   "memory": {
-    "dbPath": "~/.thincoder/memory.db",         // sqlite 索引库路径
-    "projectDir": ".thincoder/memory",          // Project 层目录（相对项目根）
-    "team": {                                   // 可选：不配则 Team 层禁用
+    "dbPath": "~/.thincoder/memory.db", // sqlite 索引库路径
+    "projectDir": ".thincoder/memory", // Project 层目录（相对项目根）
+    "team": {
+      // 可选：不配则 Team 层禁用
       "name": "myteam",
-      "repo": "git@github.com:org/team-memory.git"
-    }
+      "repo": "git@github.com:org/team-memory.git",
+    },
   },
-  "mcp": {                                      // 可选：MCP server 列表
+  "mcp": {
+    // 可选：MCP server 列表
     "servers": [
       {
         "name": "filesystem",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
-      }
-    ]
-  }
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      },
+    ],
+  },
 }
 ```
 
@@ -186,6 +185,46 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 
 - MCP HTTP transport（当前仅 stdio）
 - 更多内置 skills
+
+## 更新日志
+
+### 0.5.0（2026-07）
+- **代码库理解**：新增 `repo_outline`、`code_search`、`doc_search` 三个检索工具
+- 源码 FTS5 + 向量索引，按符号分块，JSDoc/docstring 自动提取
+- 文档按 `##` 标题分块索引，代码/文档分离检索
+- 启动后台索引、写文件自动增量更新（`reindexFile`）
+- prompt 引导 LLM 按"结构→意图→细节"探索代码库
+- 会话 5 槽位归档、`/session` 切换（Windows rename 崩溃修复）
+- 文件工具目录隔离防越界（`resolveInCwd`）
+- 子 agent 流式输出可见、权限预览紧挨输入框
+- task 自动过滤已完成项、全部 done 时主动提醒
+- Windows raw mode Enter 冲页面修复
+
+### 0.4.0
+- 权限审批展示文件内容预览（write 内容、edit diff、bash 命令）
+- todo 面板进度可视、状态栏 token 用量与上下文利用率
+- 项目指令双层合并（全局 + 项目 AGENTS.md）
+
+### 0.3.0
+- MCP 客户端（JSON-RPC + stdio，零依赖）
+- Skills 系统（`.thincoder/skills/*.md`）
+- Plan/Goal/Question 工具
+- 提示词外部化到 `.md` 文件、子 agent 角色 overlay
+- task 严格纪律（keep ONE in_progress）、完成守卫（改文件未 verify 拦截）
+- DeepSeek thinking 回传、system prompt 前缀缓存
+- checkpoint 存档点 + `/rewind` 回滚
+
+### 0.2.0
+- multi-provider 配置（支持多端点切换）
+- 初始配置向导（方向键选模型、配 key）
+- `/think` 思维模式开关与推理强度
+- `/model` 模型选择器
+- bash 流式输出实时透传
+
+### 0.1.0
+- Agent 主循环、14 个内置工具、零依赖 TUI
+- 三层记忆（personal/project/team）、FTS5 检索
+- 会话持久化、上下文压缩、流式 SSE
 
 ## License
 

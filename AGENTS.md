@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-零依赖 AI 编码 CLI：纯 Node.js >= 22 标准库、无构建步骤、ESM（`.mjs`）。
+零依赖 AI 编码 CLI：纯 Node.js >= 24 标准库、无构建步骤、ESM（`.mjs`）。
 LLM 走 OpenAI 兼容协议（`provider.mjs` 原生 fetch + SSE 流式），覆盖 DeepSeek / Kimi / OpenAI / Ollama 等端点。
 设计文档在 `../thincoder-design/`（REQUIREMENTS.md / ARCHITECTURE.md / ARCHITECTURE-v2.md）。
 

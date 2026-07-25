@@ -48,6 +48,22 @@ function truncate(text, max = MAX_OUTPUT_CHARS) {
   return text.slice(0, max) + `\n... (truncated, ${text.length - max} chars omitted)`
 }
 
+/** 对单个文件取 git diff，失败静默返回空 */
+function gitDiffOne(cwd, abs) {
+  try {
+    const diff = execFileSync("git", ["--no-pager", "diff", "--no-color", "--", abs], {
+      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024 * 1024,
+    }).trim()
+    if (!diff) return ""
+    // 截断超长 diff（超大文件改动 diff 可能几十 KB），只保留前 200 行
+    const lines = diff.split("\n")
+    if (lines.length <= 200) return diff
+    return lines.slice(0, 200).join("\n") + `\n... (${lines.length - 200} more diff lines)`
+  } catch {
+    return ""
+  }
+}
+
 function resolveInCwd(ctx, p) {
   const resolved = resolve(ctx.cwd, p)
   if (relative(ctx.cwd, resolved).startsWith("..")) throw new Error(`Access denied outside working directory: ${p}`)
@@ -102,7 +118,8 @@ const writeTool = {
     const st = await stat(abs).catch(() => null)
     if (st?.isDirectory()) throw new Error(`Path is a directory: ${abs}`)
     await writeFile(abs, args.content, "utf8")
-    return `Wrote ${args.content.length} chars to ${abs}`
+    const diff = gitDiffOne(ctx.cwd, abs)
+    return `Wrote ${args.content.length} chars to ${abs}${diff ? "\n" + diff : ""}`
   },
 }
 
@@ -127,7 +144,13 @@ const editTool = {
     const content = await readFile(abs, "utf8")
     const occurrences = content.split(args.old_string).length - 1
     if (occurrences === 0) {
-      throw new Error(`old_string not found in ${abs}`)
+      // 给出线索帮模型定位：首行预览 + 常见原因
+      const preview = args.old_string.slice(0, 100).split("\n")[0]
+      throw new Error(
+        `old_string not found in ${abs}\n` +
+        `  searched: "${preview}${args.old_string.length > 100 ? "…" : ""}"\n` +
+        `  hints: whitespace mismatch? file already changed? try reading the file first`
+      )
     }
     if (occurrences > 1 && !args.replace_all) {
       throw new Error(`old_string matches ${occurrences} times in ${abs}; provide more context or set replace_all`)
@@ -136,7 +159,8 @@ const editTool = {
       ? content.split(args.old_string).join(args.new_string)
       : content.replace(args.old_string, args.new_string)
     await writeFile(abs, updated, "utf8")
-    return `Edited ${abs}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)`
+    const diff = gitDiffOne(ctx.cwd, abs)
+    return `Edited ${abs}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}`
   },
 }
 
