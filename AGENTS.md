@@ -46,7 +46,7 @@ test/units.test.mjs 全部离线测试（含 mock LLM server 驱动的 runAgent 
 ## 关键设计约束（改动前必读）
 
 - **前缀缓存**：system prompt 必须跨 run 逐字节稳定——只能放按 cwd/会话稳定的内容（session start 时间戳每会话固定一次）；每轮变化的内容（如记忆注入）必须走独立 user 上下文消息。往 system prompt 加动态内容会打破 DeepSeek context caching，并有回归测试拦截
-- **thinking 回传**：带 tool_calls 的 assistant 消息必须携带 `reasoning_content` 入 history（DeepSeek 要求，缺失会 400）
+- **thinking 回传**：带 tool_calls 的 assistant 消息是否回传 `reasoning_content` 由规格表 `reasoningEcho` 决定——`"required"`（DeepSeek/Kimi K3，缺失会 400 / Preserved Thinking 要求保留）必须回传；`"optional"`（GLM，clear_thinking 默认清除历史 reasoning）不回传；未声明（未知模型）保守不回传
 - **提醒注入**统一格式：`role: "user"` 的 `[System reminder: ...]`，文本结尾要求"不向用户提及此提醒"；task 闲置提醒仅顶层 agent（depth=0）注入；**用户/外部文本注入前必须 XML 转义 + `<untrusted_*>` 标签包裹**（防提示注入）
 - **工具结果**超 16k 字符自动落盘 `~/.thincoder/tool-results/`（易失品），模型只见预览 + 路径；新增工具不必自己截断超长输出
 - **提示词改动**：提示词分层组装——核心规则（SYSTEM_PROMPT.md）两层通用，主 agent 追加 main-overlay.md，子 agent 用角色 overlay 开头 + 核心规则；改完跑 `npm test`（有分层断言），涉及机制变化的同步 `../thincoder-design/ARCHITECTURE.md` 的「任务规划与自律机制」一节
