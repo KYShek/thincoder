@@ -265,6 +265,7 @@ export async function startTUI(agent, opts = {}) {
     processing: false,
     controller: null, // AbortController for current agent run
     permission: null, // { name, args, resolve }
+    permissionPreview: [], // 权限审批的内容预览行（渲染在输入框上方，不分隔）
     question: null, // { text, options, resolve } — agent 的 question 工具回调
     picker: null, // 模型选择器 { entries, lines, index, scroll, selectedLine }
     wizard: null, // 首次配置向导 { step, index, scroll, selectedLine, fields, error, lines }
@@ -274,6 +275,8 @@ export async function startTUI(agent, opts = {}) {
     reasoning: "", // 思考流缓冲（暗色展示）
     completion: null, // Tab 补全状态 { candidates, index }
     toolStreams: {}, // 各工具的实时输出（按工具名隔离，并行工具互不串扰）
+    subOutput: "", // 子 agent 流式输出（滚动显示，最长保留末尾 300 字符）
+    currentSub: null, // 当前活跃的子 agent 角色名
     currentTool: null, // 正在执行的工具名（状态栏显示）
     processingStarted: 0, // 本轮处理开始时间（状态栏计时）
     status: "Ready",
@@ -429,7 +432,11 @@ export async function startTUI(agent, opts = {}) {
       visibleTasks = [...inProgress, ...pending, ...done].slice(0, MAX_TASK_LINES)
     }
     const taskPanelH = visibleTasks.length
-    const convH = Math.max(1, rows - headerH - inputBoxH - statusH - pickerH - taskPanelH)
+    // 子 agent 流式输出占位（显示时占最多 2 行）
+    const subOutLen = (state.subOutput && state.processing) ? wrapText(state.subOutput, W - 8).slice(-2).length : 0
+    // 权限预览占位
+    const permPreviewLen = state.permission ? 1 + state.permissionPreview.reduce((s, l) => s + wrapText(`  ${l}`, W - 1).length, 0) : 0
+    const convH = Math.max(1, rows - headerH - inputBoxH - statusH - pickerH - taskPanelH - subOutLen - permPreviewLen)
 
     // 对话区内容行（含流式缓冲）；markdown 表格先按显示宽度重排
     const convLines = []
@@ -501,6 +508,25 @@ export async function startTUI(agent, opts = {}) {
       const mark = t.status === "done" ? "✓" : t.status === "in_progress" ? "▶" : "○"
       const color = t.status === "done" ? `${C.dim}${ESC}[9m` : t.status === "in_progress" ? C.tool : C.text
       out.push(`${color} ${mark} ${sliceByWidth(t.title, cols - 4)}${ansi.reset}${ansi.clearLine}`)
+    }
+
+    // 子 agent 流式输出（最多 2 行，滚动显示最新内容）
+    if (state.subOutput && state.processing) {
+      const lines = wrapText(state.subOutput, W - 8)
+      const tail = lines.slice(-2)
+      for (const l of tail) {
+        out.push(`${C.dim}[${state.currentSub}] ${l}${ansi.reset}${ansi.clearLine}`)
+      }
+    }
+
+    // 权限审批内容预览（黄色，紧挨输入框上方）
+    if (state.permission) {
+      out.push(`${ansi.bold}${C.warn}❯ 权限请求${ansi.reset}${ansi.clearLine}`)
+      for (const line of state.permissionPreview) {
+        for (const wrapped of wrapText(`  ${line}`, W - 1)) {
+          out.push(`${C.warn}${wrapped}${ansi.reset}${ansi.clearLine}`)
+        }
+      }
     }
 
     // 输入框（全边框，宽 W）
@@ -576,7 +602,7 @@ export async function startTUI(agent, opts = {}) {
       }
     } else {
       const taskHint = state.tasks.length > 0
-        ? ` │ ▶${state.tasks.filter((t) => t.status === "done").length}/${state.tasks.length}`
+        ? ` │ ✓${state.tasks.filter((t) => t.status === "done").length}/${state.tasks.length}`
         : ""
       // token 用量：↑输入 ↓输出 + 缓存命中率（DeepSeek usage 带 prompt_cache_hit/miss_tokens）
       const tk = state.tokens
@@ -671,6 +697,14 @@ export async function startTUI(agent, opts = {}) {
 
     const callbacks = {
       onToken: (t) => {
+        // 子 agent 流式输出：前缀匹配 explore/coder/plan 的 token 进 subOutput
+        const subMatch = t.match(/^(explore|coder|plan)\//)
+        if (subMatch) {
+          state.currentSub = subMatch[1]
+          state.subOutput = (state.subOutput + t.slice(subMatch[0].length)).slice(-300)
+          scheduleRender()
+          return
+        }
         ensureAssistantLabel()
         state.streaming += t
         scheduleRender()
@@ -688,6 +722,11 @@ export async function startTUI(agent, opts = {}) {
       },
       onToolResult: (name, result) => {
         state.currentTool = null
+        // 子 agent 结束：清空流式缓冲
+        if (name.startsWith("explore/") || name.startsWith("coder/") || name.startsWith("plan/")) {
+          state.subOutput = ""
+          state.currentSub = null
+        }
         const stream = state.toolStreams[name]
         if (stream) {
           const tail = stream.trimEnd().slice(-4000)
@@ -803,10 +842,8 @@ export async function startTUI(agent, opts = {}) {
       pushLine(`  [auto] ${name} ${summarize(args)}`, C.warn)
       return Promise.resolve(true)
     }
-    // 把关键参数摆出来：批什么要让人看明白
-    // 内容行用警告色——与正常输出（白）区分，滚动回看也能认出这是待审批内容
-    pushLabel(`❯ 权限请求`, ansi.bold + C.warn)
-    for (const line of formatPermission(name, args)) pushLine(`  ${line}`, C.warn)
+    // 预览内容存到 permissionPreview，渲染在输入框上方紧挨"Allow?"提示
+    state.permissionPreview = formatPermission(name, args)
     return new Promise((resolve) => {
       state.permission = { name, args, resolve }
       state.status = `Waiting: ${name}`
@@ -1873,6 +1910,7 @@ export async function startTUI(agent, opts = {}) {
       if (validKeys.includes(answer) || key.name === "escape") {
         const { resolve, name } = state.permission
         state.permission = null
+        state.permissionPreview = []
         state.status = "Processing..."
         if (answer === "a" && !isContinue) {
           agent.autoApprove = true
@@ -2085,8 +2123,9 @@ export async function startTUI(agent, opts = {}) {
     }
 
     // 可打印字符 / 粘贴（str 可能一次多个字符）；Tab 一律转成两个空格（\t 显示宽度不定，会顶破输入框）
+    // \r\n 在 Windows raw mode 下可能漏进来冲乱页面
     if (str && !key.ctrl && !key.meta) {
-      const chars = [...str.replace(/\r/g, "").replace(/\t/g, "  ")]
+      const chars = [...str.replace(/[\r\n]+/g, "").replace(/\t/g, "  ")]
       state.input.splice(state.cursor, 0, ...chars)
       state.cursor += chars.length
       render()

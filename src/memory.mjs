@@ -13,7 +13,7 @@
 import { DatabaseSync } from "node:sqlite"
 import { mkdirSync } from "node:fs"
 import { readFile, readdir, stat, writeFile, mkdir } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { dirname, join, relative } from "node:path"
 import { parseEntry, serializeEntry, entryFilename } from "./markdown.mjs"
 import { embed, cosine, toBlob, fromBlob } from "./embedding.mjs"
 import { commitAndPush } from "./gitmem.mjs"
@@ -664,6 +664,33 @@ function extractLeadingDoc(lines, lineNum, ext) {
   return text.length > 0 && text.length < 300 ? text : ""
 }
 
+/** 单文件入索引：删除旧块 → 分块 → 插入新块（codeSync 和 reindexFile 共用） */
+function _upsertCodeFile(memory, rel, lines, lang, mtimeMs) {
+  const chunks = chunkCode(lines, rel)
+  memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
+  const insert = memory.db.prepare(`
+    INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const c of chunks) {
+    const isFile = c.name === rel
+    insert.run(rel, lang, isFile ? "file" : "symbol", isFile ? "" : c.name.slice(rel.length + 1), c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+  }
+}
+
+function _upsertDocFile(memory, rel, lines, mtimeMs) {
+  const chunks = chunkMarkdown(lines, rel)
+  const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"
+  memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+  const insert = memory.db.prepare(`
+    INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const c of chunks) {
+    insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+  }
+}
+
 /**
  * 同步代码索引：扫描 dir 下所有源文件 → 分块 → upsert 到 code_chunks。
  * 按 mtime 增量——只重建变更过的文件块。
@@ -713,28 +740,7 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
     try { text = await readFile(abs, "utf8") } catch { continue }
     const lines = text.split("\n")
     const lang = detectLanguage(abs)
-    const chunks = chunkCode(lines, rel)
-
-    // 删除该文件的旧块，插入新块
-    memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
-    const insert = memory.db.prepare(`
-      INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    for (const c of chunks) {
-      const isFile = c.name === rel
-      insert.run(
-        rel,
-        lang,
-        isFile ? "file" : "symbol",
-        isFile ? "" : c.name.slice(rel.length + 1), // 去掉 "filepath:" 前缀
-        c.content,
-        c.line_start,
-        c.line_end,
-        mtimeMs,
-        segmentCJK(c.content),
-      )
-    }
+    _upsertCodeFile(memory, rel, lines, lang, mtimeMs)
     updated++
 
     if (onProgress && i % 10 === 0) {
@@ -851,48 +857,27 @@ export function codeSearchTool(memory) {
  */
 export async function reindexFile(memory, cwd, absPath) {
   const ext = absPath.slice(absPath.lastIndexOf(".")).toLowerCase()
-  const rel = absPath.slice(cwd.length + 1).replaceAll("\\", "/")
+  const rel = relative(cwd, absPath).replaceAll("\\", "/")
+  if (rel.startsWith("..")) return // 越界路径拒索引
+
+  let text
+  try { text = await readFile(absPath, "utf8") } catch {
+    // 文件已删：清理索引
+    if (CODE_EXTS.has(ext)) memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
+    else if (DOC_EXTS.has(ext)) memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+    return
+  }
+  const lines = text.split("\n")
 
   if (CODE_EXTS.has(ext)) {
-    // 文件已删？清理索引
-    let text
-    try { text = await readFile(absPath, "utf8") } catch {
-      memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
-      return
-    }
-    const lines = text.split("\n")
     const lang = detectLanguage(absPath)
-    const chunks = chunkCode(lines, rel)
-    memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
-    const insert = memory.db.prepare(`
-      INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
     let mtimeMs = 0
     try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
-    for (const c of chunks) {
-      const isFile = c.name === rel
-      insert.run(rel, lang, isFile ? "file" : "symbol", isFile ? "" : c.name.slice(rel.length + 1), c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
-    }
+    _upsertCodeFile(memory, rel, lines, lang, mtimeMs)
   } else if (DOC_EXTS.has(ext)) {
-    let text
-    try { text = await readFile(absPath, "utf8") } catch {
-      memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
-      return
-    }
-    const lines = text.split("\n")
-    const chunks = chunkMarkdown(lines, rel)
-    memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
-    const insert = memory.db.prepare(`
-      INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"
     let mtimeMs = 0
     try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
-    for (const c of chunks) {
-      insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
-    }
+    _upsertDocFile(memory, rel, lines, mtimeMs)
   }
 }
 
@@ -968,17 +953,7 @@ export async function docSync(memory, dir, { onProgress } = {}) {
     let text
     try { text = await readFile(abs, "utf8") } catch { continue }
     const lines = text.split("\n")
-    const chunks = chunkMarkdown(lines, rel)
-
-    memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
-    const insert = memory.db.prepare(`
-      INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"
-    for (const c of chunks) {
-      insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
-    }
+    _upsertDocFile(memory, rel, lines, mtimeMs)
     updated++
 
     if (onProgress && i % 10 === 0) {

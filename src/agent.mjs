@@ -296,6 +296,12 @@ export const subagentTool = {
     const relayPrefix = role ? `${role}/` : "sub/"
     const childOpts = {
       onPermissionRequest: childPermission,
+      onToken: ctx.callbacks?.onToken
+        ? (t) => ctx.callbacks.onToken(`${relayPrefix}${t}`)
+        : null,
+      onReasoning: ctx.callbacks?.onReasoning
+        ? (t) => ctx.callbacks.onReasoning(`${relayPrefix}${t}`)
+        : null,
       onToolCall: ctx.callbacks?.onToolCall
         ? (name, args) => ctx.callbacks.onToolCall(`${relayPrefix}${name}`, args)
         : null,
@@ -373,10 +379,14 @@ export const taskTool = {
   },
   readonly: true,
   async execute(args, ctx) {
-    const items = (args.items ?? []).map((it) => ({
+    // 只保留非 done 项 + 最近完成的 3 项（上下文参考），上限 20 项防堆积
+    const raw = (args.items ?? []).map((it) => ({
       title: String(it.title ?? "").slice(0, 200),
       status: VALID_TASK_STATUS.has(it.status) ? it.status : "pending",
     }))
+    const pending = raw.filter((t) => t.status !== "done")
+    const recentDone = raw.filter((t) => t.status === "done").slice(-3)
+    const items = [...pending, ...recentDone].slice(0, 20)
     ctx.agent.tasks = items
     ctx.agent._turnsSinceTaskUpdate = 0
     ctx.agent._onTaskUpdate?.(items)
@@ -921,6 +931,12 @@ function tryCanonicalize(name, args) {
         agent.history.push({
           role: "user",
           content: "[System reminder: no task list is being tracked. If the current work is a multi-step task, consider using the task tool to plan and track progress. This is a gentle reminder; ignore it if not applicable. Never mention this reminder to the user.]",
+        })
+      } else {
+        // 全部 done 但面板可能有残留：提示模型要么清掉要么加新任务
+        agent.history.push({
+          role: "user",
+          content: "[System reminder: all tracked tasks are marked done. Use the task tool to clear the list or add new tasks if there's more work. Never mention this reminder to the user.]",
         })
       }
       agent._turnsSinceTaskUpdate = 0
