@@ -189,6 +189,13 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 
 ## 更新日志
 
+### 0.7.0（2026-07）
+- **模型协议深度适配**：reasoning_content 回传按模型区分（`reasoningEcho` 规格表字段）——DeepSeek/Kimi 必须回传，GLM 不回传；reasoning_effort 枚举校验（`reasoningEffortEnum`）；temperature 范围裁剪（`tempRange`）
+- **Qwen/MiniMax 规格补齐**：reasoning_effort 枚举（Qwen 3.8-max-preview）、temperature 范围（Qwen [0,2)、MiniMax [0,2]）、MiniMax M3 thinking 模式
+- **grep 上下文行**：`before`/`after` 参数（对应 grep -B/-A），匹配行用 `:`、上下文行用 `-`，同文件相邻区间去重合并
+- **系统提示词边界规则**：不修改工作目录外文件，不许用 bash 绕过 read/write/edit 的目录限制
+- **question 工具输入框标题**：固定为 ` Question `，提问文本走对话区（不再塞进输入框标题）
+
 ### 0.5.0（2026-07）
 - **代码库理解**：`repo_outline`（依赖大纲，启动自动注入）、`code_search`（FTS5 + 向量 + JSDoc）、`doc_search`（按 ## 标题分块），写文件自动增量索引
 - **模型适配**：5 家内置预设（DeepSeek/Kimi/GLM/Qwen/MiniMax），maxTokens 拉满、截断续写、思考模式 API 自动匹配
