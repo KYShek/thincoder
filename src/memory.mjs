@@ -19,7 +19,16 @@ import { embed, cosine, toBlob, fromBlob } from "./embedding.mjs"
 import { commitAndPush } from "./gitmem.mjs"
 
 const VALID_TYPES = new Set(["rule", "knowledge", "decision", "pattern"])
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 7
+
+// 代码索引：源码文件扩展名
+const CODE_EXTS = new Set([".mjs", ".js", ".ts", ".tsx", ".jsx", ".py", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".swift", ".kt", ".sh", ".bash", ".sql", ".yaml", ".yml", ".toml", ".json", ".css", ".html", ".vue", ".svelte"])
+// 文档索引：markdown / 纯文本（分开索引，便于 LLM 区分"设计规范"和"现存代码"）
+const DOC_EXTS = new Set([".md", ".mdc", ".txt", ".rst", ".adoc"])
+// 总是跳过的目录名
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage", "__pycache__", ".venv", "venv", "target", ".next", ".nuxt", ".svelte-kit"])
+// 大文件阈值（行数）：超过此行数按符号分块，否则整文件入索引
+const BIG_FILE_LINES = 2000
 
 /**
  * 打开/初始化记忆库。dbPath 不存在会自动创建。
@@ -166,6 +175,91 @@ function migrate(db) {
     }
     db.exec(`PRAGMA user_version = 5`)
   }
+
+  if (version < 6) {
+    // v6：代码索引——code_chunks 表 + FTS5（与 files 表同样模式）
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS code_chunks (
+        path TEXT NOT NULL,
+        language TEXT NOT NULL,
+        chunk_type TEXT NOT NULL CHECK(chunk_type IN ('file','symbol')),
+        symbol_name TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        line_start INTEGER NOT NULL DEFAULT 0,
+        line_end INTEGER NOT NULL DEFAULT 0,
+        mtime_ms INTEGER NOT NULL DEFAULT 0,
+        embedding BLOB,
+        seg_content TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (path, line_start)
+      )
+    `)
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
+        path, symbol_name, seg_content,
+        content='code_chunks', content_rowid='rowid',
+        tokenize='unicode61'
+      )
+    `)
+    db.exec(`
+      CREATE TRIGGER code_chunks_ai AFTER INSERT ON code_chunks BEGIN
+        INSERT INTO code_chunks_fts(rowid, path, symbol_name, seg_content)
+        VALUES (new.rowid, new.path, new.symbol_name, new.seg_content);
+      END;
+      CREATE TRIGGER code_chunks_ad AFTER DELETE ON code_chunks BEGIN
+        INSERT INTO code_chunks_fts(code_chunks_fts, rowid, path, symbol_name, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.symbol_name, old.seg_content);
+      END;
+      CREATE TRIGGER code_chunks_au AFTER UPDATE ON code_chunks BEGIN
+        INSERT INTO code_chunks_fts(code_chunks_fts, rowid, path, symbol_name, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.symbol_name, old.seg_content);
+        INSERT INTO code_chunks_fts(rowid, path, symbol_name, seg_content)
+        VALUES (new.rowid, new.path, new.symbol_name, new.seg_content);
+      END;
+    `)
+    db.exec(`PRAGMA user_version = 6`)
+  }
+
+  if (version < 7) {
+    // v7：文档索引——doc_chunks 表 + FTS5（与 code_chunks 同模式），markdown 按 ## 标题分块
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS doc_chunks (
+        path TEXT NOT NULL,
+        language TEXT NOT NULL DEFAULT 'markdown',
+        heading TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        line_start INTEGER NOT NULL DEFAULT 0,
+        line_end INTEGER NOT NULL DEFAULT 0,
+        mtime_ms INTEGER NOT NULL DEFAULT 0,
+        embedding BLOB,
+        seg_content TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (path, line_start)
+      )
+    `)
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS doc_chunks_fts USING fts5(
+        path, heading, seg_content,
+        content='doc_chunks', content_rowid='rowid',
+        tokenize='unicode61'
+      )
+    `)
+    db.exec(`
+      CREATE TRIGGER doc_chunks_ai AFTER INSERT ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(rowid, path, heading, seg_content)
+        VALUES (new.rowid, new.path, new.heading, new.seg_content);
+      END;
+      CREATE TRIGGER doc_chunks_ad AFTER DELETE ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, path, heading, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.heading, old.seg_content);
+      END;
+      CREATE TRIGGER doc_chunks_au AFTER UPDATE ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, path, heading, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.heading, old.seg_content);
+        INSERT INTO doc_chunks_fts(rowid, path, heading, seg_content)
+        VALUES (new.rowid, new.path, new.heading, new.seg_content);
+      END;
+    `)
+    db.exec(`PRAGMA user_version = 7`)
+  }
 }
 
 /**
@@ -286,7 +380,12 @@ async function ensureEmbeddings(memory) {
 
   const pendingEntries = memory.db.prepare(`SELECT id, title, content FROM entries WHERE embedding IS NULL LIMIT 256`).all()
   const pendingFiles = memory.db.prepare(`SELECT rowid, title, content FROM files WHERE embedding IS NULL LIMIT 256`).all()
-  if (pendingEntries.length + pendingFiles.length === 0) return
+  if (pendingEntries.length + pendingFiles.length === 0) {
+    // 记忆不算 pending，也补一下代码和文档块的向量
+    await ensureCodeEmbeddings(memory)
+    await ensureDocEmbeddings(memory)
+    return
+  }
 
   const items = [...pendingEntries, ...pendingFiles]
   const texts = items.map((r) => `${r.title}\n${r.content.slice(0, 2000)}`)
@@ -296,6 +395,10 @@ async function ensureEmbeddings(memory) {
   pendingEntries.forEach((r, i) => updateEntry.run(toBlob(vecs[i]), r.id))
   const updateFile = memory.db.prepare(`UPDATE files SET embedding = ? WHERE rowid = ?`)
   pendingFiles.forEach((r, i) => updateFile.run(toBlob(vecs[pendingEntries.length + i]), r.rowid))
+
+  // 每批嵌入后也补一下代码和文档块
+  await ensureCodeEmbeddings(memory)
+  await ensureDocEmbeddings(memory)
 }
 
 /**
@@ -408,6 +511,577 @@ function buildFtsQuery(query) {
     .slice(0, 16)
   if (terms.length === 0) return ""
   return terms.map((t) => `"${t.replaceAll('"', '""')}"`).join(" OR ")
+}
+
+// ========== 代码索引 ==========
+
+/** 推断文件语言（按扩展名） */
+function detectLanguage(filename) {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase()
+  const map = {
+    ".mjs": "javascript", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript", ".tsx": "tsx",
+    ".py": "python", ".rs": "rust", ".go": "go", ".java": "java",
+    ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp",
+    ".rb": "ruby", ".swift": "swift", ".kt": "kotlin",
+    ".sh": "bash", ".bash": "bash", ".sql": "sql",
+    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".json": "json",
+    ".css": "css", ".html": "html", ".vue": "vue", ".svelte": "svelte",
+    ".md": "markdown", ".mdc": "markdown",
+  }
+  return map[ext] ?? ext.slice(1)
+}
+
+/**
+ * 用正则提取 JS/TS 文件的顶层符号声明（函数、类、const 导出等）。
+ * 返回 [{ name, line, kind }]。
+ * 不解析 AST——够识别 "在哪里定义了什么" 就够用。
+ */
+function extractSymbols(lines, ext) {
+  const jsish = new Set([".mjs", ".js", ".ts", ".jsx", ".tsx"])
+  if (!jsish.has(ext)) return []
+
+  const symbols = []
+  const text = lines.join("\n")
+  // 顶层 export/函数/类（不在注释内的简化匹配）
+  const re = /(?:export\s+)?(?:(?:async\s+)?function\s+(\w+)|class\s+(\w+)|(?:export\s+)?(?:const|let|var)\s+(\w+))/gm
+  let m
+  while ((m = re.exec(text))) {
+    const name = m[1] || m[2] || m[3]
+    if (!name || name[0] !== name[0].toLowerCase() && name.length < 2) continue // 跳过全大写常量（噪声）
+    const line = text.slice(0, m.index).split("\n").length
+    symbols.push({ name, line, kind: m[1] ? "function" : m[2] ? "class" : "variable" })
+  }
+  return symbols
+}
+
+/**
+ * 提取 Python 文件的顶层 def/class。
+ */
+function extractPySymbols(lines) {
+  const symbols = []
+  const re = /^(?:async\s+)?(?:def|class)\s+(\w+)/gm
+  const text = lines.join("\n")
+  let m
+  while ((m = re.exec(text))) {
+    symbols.push({ name: m[1], line: text.slice(0, m.index).split("\n").length, kind: text[m.index] === "c" ? "class" : "function" })
+  }
+  return symbols
+}
+
+/**
+ * 将一个文件拆成代码块。小文件整文件一块；大文件按符号切分，符号间的内容并入前一个符号块。
+ * 每个块会额外带上符号前的 JSDoc / docstring 注释，提升搜索质量。
+ */
+function chunkCode(lines, filepath) {
+  const ext = filepath.slice(filepath.lastIndexOf(".")).toLowerCase()
+  const chunks = []
+
+  if (lines.length <= BIG_FILE_LINES) {
+    // 小文件：整文件一块；提取文件头注释作为前缀
+    const doc = extractLeadingDoc(lines, 1, ext)
+    const content = (doc ? doc + "\n" : "") + lines.join("\n").trimEnd()
+    chunks.push({ name: filepath, line_start: 1, line_end: lines.length, content })
+    return chunks
+  }
+
+  // 大文件：按符号切分
+  const symbols = ext === ".py" ? extractPySymbols(lines) : extractSymbols(lines, ext)
+  if (symbols.length <= 1) {
+    const doc = extractLeadingDoc(lines, 1, ext)
+    const content = (doc ? doc + "\n" : "") + lines.join("\n").trimEnd()
+    chunks.push({ name: filepath, line_start: 1, line_end: lines.length, content })
+    return chunks
+  }
+
+  // 符号间切分：每个符号从自己的行开始到下一个符号前一行结束
+  for (let i = 0; i < symbols.length; i++) {
+    const sym = symbols[i]
+    const start = sym.line
+    const end = i + 1 < symbols.length ? symbols[i + 1].line - 1 : lines.length
+    if (start > end) continue
+    const doc = extractLeadingDoc(lines, start, ext)
+    const body = lines.slice(start - 1, end).join("\n").trimEnd()
+    const content = (doc ? doc + "\n" : "") + body
+    if (!content) continue
+    chunks.push({ name: `${filepath}:${sym.name}`, line_start: start, line_end: end, content })
+  }
+  return chunks
+}
+
+/**
+ * 提取指定行之前的 JSDoc / docstring 注释。
+ * JS/TS: 向前扫描 /** ... *​/ 或 // 连续注释行
+ * Python: 符号定义行的下一行开始找 """...""" docstring
+ * 没有则返回空字符串。
+ */
+function extractLeadingDoc(lines, lineNum, ext) {
+  if (ext === ".py") {
+    // Python: docstring 在 def/class 的下一行
+    if (lineNum >= lines.length) return ""
+    const next = lines[lineNum] // lineNum 是 1-based，下一行 index = lineNum
+    const m = next?.match(/^\s*"""(.+?)"""\s*$/)
+    if (m) return m[1].trim()
+    // 多行 docstring
+    if (/^\s*"""\s*$/.test(next)) {
+      const parts = []
+      for (let i = lineNum + 1; i < lines.length && i < lineNum + 8; i++) {
+        if (/^\s*"""\s*$/.test(lines[i])) break
+        parts.push(lines[i].trim())
+      }
+      const text = parts.join(" ").trim()
+      return text.length > 0 && text.length < 300 ? text : ""
+    }
+    return ""
+  }
+
+  // JS/TS: 向前扫描 /** ... *​/ 或连续 // 行
+  const jsish = new Set([".mjs", ".js", ".ts", ".jsx", ".tsx"])
+  if (!jsish.has(ext)) return ""
+
+  const parts = []
+  let i = lineNum - 2 // lineNum 是 1-based，前一行 index = lineNum-2
+  // 先看紧邻的 JSDoc 块
+  if (i >= 0 && /^\s*\*\/\s*$/.test(lines[i])) {
+    // 找到 JSDoc 结尾，反向找开头
+    while (i >= 0) {
+      const line = lines[i].trim()
+      if (/^\s*\/\*\*/.test(line)) {
+        parts.unshift(line.replace(/^\s*\/\*\*\s*/, "").replace(/\s*\*\/\s*$/, "").trim())
+        break
+      }
+      parts.unshift(line.replace(/^\s*\*\s?/, "").trim())
+      i--
+    }
+  } else {
+    // 收集连续 // 注释行
+    while (i >= 0 && /^\s*\/\//.test(lines[i])) {
+      parts.unshift(lines[i].replace(/^\s*\/\/\s*/, "").trim())
+      i--
+    }
+  }
+
+  const text = parts.join(" ").trim()
+  return text.length > 0 && text.length < 300 ? text : ""
+}
+
+/**
+ * 同步代码索引：扫描 dir 下所有源文件 → 分块 → upsert 到 code_chunks。
+ * 按 mtime 增量——只重建变更过的文件块。
+ * onProgress({ phase, current, total }) 可选回调，用于 UI 进度展示。
+ */
+export async function codeSync(memory, dir, { onProgress } = {}) {
+  // 收集所有源文件
+  const files = []
+  async function walk(d) {
+    let entries
+    try { entries = await readdir(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue
+        await walk(join(d, e.name))
+      } else if (e.isFile()) {
+        const ext = e.name.slice(e.name.lastIndexOf(".")).toLowerCase()
+        if (CODE_EXTS.has(ext)) files.push(join(d, e.name))
+      }
+    }
+  }
+  await walk(dir)
+
+  // 取已索引文件的 mtime 快照
+  const indexed = new Map(
+    memory.db.prepare(`SELECT path, mtime_ms FROM code_chunks`).all().map((r) => [r.path, r.mtime_ms])
+  )
+  const seen = new Set()
+
+  onProgress?.({ phase: "scan", total: files.length })
+
+  let updated = 0, removed = 0, skipped = 0
+  for (let i = 0; i < files.length; i++) {
+    const abs = files[i]
+    const rel = abs.slice(dir.length + 1).replaceAll("\\", "/")
+    seen.add(rel)
+
+    let mtimeMs
+    try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { continue }
+    if (indexed.get(rel) === mtimeMs) {
+      skipped++
+      continue
+    }
+
+    // 读文件并分块
+    let text
+    try { text = await readFile(abs, "utf8") } catch { continue }
+    const lines = text.split("\n")
+    const lang = detectLanguage(abs)
+    const chunks = chunkCode(lines, rel)
+
+    // 删除该文件的旧块，插入新块
+    memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
+    const insert = memory.db.prepare(`
+      INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const c of chunks) {
+      const isFile = c.name === rel
+      insert.run(
+        rel,
+        lang,
+        isFile ? "file" : "symbol",
+        isFile ? "" : c.name.slice(rel.length + 1), // 去掉 "filepath:" 前缀
+        c.content,
+        c.line_start,
+        c.line_end,
+        mtimeMs,
+        segmentCJK(c.content),
+      )
+    }
+    updated++
+
+    if (onProgress && i % 10 === 0) {
+      onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped })
+    }
+  }
+
+  // 清理磁盘上已消失的文件块
+  for (const stale of indexed.keys()) {
+    if (!seen.has(stale)) {
+      memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(stale)
+      removed++
+    }
+  }
+
+  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped })
+  return { updated, removed, skipped, total: files.length }
+}
+
+/**
+ * 代码检索：FTS5(BM25) + 可选向量余弦，RRF 合并。
+ * 无 embedder 时退化为纯 FTS。
+ * 返回 [{ path, language, symbol_name, content, line_start, line_end, rank }]
+ */
+export async function codeSearch(memory, query, { limit = 5 } = {}) {
+  const ftsQuery = buildFtsQuery(query)
+  if (!ftsQuery) return []
+
+  const ftsList = memory.db.prepare(`
+    SELECT c.path, c.language, c.symbol_name, c.content, c.line_start, c.line_end, bm25(code_chunks_fts) AS rank
+    FROM code_chunks_fts JOIN code_chunks c ON c.rowid = code_chunks_fts.rowid
+    WHERE code_chunks_fts MATCH ?
+    ORDER BY rank LIMIT ?
+  `).all(ftsQuery, Math.max(limit * 4, 20))
+
+  if (!memory.embedder) return ftsList.slice(0, limit)
+
+  // 向量通道
+  await ensureEmbeddings(memory)
+  const [qvec] = await embed(memory.embedder, [query])
+  const rows = memory.db.prepare(`SELECT path, line_start, embedding FROM code_chunks WHERE embedding IS NOT NULL`).all()
+  const vecList = rows
+    .map((r) => ({ key: `${r.path}:${r.line_start}`, score: cosine(qvec, fromBlob(r.embedding)) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(limit * 4, 20))
+
+  // RRF 合并
+  const K = 60
+  const scores = new Map()
+  ftsList.forEach((r, i) => scores.set(`${r.path}:${r.line_start}`, (scores.get(`${r.path}:${r.line_start}`) ?? 0) + 1 / (K + i + 1)))
+  vecList.forEach((r, i) => scores.set(r.key, (scores.get(r.key) ?? 0) + 1 / (K + i + 1)))
+
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([key]) => {
+      const [path, lineStr] = key.split(/:(?=\d+$)/)
+      return ftsList.find((r) => r.path === path && String(r.line_start) === lineStr)
+    })
+    .filter(Boolean)
+}
+
+/** 惰性补算 code_chunks 缺失的向量 */
+async function ensureCodeEmbeddings(memory) {
+  if (!memory.embedder) return
+  const modelKey = memory.embedder.model
+  const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'code_embedding_model'`).get()?.value
+  if (stored !== modelKey) {
+    memory.db.prepare(`UPDATE code_chunks SET embedding = NULL`).run()
+    memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('code_embedding_model', ?)
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(modelKey)
+  }
+
+  const pending = memory.db.prepare(`SELECT rowid, path, symbol_name, content FROM code_chunks WHERE embedding IS NULL LIMIT 64`).all()
+  if (pending.length === 0) return
+
+  const texts = pending.map((r) => `${r.path}${r.symbol_name ? " :: " + r.symbol_name : ""}\n${r.content.slice(0, 2000)}`)
+  const vecs = await embed(memory.embedder, texts)
+
+  const update = memory.db.prepare(`UPDATE code_chunks SET embedding = ? WHERE rowid = ?`)
+  pending.forEach((r, i) => update.run(toBlob(vecs[i]), r.rowid))
+}
+
+/**
+ * 生成 code_search 工具（只读，与 memory_search 同模式）。
+ */
+export function codeSearchTool(memory) {
+  return {
+    name: "code_search",
+    description:
+      "Search the project's source code for relevant code. Use this to find functions, classes, or code patterns across the codebase. Supports natural language queries and code snippets. Returns matching code chunks with file paths and line numbers.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Natural language or code snippet to search for" },
+        limit: { type: "number", description: "Max results (default 5)" },
+      },
+      required: ["query"],
+    },
+    readonly: true,
+    async execute(args) {
+      const results = await codeSearch(memory, args.query, { limit: args.limit ?? 5 })
+      if (results.length === 0) return "(no matching code)"
+      return results.map((r) =>
+        `${r.path}${r.symbol_name ? ` :: ${r.symbol_name}` : ""} (L${r.line_start}-L${r.line_end}):\n${r.content.slice(0, 2000)}`
+      ).join("\n\n---\n\n")
+    },
+  }
+}
+
+/**
+ * 单文件增量重索引：write/edit/delete 后调用，只重建这一条路径。
+ * 不影响其他文件（比全量 codeSync/docSync 快几个数量级）。
+ */
+export async function reindexFile(memory, cwd, absPath) {
+  const ext = absPath.slice(absPath.lastIndexOf(".")).toLowerCase()
+  const rel = absPath.slice(cwd.length + 1).replaceAll("\\", "/")
+
+  if (CODE_EXTS.has(ext)) {
+    // 文件已删？清理索引
+    let text
+    try { text = await readFile(absPath, "utf8") } catch {
+      memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
+      return
+    }
+    const lines = text.split("\n")
+    const lang = detectLanguage(absPath)
+    const chunks = chunkCode(lines, rel)
+    memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
+    const insert = memory.db.prepare(`
+      INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    let mtimeMs = 0
+    try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
+    for (const c of chunks) {
+      const isFile = c.name === rel
+      insert.run(rel, lang, isFile ? "file" : "symbol", isFile ? "" : c.name.slice(rel.length + 1), c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+    }
+  } else if (DOC_EXTS.has(ext)) {
+    let text
+    try { text = await readFile(absPath, "utf8") } catch {
+      memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+      return
+    }
+    const lines = text.split("\n")
+    const chunks = chunkMarkdown(lines, rel)
+    memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+    const insert = memory.db.prepare(`
+      INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"
+    let mtimeMs = 0
+    try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
+    for (const c of chunks) {
+      insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+    }
+  }
+}
+
+// ========== 文档索引 ==========
+
+/**
+ * 按 ## 标题切分 markdown 文件。每个 ## section 独立入索引，
+ * 标题路径做 heading（如 "README.md > 部署 > Docker"），方便检索定位。
+ */
+function chunkMarkdown(lines, filepath) {
+  const chunks = []
+  let start = 1
+  let heading = filepath
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,4})\s+(.+)/)
+    if (m) {
+      if (i > start) {
+        chunks.push({ heading, line_start: start, line_end: i, content: lines.slice(start - 1, i).join("\n").trimEnd() })
+      }
+      heading = `${filepath} > ${m[2].trim()}`
+      start = i + 1
+    }
+  }
+  // tail
+  if (start <= lines.length) {
+    chunks.push({ heading, line_start: start, line_end: lines.length, content: lines.slice(start - 1).join("\n").trimEnd() })
+  }
+  return chunks.filter((c) => c.content)
+}
+
+/**
+ * 同步文档索引：扫描 dir 下所有 .md/.mdc/.txt/.rst/.adoc → 分块 → upsert 到 doc_chunks。
+ * 按 mtime 增量。
+ */
+export async function docSync(memory, dir, { onProgress } = {}) {
+  const files = []
+  async function walk(d) {
+    let entries
+    try { entries = await readdir(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue
+        await walk(join(d, e.name))
+      } else if (e.isFile()) {
+        const ext = e.name.slice(e.name.lastIndexOf(".")).toLowerCase()
+        if (DOC_EXTS.has(ext)) files.push(join(d, e.name))
+      }
+    }
+  }
+  await walk(dir)
+
+  const indexed = new Map(
+    memory.db.prepare(`SELECT path, mtime_ms FROM doc_chunks`).all().map((r) => [r.path, r.mtime_ms])
+  )
+  const seen = new Set()
+
+  onProgress?.({ phase: "scan", total: files.length })
+
+  let updated = 0, removed = 0, skipped = 0
+  for (let i = 0; i < files.length; i++) {
+    const abs = files[i]
+    const rel = abs.slice(dir.length + 1).replaceAll("\\", "/")
+    seen.add(rel)
+
+    let mtimeMs
+    try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { continue }
+    if (indexed.get(rel) === mtimeMs) {
+      skipped++
+      continue
+    }
+
+    let text
+    try { text = await readFile(abs, "utf8") } catch { continue }
+    const lines = text.split("\n")
+    const chunks = chunkMarkdown(lines, rel)
+
+    memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+    const insert = memory.db.prepare(`
+      INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"
+    for (const c of chunks) {
+      insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+    }
+    updated++
+
+    if (onProgress && i % 10 === 0) {
+      onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped })
+    }
+  }
+
+  // 清理磁盘上消失的文件
+  for (const stale of indexed.keys()) {
+    if (!seen.has(stale)) {
+      memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(stale)
+      removed++
+    }
+  }
+
+  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped })
+  return { updated, removed, skipped, total: files.length }
+}
+
+/**
+ * 文档检索：FTS5(BM25) + 可选向量余弦，RRF 合并。
+ */
+export async function docSearch(memory, query, { limit = 5 } = {}) {
+  const ftsQuery = buildFtsQuery(query)
+  if (!ftsQuery) return []
+
+  const ftsList = memory.db.prepare(`
+    SELECT d.path, d.language, d.heading, d.content, d.line_start, d.line_end, bm25(doc_chunks_fts) AS rank
+    FROM doc_chunks_fts JOIN doc_chunks d ON d.rowid = doc_chunks_fts.rowid
+    WHERE doc_chunks_fts MATCH ?
+    ORDER BY rank LIMIT ?
+  `).all(ftsQuery, Math.max(limit * 4, 20))
+
+  if (!memory.embedder) return ftsList.slice(0, limit)
+
+  const [qvec] = await embed(memory.embedder, [query])
+  const rows = memory.db.prepare(`SELECT path, line_start, embedding FROM doc_chunks WHERE embedding IS NOT NULL`).all()
+  const vecList = rows
+    .map((r) => ({ key: `${r.path}:${r.line_start}`, score: cosine(qvec, fromBlob(r.embedding)) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(limit * 4, 20))
+
+  const K = 60
+  const scores = new Map()
+  ftsList.forEach((r, i) => scores.set(`${r.path}:${r.line_start}`, (scores.get(`${r.path}:${r.line_start}`) ?? 0) + 1 / (K + i + 1)))
+  vecList.forEach((r, i) => scores.set(r.key, (scores.get(r.key) ?? 0) + 1 / (K + i + 1)))
+
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([key]) => {
+      const [path, lineStr] = key.split(/:(?=\d+$)/)
+      return ftsList.find((r) => r.path === path && String(r.line_start) === lineStr)
+    })
+    .filter(Boolean)
+}
+
+/** 惰性补算 doc_chunks 缺失的向量 */
+async function ensureDocEmbeddings(memory) {
+  if (!memory.embedder) return
+  const modelKey = memory.embedder.model
+  const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'doc_embedding_model'`).get()?.value
+  if (stored !== modelKey) {
+    memory.db.prepare(`UPDATE doc_chunks SET embedding = NULL`).run()
+    memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('doc_embedding_model', ?)
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(modelKey)
+  }
+
+  const pending = memory.db.prepare(`SELECT rowid, path, heading, content FROM doc_chunks WHERE embedding IS NULL LIMIT 64`).all()
+  if (pending.length === 0) return
+
+  const texts = pending.map((r) => `${r.heading || r.path}\n${r.content.slice(0, 2000)}`)
+  const vecs = await embed(memory.embedder, texts)
+
+  const update = memory.db.prepare(`UPDATE doc_chunks SET embedding = ? WHERE rowid = ?`)
+  pending.forEach((r, i) => update.run(toBlob(vecs[i]), r.rowid))
+}
+
+/**
+ * 生成 doc_search 工具（只读）。
+ */
+export function docSearchTool(memory) {
+  return {
+    name: "doc_search",
+    description:
+      "Search the project's documentation (README, design docs, guides, markdown files) for relevant information. Use this to find design decisions, coding conventions, architecture docs, or project rules. Prefer this over code_search when you need to understand the project's intended design rather than existing implementation.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Natural language search query" },
+        limit: { type: "number", description: "Max results (default 5)" },
+      },
+      required: ["query"],
+    },
+    readonly: true,
+    async execute(args) {
+      const results = await docSearch(memory, args.query, { limit: args.limit ?? 5 })
+      if (results.length === 0) return "(no matching documentation)"
+      return results.map((r) =>
+        `${r.path}${r.heading ? ` > ${r.heading}` : ""} (L${r.line_start}-L${r.line_end}):\n${r.content.slice(0, 2000)}`
+      ).join("\n\n---\n\n")
+    },
+  }
 }
 
 // ---------------------------------------------------------------- agent 工具

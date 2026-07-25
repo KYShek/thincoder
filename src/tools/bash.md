@@ -11,3 +11,4 @@ Notes:
 - On Windows, use Unix shell syntax inside bash commands (Git Bash): forward slashes, `/dev/null` not `NUL`
 - Never use bash to read, copy, or transmit secret files (.env, keys, tokens)
 - Do NOT run destructive commands (rm -rf, force-push, drop table) without explicit user confirmation
+- After commands that change files (git checkout, npm install, etc.), repo_outline and code_search may be stale — re-run them to get current results.

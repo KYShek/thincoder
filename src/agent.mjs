@@ -7,6 +7,7 @@
 import { chat } from "./provider.mjs"
 import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT } from "./context.mjs"
 import { search as memorySearch } from "./memory.mjs"
+let _reindexFile = null // 惰性加载，避免启动时循环依赖
 import { toOpenAISchema } from "./tools.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "./skills.mjs"
 import { configDir } from "./config.mjs"
@@ -291,7 +292,17 @@ export const subagentTool = {
       if (gitCtx) input = `${gitCtx}\n\n${input}`
     }
 
-    const childOpts = { onPermissionRequest: childPermission }
+    // 工具活动 relay 回父 agent 的 TUI 显示——子 agent 不再黑盒静默执行
+    const relayPrefix = role ? `${role}/` : "sub/"
+    const childOpts = {
+      onPermissionRequest: childPermission,
+      onToolCall: ctx.callbacks?.onToolCall
+        ? (name, args) => ctx.callbacks.onToolCall(`${relayPrefix}${name}`, args)
+        : null,
+      onToolResult: ctx.callbacks?.onToolResult
+        ? (name, result) => ctx.callbacks.onToolResult(`${relayPrefix}${name}`, result)
+        : null,
+    }
     const childRunOpts = { depth: (ctx.depth ?? 0) + 1, maxTurns: DEFAULT_SUBAGENT_TURNS }
     let report = await runAgent(child, input, childOpts, childRunOpts)
 
@@ -833,6 +844,18 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (tool && !result.startsWith("Error")) {
         if (!tool.readonly && toolCall.name !== "bash" && toolCall.name !== "subagent") agent._mutatedThisRun = true
         if (toolCall.name === "verify") agent._verifiedThisRun = true
+        // 增量索引：write/edit/delete 后自动重建该文件索引
+        if (agent.memory && (toolCall.name === "write" || toolCall.name === "edit" || toolCall.name === "delete")) {
+          try {
+            const args = JSON.parse(toolCall.arguments)
+            const abs = join(agent.cwd, args.path)
+            if (!_reindexFile) {
+              const mod = await import("./memory.mjs")
+              _reindexFile = mod.reindexFile
+            }
+            await _reindexFile(agent.memory, agent.cwd, abs)
+          } catch { /* 索引失败不阻塞 agent */ }
+        }
       }
     }
 
@@ -978,6 +1001,7 @@ async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth =
         agent,
         depth,
         signal,
+        callbacks, // 透传给子 agent，让它把工具活动 relay 回父 agent 的显示
         onOutput: (chunk) => callbacks.onToolOutput?.(item.toolCall.name, chunk),
         onQuestion: callbacks.onQuestion,
         onPermissionRequest: callbacks.onPermissionRequest,

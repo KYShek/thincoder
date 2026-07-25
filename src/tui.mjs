@@ -10,7 +10,7 @@ import { basename } from "node:path"
 import { existsSync, readFileSync } from "node:fs"
 import { runAgent, ContinueError } from "./agent.mjs"
 import { estimateTokens } from "./context.mjs"
-import { saveSession, clearSession } from "./session.mjs"
+import { saveSession, clearSession, archiveCurrent, listSlots, switchToSlot, sessionPath } from "./session.mjs"
 import { PROVIDER_PRESETS as PRESETS } from "./config.mjs"
 import { closeAllMcp } from "./mcp.mjs"
 
@@ -320,8 +320,9 @@ export async function startTUI(agent, opts = {}) {
   const cleanup = () => {
     if (cleanedUp) return
     cleanedUp = true
-    // 退出前保存会话（同步写，保证 exit 路径也能落盘）
+    // 退出前保存会话（同步写）；先归档当前到槽位，再落新——不丢
     try {
+      archiveCurrent(agent.cwd)
       saveSession(agent, state.lines)
     } catch {
       // 存失败不耽误退出
@@ -871,7 +872,8 @@ export async function startTUI(agent, opts = {}) {
     { name: "/provider", group: "Config", desc: "管理 provider（增/删/配 key）" },
     { name: "/config", group: "Config", desc: "配置管理（embedding / agent）" },
     { name: "/reindex", group: "Config", desc: "重建记忆索引" },
-    { name: "/new", group: "Session", desc: "开始新会话" },
+    { name: "/new", group: "Session", desc: "新会话（旧会话归档到槽位）" },
+    { name: "/session", group: "Session", desc: "列出/切换归档会话" },
     { name: "/clear", group: "Session", desc: "清屏" },
     { name: "/distill", group: "Session", desc: "从会话提取知识" },
     { name: "/rewind", group: "Session", desc: "回滚到存档点" },
@@ -897,16 +899,48 @@ export async function startTUI(agent, opts = {}) {
         state.lines = []
         state.streaming = ""
         clearSession(agent.cwd)
-        pushLine("已开始新会话（上一会话已归档）", C.dim)
+        pushLine("已开始新会话（旧会话已归档到槽位；/session 可查看）", C.dim)
         return
       case "/exit":
         cleanup()
         setTimeout(() => process.exit(0), 100) // 延迟一拍：fetch 后立刻 exit 在 Windows/Node 24 会触发 libuv 断言
         return
+      case "/session": {
+        const slotNum = Number(rest[0])
+        if (rest.length > 0 && !isNaN(slotNum)) {
+          // 切换到指定槽位
+          const data = switchToSlot(agent.cwd, slotNum)
+          if (!data) {
+            pushLine(`槽位 ${slotNum} 不存在`, C.dim)
+          } else {
+            applySession(agent, data)
+            state.lines = data.display.length
+              ? data.display.map((l) => ({ text: l.text, color: l.color }))
+              : []
+            state.tasks = agent.tasks ?? []
+            pushLabel(`── 已切换到槽位 ${slotNum}（${data.history.length} 条消息）──`, C.warn)
+            render()
+          }
+        } else {
+          // 列出所有槽位
+          const slots = listSlots(agent.cwd)
+          if (slots.length === 0) {
+            pushLine("没有归档会话（用 /new 后旧会话会自动归档）", C.dim)
+          } else {
+            pushLabel(`归档会话（/session <n> 切换）:`, ansi.bold + C.tool)
+            for (const s of slots) {
+              pushLine(`  槽位 ${s.slot} — ${s.date}`, C.text)
+            }
+          }
+        }
+        return
+      }
       case "/reindex": {
-        const { syncDir } = await import("./memory.mjs")
+        const { syncDir, codeSync, docSync } = await import("./memory.mjs")
         pushLine("[reindex] 重建索引...", C.tool)
         agent.memory.db.prepare("DELETE FROM files").run()
+        agent.memory.db.prepare("DELETE FROM code_chunks").run()
+        agent.memory.db.prepare("DELETE FROM doc_chunks").run()
         let total = 0
         if (distillOpts.projectDir) {
           const s = await syncDir(agent.memory, { layer: "project", dir: distillOpts.projectDir })
@@ -918,7 +952,27 @@ export async function startTUI(agent, opts = {}) {
           total += s.added
           pushLine(`  team: +${s.added} ~${s.updated} -${s.removed}`, C.dim)
         }
-        pushLine(`[reindex] 完成，共 ${total} 条。向量将在下次搜索时惰性生成。`, C.tool)
+        // 重建代码索引
+        pushLine(`  [code] 重建代码索引...`, C.tool)
+        const cr = await codeSync(agent.memory, agent.cwd, {
+          onProgress: (p) => {
+            if (p.phase === "index" && p.current % 20 === 0) {
+              pushLine(`    索引中... ${p.current}/${p.total}`, C.dim)
+            }
+          }
+        })
+        pushLine(`  code: ${cr.total} 文件，+${cr.updated} ~${cr.skipped} -${cr.removed}`, C.dim)
+        // 重建文档索引
+        pushLine(`  [doc] 重建文档索引...`, C.tool)
+        const dr = await docSync(agent.memory, agent.cwd, {
+          onProgress: (p) => {
+            if (p.phase === "index" && p.current % 5 === 0) {
+              pushLine(`    索引中... ${p.current}/${p.total}`, C.dim)
+            }
+          }
+        })
+        pushLine(`  doc: ${dr.total} 文件，+${dr.updated} ~${dr.skipped} -${dr.removed}`, C.dim)
+        pushLine(`[reindex] 完成，共 ${total} 条目。向量将在下次搜索时惰性生成。`, C.tool)
         return
       }
       case "/distill":
@@ -2061,7 +2115,48 @@ export async function startTUI(agent, opts = {}) {
     }
     pushLabel(`── 已恢复上次会话（${opts.restored.history.length} 条消息）；/new 开始新会话 ──`, C.warn)
   }
+  // 有归档槽位时给个提示
+  if (listSlots(agent.cwd).length > 0) {
+    pushLine("提示：存在归档会话，/session 可查看/切换", C.dim)
+  }
   render()
+
+  // 后台索引（进界面后再跑，不阻塞启动）；进度走底部状态栏，不往对话区塞行
+  ;(async () => {
+    const { codeSync, docSync } = await import("./memory.mjs")
+    const cwd = agent.cwd
+    let codeFiles = 0, docFiles = 0
+    try {
+      state.status = "Indexing code..."
+      render()
+      await codeSync(agent.memory, cwd, {
+        onProgress: (p) => {
+          if (p.phase === "index" && p.current % 30 === 0) {
+            state.status = `Indexing code... ${p.current}/${p.total}`
+            render()
+          }
+        }
+      })
+      codeFiles = agent.memory.db.prepare(`SELECT COUNT(DISTINCT path) AS n FROM code_chunks`).get()?.n ?? 0
+    } catch { /* 不阻塞 */ }
+    try {
+      state.status = "Indexing docs..."
+      render()
+      await docSync(agent.memory, cwd, {
+        onProgress: (p) => {
+          if (p.phase === "index" && p.current % 10 === 0) {
+            state.status = `Indexing docs... ${p.current}/${p.total}`
+            render()
+          }
+        }
+      })
+      docFiles = agent.memory.db.prepare(`SELECT COUNT(DISTINCT path) AS n FROM doc_chunks`).get()?.n ?? 0
+    } catch { /* 不阻塞 */ }
+    state.status = codeFiles || docFiles
+      ? `Ready — idx code ${codeFiles} doc ${docFiles}`
+      : "Ready"
+    render()
+  })()
 }
 
 function summarize(obj) {

@@ -16,7 +16,8 @@ import { execSync } from "node:child_process"
 import { join } from "node:path"
 import { createAgent, runAgent } from "../src/agent.mjs"
 import { loadConfig, saveConfig, configDir, configPath, PROVIDER_PRESETS } from "../src/config.mjs"
-import { createMemory, memoryTools, put, remove, search, list, syncDir } from "../src/memory.mjs"
+import { createMemory, memoryTools, put, remove, search, list, syncDir, codeSearchTool, docSearchTool } from "../src/memory.mjs"
+import { repoOutlineTool } from "../src/repomap.mjs"
 import { builtinTools } from "../src/tools.mjs"
 
 const [command, ...args] = process.argv.slice(2)
@@ -87,7 +88,7 @@ async function makeAgent() {
     await ensureClone(team)
     await syncDir(memory, { layer: "team", dir: team.dir })
   }
-  const baseTools = [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team })]
+  const baseTools = [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team }), codeSearchTool(memory), docSearchTool(memory), repoOutlineTool(memory.db, cwd)]
 
   // MCP servers：并行连接（一个死 server 不会拖住启动），失败的收集警告（TUI 下 stderr 不可见，通过 agent 对象传递）
   const mcpServers = config.mcp?.servers ?? []

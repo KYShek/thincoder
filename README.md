@@ -13,7 +13,8 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 ## 特性
 
 - **Agent 主循环**：LLM ↔ 工具调用循环，直到任务完成（上限 100 轮防失控）
-- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch` + MCP，全部零依赖实现
+- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch` + `code_search` / `doc_search` / `repo_outline` + MCP，全部零依赖实现
+- **代码库理解**：`repo_outline`（依赖大纲）、`code_search`（源码 FTS5 + 向量 + JSDoc）、`doc_search`（文档分块检索）——启动时后台索引，状态栏显示进度；write/edit/delete 后自动增量更新
 - **两段式工具调度**：权限确认串行（一个一个问），只读工具并行执行，有副作用工具串行
 - **会话持久化**：退出自动保存，启动自动恢复（按项目目录隔离），`/new` 开始新会话
 - **子 agent 并发**：`subagent` 工具派发独立子任务，`role="explore"`（只读搜索）和 `role="coder"`（全套工具；写操作需 AUTO 模式），并发执行；coder 完成后自动提醒主 agent 校验报告
@@ -145,8 +146,12 @@ src/
   tools.mjs         14 个内置工具 + MCP 包装 + readonly 调度标记
   mcp.mjs           MCP 客户端（JSON-RPC + stdio transport，零依赖）
   agent.mjs         主循环 + 两段式工具执行 + plan/task/goal/skill/subagent/verify 工具
+                    + 增量索引（write/edit/delete 后自动 reindexFile）
+  repomap.mjs       仓库依赖大纲（import/export regex 解析，工具按需调用）
   context.mjs       token 粗估 + 历史压缩 + task 回注
-  memory.mjs        记忆核心：三层合并检索（FTS5 + 向量 + RRF）
+  memory.mjs        记忆核心：三层合并检索 + 代码/文档索引（code_chunks/doc_chunks）
+                    + FTS5 + 向量 RRF + JSDoc 提取 + 单文件增量索引
+  session.mjs       会话持久化（最多 5 个归档槽位，按项目 cwd 隔离）
   skills.mjs        技能发现/加载（.thincoder/skills/*.md）
   markdown.mjs      条目格式（frontmatter 解析/序列化）
   gitmem.mjs        Team 层 git 同步（clone/pull --rebase/push，系统 git）
@@ -162,7 +167,8 @@ scripts/            真实环境验证脚本（压缩、团队同步）
 
 - **工具执行两段式**：阶段一串行做权限确认（有副作用工具逐个问用户）；阶段二只读工具 `Promise.all` 并行、有副作用工具串行。结果按 `toolCallId` 配对回喂
 - **权限在 UI 层**：工具只负责执行，"问不问用户"是 TUI/CLI 的事，headless 场景不用改工具
-- **索引是易失品**：sqlite 只是 markdown 真相源的本地索引，`reindex` 随时可重建；git 仓库才是团队记忆的真相源
+- **索引是易失品**：sqlite 只是代码/文档/记忆的本地索引，`reindex` 随时可重建
+- **代码/文档分离索引**：源码和 markdown 文档分表索引，LLM 通过不同工具检索——避免模型把旧代码模式当做设计规范
 - **git 边界**：Project 层只写文件不碰用户的仓库；Team 层是 ThinCoder 自管仓库才可自动 commit+push
 - **中文检索**：FTS5 unicode61 + 写入/查询两侧 CJK 逐字加空格；语义匹配走向量通道
 
