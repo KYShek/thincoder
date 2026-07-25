@@ -46,36 +46,46 @@ const DEFAULTS = {
 }
 
 /**
- * 已知模型的规格表（前缀匹配，长的在前）。
- * context: 上下文窗口
- * partialMode: Kimi Partial Mode 截断续写协议（assistant 消息带 partial:true；Kimi 与 Qwen 同协议，仅非思考模式）
- * prefixMode: DeepSeek Chat Prefix Completion 截断续写协议（assistant 消息带 prefix:true，走 /beta 端点）
- * compactThreshold 未显式配置时，按窗口 * COMPACT_RATIO 自动推导。
- * 注：deepseek-chat / deepseek-reasoner 已于 2026-07-24 弃用，官方映射到 v4-flash 非思考/思考模式。
+ * 已知模型的能力规格表（前缀匹配，长的在前）。
+ * 用于压缩阈值推导、截断续写协议选择、能力感知优化。
+ *
+ * context:     上下文窗口（tokens）
+ * maxOutput:   最大输出 tokens（默认 context）
+ * thinking:    是否支持思考/推理模式
+ * partialMode: Kimi/Qwen Partial Mode 截断续写（assistant 消息带 partial:true）
+ * prefixMode:  DeepSeek Prefix Completion 截断续写（走 /beta 端点，带 prefix:true）
+ * multimodal:  是否多模态（支持图片/视觉输入）
+ * cacheMode:   上下文缓存方式："auto"=自动/"prompt"=需显式/"none"=不支持
  */
 const MODEL_SPECS = [
-  ["deepseek-v4-pro", { context: 1_000_000, prefixMode: true }],
-  ["deepseek-v4-flash", { context: 256_000, prefixMode: true }],
-  ["deepseek-reasoner", { context: 256_000, prefixMode: true }],
-  ["deepseek-chat", { context: 256_000, prefixMode: true }],
-  ["kimi-k3", { context: 1_000_000, partialMode: true }],
-  ["kimi-k2", { context: 256_000 }],
-  ["moonshot", { context: 128_000 }],
-  ["glm-5.2", { context: 1_000_000 }],
-  ["glm-5", { context: 1_000_000 }],
-  ["glm-4", { context: 128_000 }],
-  ["gpt-4.1", { context: 1_000_000 }],
-  ["gpt-4o", { context: 128_000 }],
-  ["qwen3.7-max", { context: 1_000_000, partialMode: true }],
-  ["qwen3.8-max", { context: 1_000_000, partialMode: true }],
-  ["qwen-max", { context: 1_000_000, partialMode: true }],
-  ["qwen-plus", { context: 1_000_000, partialMode: true }],
-  ["qwen", { context: 1_000_000, partialMode: true }],
-  ["MiniMax-M3", { context: 1_000_000 }],
-  ["minimax-m3", { context: 1_000_000 }],
-  ["minimax-m1", { context: 256_000 }],
+  // DeepSeek V4 系列
+  ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt" }],
+  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt" }],
+  ["deepseek-reasoner", { context: 256_000,   maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt" }],
+  ["deepseek-chat",     { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt" }],
+  // Kimi 系列
+  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, cacheMode: "none" }],
+  ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
+  ["moonshot",          { context: 128_000,   maxOutput: 32_000,  thinking: false, cacheMode: "none" }],
+  // GLM 系列
+  ["glm-5.2",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto" }],
+  ["glm-5",             { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto" }],
+  ["glm-4",             { context: 128_000,   maxOutput: 32_000,  thinking: true,  cacheMode: "auto" }],
+  // GPT 系列
+  ["gpt-4.1",           { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "prompt" }],
+  ["gpt-4o",            { context: 128_000,   maxOutput: 16_000,  thinking: false, multimodal: true, cacheMode: "prompt" }],
+  // Qwen 系列
+  ["qwen3.7-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
+  ["qwen3.8-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
+  ["qwen-max",          { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
+  ["qwen-plus",         { context: 1_000_000, maxOutput: 32_000,  thinking: false, partialMode: true, cacheMode: "none" }],
+  ["qwen",              { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
+  // MiniMax 系列
+  ["MiniMax-M3",        { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
+  ["minimax-m3",        { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
+  ["minimax-m1",        { context: 256_000,   maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
 ]
-const DEFAULT_SPEC = { context: 128_000 }
+const DEFAULT_SPEC = { context: 128_000, maxOutput: 32_000, cacheMode: "none" }
 // 窗口利用率上限：0.8（DeepSeek 内部即全窗口；压缩本身要花一次 LLM 调用，过早压缩是纯浪费。
 // 留 20% 余量给压缩后的尾部增长与输出 token）
 const COMPACT_RATIO = 0.8
