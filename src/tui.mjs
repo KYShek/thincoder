@@ -534,7 +534,7 @@ export async function startTUI(agent, opts = {}) {
     let title
     if (state.question) {
       borderColor = C.tool
-      title = ` ${sliceByWidth(state.question.text, W - 6)} `
+      title = " Question "
     } else if (state.permission) {
       borderColor = C.warn
       if (state.permission.name === "continue") {
