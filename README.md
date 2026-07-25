@@ -13,17 +13,18 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 ## 特性
 
 - **Agent 主循环**：LLM ↔ 工具调用循环，上限 100 轮防失控，完成守卫拦截未验证的改动
-- **代码库理解** ⭐0.5.0：`repo_outline`（依赖大纲，实时解析 import/export）、`code_search`（源码 FTS5 + 向量 + JSDoc 提取）、`doc_search`（文档按 ## 标题分块检索）——启动后台索引、状态栏显示进度、写文件后自动增量更新。三工具按"结构→意图→细节"引导 LLM 探索代码库
-- **工具集**：`read` / `write` / `edit` / `bash` / `glob` / `grep` / `websearch` / `ls` / `fetch` + 上述三个检索工具 + MCP，全部零依赖，文件工具目录隔离
+- **代码库理解** ⭐0.5.0：`repo_outline`（依赖大纲，启动自动注入）、`code_search`（源码 FTS5 + 向量 + JSDoc 提取）、`doc_search`（文档按 ## 标题分块检索）——后台索引、写文件自动增量更新、三工具按"结构→意图→细节"引导
+- **模型适配** ⭐：5 家国产大模型内置预设（DeepSeek/Kimi/GLM/Qwen/MiniMax），自动匹配上下文窗口、截断续写协议（prefix/partial）、思考模式 API（thinking.type / reasoning_effort）、输出上限
+- **工具集**：`read` / `write` / `edit` / `bash` / `glob`（支持 `**`） / `grep` / `websearch` / `ls` / `fetch` + 三个检索工具 + MCP，全部零依赖，文件工具目录隔离
 - **记忆系统**：三层（personal/project/team），FTS5 + 向量 RRF 混合检索，markdown 格式 git 友好
 - **两段式工具调度**：权限确认串行，只读工具并行，副作用工具串行
-- **会话持久化** ⭐0.5.0：最多 5 个归档槽位，`/session` 随时切换，退出自动保存
-- **子 agent 并发**：`explore`（只读搜索）、`plan`（只读规划）、`coder`（实现）三种角色，并行派发，coder 完成自动校验提醒，子 agent 流式输出可见
+- **会话持久化** ⭐0.5.0：最多 5 个归档槽位，`/session` 随时切换，恢复时工具结果可见
+- **子 agent 并发**：`explore`/`plan`/`coder` 三种角色，并行派发，流式输出可见，报告进对话区
 - **Plan Mode**：只读探索 + 方案设计，用户确认后实现
 - **AUTO 模式**：`/auto` 完全授权，长任务免确认
 - **任务跟踪**：`task` 工具拆解多步任务，状态栏 ✓n/m 实时进度，自动过滤已完成项
 - **Goal/Verify/Skills**：长目标跟踪、完成验证、可复用技能
-- **流式 TUI**：裸 ANSI，权限预览紧挨输入框，Windows 安全（raw mode 冲页面修复）
+- **流式 TUI**：裸 ANSI，权限预览紧挨输入框，write/edit 自动展示 diff
 
 ## 记忆系统：一人学到，全队皆知
 
@@ -189,16 +190,14 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 ## 更新日志
 
 ### 0.5.0（2026-07）
-- **代码库理解**：新增 `repo_outline`、`code_search`、`doc_search` 三个检索工具
-- 源码 FTS5 + 向量索引，按符号分块，JSDoc/docstring 自动提取
-- 文档按 `##` 标题分块索引，代码/文档分离检索
-- 启动后台索引、写文件自动增量更新（`reindexFile`）
-- prompt 引导 LLM 按"结构→意图→细节"探索代码库
-- 会话 5 槽位归档、`/session` 切换（Windows rename 崩溃修复）
-- 文件工具目录隔离防越界（`resolveInCwd`）
-- 子 agent 流式输出可见、权限预览紧挨输入框
+- **代码库理解**：`repo_outline`（依赖大纲，启动自动注入）、`code_search`（FTS5 + 向量 + JSDoc）、`doc_search`（按 ## 标题分块），写文件自动增量索引
+- **模型适配**：5 家内置预设（DeepSeek/Kimi/GLM/Qwen/MiniMax），maxTokens 拉满、截断续写、思考模式 API 自动匹配
+- 会话 5 槽位归档、`/session` 切换、恢复时展示工具结果
+- 子 agent 流式输出可见、最终报告进对话区
+- 文件工具目录隔离、权限预览紧挨输入框
+- write/edit 自动附 git diff、edit 错误信息增强提示
 - task 自动过滤已完成项、全部 done 时主动提醒
-- Windows raw mode Enter 冲页面修复
+- 提示词引导"查官方文档 → 不一致就存项目记忆"
 
 ### 0.4.0
 - 权限审批展示文件内容预览（write 内容、edit diff、bash 命令）
