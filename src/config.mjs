@@ -14,11 +14,11 @@ export const configPath = join(configDir, "config.json")
 
 /** 内置提供商预设：/provider add <预设名>、首次启动向导共用 */
 export const PROVIDER_PRESETS = {
-  deepseek: { baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "DeepSeek" },
-  kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "high", maxTokens: 131072, desc: "Kimi / Moonshot" },
-  glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "智谱 GLM" },
-  qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", desc: "通义千问" },
-  minimax:  { baseURL: "https://api.minimax.chat/v1", chatPath: "/text/chatcompletion_v2", model: "MiniMax-M3", desc: "MiniMax" },
+  deepseek: { baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 393216, desc: "DeepSeek" },
+  kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "max", maxTokens: 131072, desc: "Kimi / Moonshot" },
+  glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 131072, desc: "智谱 GLM" },
+  qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", maxTokens: 131072, desc: "通义千问" },
+  minimax:  { baseURL: "https://api.minimax.chat/v1", chatPath: "/text/chatcompletion_v2", model: "MiniMax-M3", maxTokens: 131072, desc: "MiniMax" },
 }
 
 // 默认 provider 跟 deepseek 预设保持一致（去掉 desc 展示字段）
@@ -60,10 +60,10 @@ const DEFAULTS = {
  */
 const MODEL_SPECS = [
   // DeepSeek V4 系列
-  ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
-  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
-  ["deepseek-reasoner", { context: 256_000,   maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
-  ["deepseek-chat",     { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-reasoner", { context: 256_000,   maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-chat",     { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
   // Kimi 系列
   ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt", thinkApi: "effort" }],
   ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none" }],
