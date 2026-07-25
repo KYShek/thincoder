@@ -15,7 +15,7 @@ export const configPath = join(configDir, "config.json")
 /** 内置提供商预设：/provider add <预设名>、首次启动向导共用 */
 export const PROVIDER_PRESETS = {
   deepseek: { baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "DeepSeek" },
-  kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "high", desc: "Kimi / Moonshot" },
+  kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "high", maxTokens: 131072, desc: "Kimi / Moonshot" },
   glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", desc: "智谱 GLM" },
   qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", desc: "通义千问" },
   minimax:  { baseURL: "https://api.minimax.chat/v1", chatPath: "/text/chatcompletion_v2", model: "MiniMax-M3", desc: "MiniMax" },
@@ -56,30 +56,31 @@ const DEFAULTS = {
  * prefixMode:  DeepSeek Prefix Completion 截断续写（走 /beta 端点，带 prefix:true）
  * multimodal:  是否多模态（支持图片/视觉输入）
  * cacheMode:   上下文缓存方式："auto"=自动/"prompt"=需显式/"none"=不支持
+ * thinkApi:    思考模式 API 类型："type"=thinking.type 字段 / "effort"=reasoning_effort 字段
  */
 const MODEL_SPECS = [
   // DeepSeek V4 系列
-  ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt" }],
-  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt" }],
-  ["deepseek-reasoner", { context: 256_000,   maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt" }],
-  ["deepseek-chat",     { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt" }],
+  ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-reasoner", { context: 256_000,   maxOutput: 128_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
+  ["deepseek-chat",     { context: 256_000,   maxOutput: 128_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type" }],
   // Kimi 系列
-  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt" }],
+  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt", thinkApi: "effort" }],
   ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none" }],
   ["moonshot",          { context: 128_000,   maxOutput: 32_000,  thinking: false, cacheMode: "none" }],
   // GLM 系列
-  ["glm-5.2",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto" }],
-  ["glm-5",             { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto" }],
-  ["glm-4",             { context: 128_000,   maxOutput: 32_000,  thinking: true,  cacheMode: "auto" }],
+  ["glm-5.2",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type" }],
+  ["glm-5",             { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type" }],
+  ["glm-4",             { context: 128_000,   maxOutput: 32_000,  thinking: true,  cacheMode: "auto", thinkApi: "type" }],
   // GPT 系列
   ["gpt-4.1",           { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "prompt" }],
   ["gpt-4o",            { context: 128_000,   maxOutput: 16_000,  thinking: false, multimodal: true, cacheMode: "prompt" }],
   // Qwen 系列
-  ["qwen3.7-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
-  ["qwen3.8-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
-  ["qwen-max",          { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
-  ["qwen-plus",         { context: 1_000_000, maxOutput: 32_000,  thinking: false, partialMode: true, cacheMode: "none" }],
-  ["qwen",              { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none" }],
+  ["qwen3.7-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort" }],
+  ["qwen3.8-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort" }],
+  ["qwen-max",          { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort" }],
+  ["qwen-plus",         { context: 1_000_000, maxOutput: 32_000,  thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort" }],
+  ["qwen",              { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort" }],
   // MiniMax 系列
   ["MiniMax-M3",        { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
   ["minimax-m3",        { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "auto" }],

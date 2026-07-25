@@ -1272,12 +1272,23 @@ export async function startTUI(agent, opts = {}) {
         // ---- /think on / off ----
         if (sub === "on" || sub === "off") {
           const enable = sub === "on"
-          cur.thinking = enable ? { type: "enabled" } : { type: "disabled" }
-          if (!enable) delete cur.reasoningEffort
-          else if (!cur.reasoningEffort) cur.reasoningEffort = "high"
-          await syncProviderField("thinking", cur.thinking)
-          if (!enable) await syncProviderField("reasoningEffort", undefined)
-          else await syncProviderField("reasoningEffort", cur.reasoningEffort)
+          // 仅用 reasoning_effort 的模型（K3）：不碰 thinking 字段，只设/删 reasoningEffort
+          const { specForModel } = await import("./config.mjs")
+          const spec = specForModel(cur.model)
+          if (spec.thinkApi === "effort") {
+            // 仅用 reasoning_effort 的模型（K3 / Qwen）：不碰 thinking 字段
+            if (!enable) delete cur.reasoningEffort
+            else if (!cur.reasoningEffort) cur.reasoningEffort = "high"
+            if (!enable) await syncProviderField("reasoningEffort", undefined)
+            else await syncProviderField("reasoningEffort", cur.reasoningEffort)
+          } else {
+            cur.thinking = enable ? { type: "enabled" } : { type: "disabled" }
+            if (!enable) delete cur.reasoningEffort
+            else if (!cur.reasoningEffort) cur.reasoningEffort = "high"
+            await syncProviderField("thinking", cur.thinking)
+            if (!enable) await syncProviderField("reasoningEffort", undefined)
+            else await syncProviderField("reasoningEffort", cur.reasoningEffort)
+          }
           pushLabel(`❯ Think`, ansi.bold + C.tool)
           pushLine(`思维模式已${enable ? "开启" : "关闭"}`, C.tool)
           if (enable) pushLine(`推理强度: ${cur.reasoningEffort}`, C.dim)
