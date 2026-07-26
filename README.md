@@ -39,7 +39,7 @@ Three layers, all "query if present, skip if absent", unified hybrid retrieval:
 - **Hybrid retrieval**: FTS5 (BM25, per-character CJK indexing, bigrams matchable) + embedding vectors (brute-force cosine) + RRF(k=60) fusion ranking
 - **Embeddings**: OpenAI-compatible `/v1/embeddings`, defaults to SiliconFlow `BAAI/bge-m3` (free tier, good CJK support); Ollama works as an offline option. Vectors generated lazily — not computed on write, backfilled and persisted on first search
 - **Entry format**: Markdown + frontmatter (type/title/tags/author/created), readable and reviewable directly on GitHub; one file per entry, naturally avoiding merge conflicts; real conflicts produce honest errors, never auto-merged
-- **Dual-track accumulation**: conventions written manually (`memory_put`), experience extracted from sessions via `/distill` — **the LLM proposes candidates, a human confirms each y/n** before anything is stored; never fully automatic
+- **Dual-track accumulation**: conventions written manually (`memory_put`), experience extracted from sessions via `/extract` — **the LLM proposes candidates, a human confirms each y/n** before anything is stored; never fully automatic
 - **Retrieval isolation**: the Project layer is isolated by project path — project A's memories never leak into project B
 
 ## Requirements
@@ -84,7 +84,7 @@ thincoder upgrade
 
 Running from source: replace `thincoder` above with `node bin/thincoder.mjs`.
 
-Slash commands in the TUI: `/help`, `/model` (arrow-key picker across all models of all providers; `/model <name>` switches directly), `/provider` (add/remove providers, set keys, custom endpoints), `/think` (thinking mode toggle and reasoning effort), `/config` (view config, `/config embedkey` for the embedding key, `/config set` for parameters), `/session` (list/switch archived sessions), `/reindex` (rebuild the index), `/distill` (extract knowledge from the current session), `/clear`, `/exit`. Typing `/` shows live matching hints in the status bar.
+Slash commands in the TUI: `/help`, `/model` (arrow-key picker across all models of all providers; `/model <name>` switches directly), `/provider` (add/remove providers, set keys, custom endpoints), `/think` (thinking mode toggle and reasoning effort), `/config` (view config, `/config embedkey` for the embedding key, `/config set` for parameters), `/session` (list/switch archived sessions), `/reindex` (rebuild the index), `/extract` (extract knowledge from the current session), `/restore` (restore checkpoint), `/clear`, `/exit`. High-frequency commands support abbreviations: `/h` `/x` `/m` `/p` `/t` `/c` `/n`. Typing `/` shows live matching hints in the status bar.
 
 Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`), `THINCODER_BASE_URL`, `THINCODER_MODEL`, `SILICONFLOW_API_KEY`.
 
@@ -233,7 +233,7 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 - **TPM/RPM proactive rate gate**: with `tpm`/`rpm` budgets configured on a provider, requests are booked against a local sliding window (60s, input+output) before sending — over budget means sleeping until the window frees up instead of gambling on 429s; covers the main loop / compaction summaries / subagents / truncation resume. Status bar shows `TPM throttle wait ~Ns`; the gate is off for unconfigured providers
 - **429-specific backoff**: respects the `Retry-After` header, otherwise backs off 15s/30s/60s (60s window — sub-second backoff is pointless); quota/balance errors (`exceeded_current_quota_error`) are distinguished from rate limits and no longer retried uselessly
 - **Dependency injection as compact summary**: `buildSummary` (directory-level dependencies + hub files + entry points, naturally ~1-2k chars) replaces the full-outline injection; detailed import/export available on demand via `repo_outline`
-- **TUI menus**: `/model` `/config` `/provider` `/think` `/mcp` `/goal` `/session` `/rewind` unified into picker menus
+- **TUI menus**: `/model` `/config` `/provider` `/think` `/mcp` `/goal` `/session` `/restore` unified into picker menus
 - **Session robustness**: corrupted files or disk errors during archive/switch no longer crash — silently abandoned
 
 ### 0.7.1 (2026-07)

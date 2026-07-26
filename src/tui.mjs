@@ -635,8 +635,8 @@ export async function startTUI(agent, opts = {}) {
         statusLine = " /goal open goal management menu"
       } else if (match?.name === "/session" && cmd === "/session") {
         statusLine = " /session select archived session"
-      } else if (match?.name === "/rewind" && cmd === "/rewind") {
-        statusLine = " /rewind select checkpoint to restore"
+      } else if (match?.name === "/restore" && cmd === "/restore") {
+        statusLine = " /restore select checkpoint to restore"
       } else if (cmds.length > 0) {
         if (cmds.length <= 4) {
           statusLine = ` ${cmds.map((c) => `${c.name} ${c.desc}`).join("  │  ")}`
@@ -711,11 +711,15 @@ export async function startTUI(agent, opts = {}) {
     state.historyIndex = -1
     state.scroll = 0
 
-    // 斜杠Commands：本地处理，不进入 agent（处理中也允许执行部分命令如 /cancel）
+    // 斜杠Commands：本地处理，不进入 agent
     if (text.startsWith("/")) {
       if (state.processing) {
-        // 处理中只允许取消当前任务，其他命令排队
-        if (text === "/cancel" || text === "/exit") {
+        // 处理中：只读命令（切换/查看/帮助）直接执行，有副作用的（清屏/新建/重建索引/提取）排队
+        const cmd0 = text.split(/\s+/)[0]
+        const ALIASES = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
+        const resolved0 = ALIASES[cmd0] ?? cmd0
+        const safeDuringProcessing = new Set(["/help", "/exit", "/model", "/provider", "/think", "/config", "/skills", "/mcp", "/goal", "/session"])
+        if (safeDuringProcessing.has(resolved0)) {
           await handleSlash(text)
         } else {
           state.queue.push({ text })
@@ -1087,15 +1091,15 @@ export async function startTUI(agent, opts = {}) {
     { name: "/new", group: "Session", desc: "new session (old one archived to slot)" },
     { name: "/session", group: "Session", desc: "list/switch archived sessions" },
     { name: "/clear", group: "Session", desc: "clear screen" },
-    { name: "/distill", group: "Session", desc: "extract knowledge from session" },
-    { name: "/rewind", group: "Session", desc: "restore checkpoint" },
+    { name: "/extract", group: "Session", desc: "extract knowledge from session" },
+    { name: "/restore", group: "Session", desc: "restore checkpoint" },
     { name: "/exit", group: "Session", desc: "exit" },
     { name: "/help", group: "", desc: "this list" },
   ]
 
   async function handleSlash(text) {
     const [cmd, ...rest] = text.split(/\s+/)
-    // 高频命令缩写别名
+    // 高频命令缩写
     const aliases = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
     const resolved = aliases[cmd] ?? cmd
     switch (resolved) {
@@ -1212,7 +1216,7 @@ export async function startTUI(agent, opts = {}) {
         pushLine(`[reindex] Done, ${total} entries total. Vectors will be lazily generated on next search.`, C.tool)
         return
       }
-      case "/distill":
+      case "/extract":
         await runDistill()
         return
       case "/init": {
@@ -1283,7 +1287,7 @@ export async function startTUI(agent, opts = {}) {
         if (lang) pushLine("Tell me more about the project and I will fill in conventions and structure", C.dim)
         return
       }
-      case "/rewind": {
+      case "/restore": {
         const { listCheckpoints, rewind, isGitRepo } = await import("./checkpoint.mjs")
         if (!isGitRepo(agent.cwd)) {
           pushLine("[rewind] not a git repository, checkpoints unavailable", C.error)
@@ -1310,7 +1314,7 @@ export async function startTUI(agent, opts = {}) {
               const summary = await rewind(agent.cwd, e.id)
               pushLabel(`❯ Rewind`, ansi.bold + C.warn)
               pushLine(`Restored to ${e.id}: patch ${summary.patchApplied ? "applied" : "none"}，deleted ${summary.deleted}  new files, restored ${summary.restored} 个`, C.tool)
-              pushLine("(current state saved as new checkpoint; /rewind again to go back)", C.dim)
+              pushLine("(current state saved as new checkpoint; /restore again to go back)", C.dim)
             } catch (error) {
               pushLine(`[rewind] ${error.message}`, C.error)
             }
@@ -1829,30 +1833,32 @@ export async function startTUI(agent, opts = {}) {
         return
       }
       case "/help": {
-        const order = ["Agent", "Session", "Tools", "Config"]
         const aliasList = { "/help": "/h", "/exit": "/x", "/model": "/m", "/plan": "/p", "/think": "/t", "/clear": "/c", "/new": "/n" }
+        const order = ["Agent", "Session", "Tools", "Config"]
         const byGroup = new Map()
         for (const c of SLASH_COMMANDS) {
           if (!c.group) continue
           if (!byGroup.has(c.group)) byGroup.set(c.group, [])
           byGroup.get(c.group).push(c)
         }
-        const maxW = Math.max(...SLASH_COMMANDS.map((c) => c.name.length))
+        const entries = []
         for (const g of order) {
           const cmds = byGroup.get(g)
           if (!cmds?.length) continue
-          byGroup.delete(g)
-          pushLabel(`❯ ${g}`, ansi.bold + C.tool)
+          entries.push({ type: "header", text: g })
           for (const c of cmds) {
             const alias = aliasList[c.name]
-            const aliasStr = alias ? ` (${alias})` : ""
-            pushLine(`  ${c.name.padEnd(maxW + 1)}${aliasStr.padEnd(6)} ${c.desc}`, C.dim)
+            entries.push({ type: "item", text: `${c.name}${alias ? ` (${alias})` : ""}  ${c.desc}`, cmd: c.name })
           }
         }
-        for (const [g, cmds] of byGroup) {
-          pushLabel(`❯ ${g}`, ansi.bold + C.tool)
-          for (const c of cmds) pushLine(`  ${c.name.padEnd(maxW + 1)} ${c.desc}`, C.dim)
-        }
+        openPicker({
+          title: "Commands (↑↓ select, Enter run, Esc close)",
+          entries,
+          onSelect: (e) => {
+            // 选中即执行该命令
+            handleSlash(e.cmd)
+          },
+        })
         return
       }
       default:
