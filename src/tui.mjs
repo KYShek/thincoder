@@ -1095,8 +1095,30 @@ export async function startTUI(agent, opts = {}) {
 
   async function handleSlash(text) {
     const [cmd, ...rest] = text.split(/\s+/)
-    switch (cmd) {
+    // 高频命令缩写别名
+    const aliases = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
+    const resolved = aliases[cmd] ?? cmd
+    switch (resolved) {
       case "/clear":
+        // 二次确认防误触（对话区内容不可恢复）
+        if (state.lines.length > 0) {
+          openPicker({
+            title: "Clear screen?",
+            entries: [
+              { type: "item", text: "Yes, clear all conversation output", action: "yes" },
+              { type: "item", text: "Cancel", action: "no" },
+            ],
+            defaultIndex: 1,
+            onSelect: (e) => {
+              if (e.action === "yes") {
+                state.lines = []
+                state.streaming = ""
+                render()
+              }
+            },
+          })
+          return
+        }
         state.lines = []
         state.streaming = ""
         render()
@@ -1532,13 +1554,15 @@ export async function startTUI(agent, opts = {}) {
         const { specForModel } = await import("./config.mjs")
         const spec = specForModel(cur.model)
         const isEffortOnly = spec.thinkApi === "effort"
+        // effort 档位按规格表动态读，不硬编码——各模型支持的枚举不同
+        const effortLevels = spec.reasoningEffortEnum ?? ["high", "max"]
 
         const entries = [
           { type: "header", text: "Thinking mode" },
           { type: "item", text: `On${thinkingEnabled ? "  ← current" : ""}`, action: "on" },
           { type: "item", text: `Off${!thinkingEnabled ? "  ← current" : ""}`, action: "off" },
           { type: "header", text: "Reasoning effort" },
-          ...["low", "high", "max"].map((l) => ({
+          ...effortLevels.map((l) => ({
             type: "item",
             text: `${l}${cur.reasoningEffort === l ? "  ← current" : ""}`,
             action: "effort",
@@ -1637,39 +1661,74 @@ export async function startTUI(agent, opts = {}) {
               return
             }
             if (e.action === "add") {
-              // Add needs text input: name baseURL model
-              askQuestion(
-                `输入: <名称> <baseURL> <model>\n预设可用: ${Object.keys(PRESETS).join(", ")}\nor just a preset name (e.g. deepseek) for auto-fill`,
-              ).then(async (text) => {
-                if (!text) return
-                const parts = text.split(/\s+/)
-                const name = parts[0]
-                if (!name) return
-                if (agent.providers.some((p) => p.name === name)) {
-                  pushLine(`"${name}" already exists；先 /provider → 移除`, C.warn)
-                  return
-                }
-                const preset = PRESETS[name]
-                const baseURL = (parts[1] ?? preset?.baseURL)?.replace(/\/+$/, "")
-                const model = parts[2] ?? preset?.model
-                if (!baseURL || !model) {
-                  pushLine(`Missing args: ${name} <baseURL> <model>`, C.error)
-                  return
-                }
-                if (!/^https?:\/\//.test(baseURL)) { pushLine(`baseURL must start with http(s)://`, C.error); return }
-                agent.providers.push({ name, baseURL, model, ...(preset?.desc ? { desc: preset.desc } : {}) })
-                await persistRaw((raw) => { raw.providers = agent.providers })
-                pushLabel(`❯ Provider`, ansi.bold + C.tool)
-                pushLine(`Added ${name} (${baseURL} / ${model}）`, C.tool)
-                // 直接接 key 输入，不让用户再绕一圈
-                askQuestion(`Enter API key for ${name} (留空跳过，之后 /provider → Set Key):`).then(async (key) => {
-                  if (key) {
-                    await setProviderKey(name, key)
-                    pushLine(`Key saved for ${name}`, C.tool)
-                  } else {
-                    pushLine(`跳过 key。之后 /provider → Set API Key 配置`, C.dim)
+              // 菜单选预设 → 输 API key → 完成
+              const presetEntries = [
+                { type: "header", text: "选择预设 provider" },
+                ...Object.entries(PRESETS).map(([name, p]) => ({
+                  type: "item",
+                  text: `${name.padEnd(10)} ${p.desc ?? ""} (${p.model})`,
+                  name,
+                })),
+                { type: "header", text: "其他" },
+                { type: "item", text: "自定义 (手动配置)", name: "__custom__" },
+              ]
+              openPicker({
+                title: "Add Provider",
+                entries: presetEntries,
+                onSelect: async (se) => {
+                  if (se.name === "__custom__") {
+                    // 自定义：逐项输入 name → baseURL → model → key
+                    askQuestion("输入 provider 名称:").then(async (name) => {
+                      if (!name) return
+                      if (agent.providers.some((p) => p.name === name)) {
+                        pushLine(`"${name}" already exists；先 /provider → 移除`, C.warn)
+                        return
+                      }
+                      askQuestion("输入 baseURL (如 https://api.example.com/v1):").then(async (baseURL) => {
+                        if (!baseURL) { pushLine("已取消", C.dim); return }
+                        baseURL = baseURL.replace(/\/+$/, "")
+                        if (!/^https?:\/\//.test(baseURL)) { pushLine(`baseURL must start with http(s)://`, C.error); return }
+                        askQuestion("输入 model 名称:").then(async (model) => {
+                          if (!model) { pushLine("已取消", C.dim); return }
+                          agent.providers.push({ name, baseURL, model })
+                          await persistRaw((raw) => { raw.providers = agent.providers })
+                          pushLabel(`❯ Provider`, ansi.bold + C.tool)
+                          pushLine(`Added ${name} (${baseURL} / ${model}）`, C.tool)
+                          askQuestion(`Enter API key for ${name} (留空跳过):`).then(async (key) => {
+                            if (key) { await setProviderKey(name, key); pushLine(`Key saved for ${name}`, C.tool) }
+                            else { pushLine(`跳过 key。之后 /provider → Set API Key 配置`, C.dim) }
+                          })
+                        })
+                      })
+                    })
+                    return
                   }
-                })
+                  // 预设：name/baseURL/model 全自动填
+                  const preset = PRESETS[se.name]
+                  if (agent.providers.some((p) => p.name === se.name)) {
+                    pushLine(`"${se.name}" already exists；先 /provider → 移除`, C.warn)
+                    return
+                  }
+                  const providerCfg = { name: se.name, baseURL: preset.baseURL, model: preset.model }
+                  if (preset.thinking) providerCfg.thinking = preset.thinking
+                  if (preset.reasoningEffort) providerCfg.reasoningEffort = preset.reasoningEffort
+                  if (preset.maxTokens) providerCfg.maxTokens = preset.maxTokens
+                  if (preset.chatPath) providerCfg.chatPath = preset.chatPath
+                  if (preset.desc) providerCfg.desc = preset.desc
+                  agent.providers.push(providerCfg)
+                  await persistRaw((raw) => { raw.providers = agent.providers })
+                  pushLabel(`❯ Provider`, ansi.bold + C.tool)
+                  pushLine(`Added ${se.name} (${preset.baseURL} / ${preset.model}）`, C.tool)
+                  // 直接接 key 输入
+                  askQuestion(`Enter API key for ${se.name} (留空跳过，之后 /provider → Set Key):`).then(async (key) => {
+                    if (key) {
+                      await setProviderKey(se.name, key)
+                      pushLine(`Key saved for ${se.name}`, C.tool)
+                    } else {
+                      pushLine(`跳过 key。之后 /provider → Set API Key 配置`, C.dim)
+                    }
+                  })
+                },
               })
               return
             }
@@ -1771,6 +1830,7 @@ export async function startTUI(agent, opts = {}) {
       }
       case "/help": {
         const order = ["Agent", "Session", "Tools", "Config"]
+        const aliasList = { "/help": "/h", "/exit": "/x", "/model": "/m", "/plan": "/p", "/think": "/t", "/clear": "/c", "/new": "/n" }
         const byGroup = new Map()
         for (const c of SLASH_COMMANDS) {
           if (!c.group) continue
@@ -1783,7 +1843,11 @@ export async function startTUI(agent, opts = {}) {
           if (!cmds?.length) continue
           byGroup.delete(g)
           pushLabel(`❯ ${g}`, ansi.bold + C.tool)
-          for (const c of cmds) pushLine(`  ${c.name.padEnd(maxW + 1)} ${c.desc}`, C.dim)
+          for (const c of cmds) {
+            const alias = aliasList[c.name]
+            const aliasStr = alias ? ` (${alias})` : ""
+            pushLine(`  ${c.name.padEnd(maxW + 1)}${aliasStr.padEnd(6)} ${c.desc}`, C.dim)
+          }
         }
         for (const [g, cmds] of byGroup) {
           pushLabel(`❯ ${g}`, ansi.bold + C.tool)
@@ -2310,8 +2374,12 @@ export async function startTUI(agent, opts = {}) {
         renderPickerLines()
       } else if (key.name === "return" && items.length) {
         const selected = items[state.picker.index]
-        state.picker.onSelect?.(selected)
-        closePicker()
+        const handler = state.picker.onSelect
+        state.picker = null // 先关 picker，避免 onSelect 内部 render 时 picker 还在
+        // onSelect 是 async（如删 provider 要写文件），用 catch 兜住错误不被吞
+        Promise.resolve(handler?.(selected)).catch((err) => {
+          pushLine(`[error] ${err.message}`, C.error)
+        }).finally(() => render())
       }
       return
     }
