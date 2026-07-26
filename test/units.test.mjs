@@ -966,6 +966,34 @@ test("verify: git diff stat in mock repo", async () => {
   }
 })
 
+test("verify: quick 模式下语法失败不能算通过（_verifyPassed=false）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-verify-syn-"))
+  const { execSync } = await import("node:child_process")
+  const git = (...a) => execSync(`git ${a.join(" ")}`, { cwd: dir, stdio: "ignore" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "x.js"), "1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 改出一个语法错误文件 → quick verify 必须标记失败（完成守卫靠这个推回修复）
+    writeFileSync(join(dir, "x.js"), "const = 1\n")
+    const agent = { cwd: dir, tasks: [] }
+    const result = await verifyTool.execute({}, { agent })
+    assert.ok(result.includes("syntax error"))
+    assert.strictEqual(agent._verifyPassed, false)
+
+    // 修好后 quick verify 通过
+    writeFileSync(join(dir, "x.js"), "const v = 1\n")
+    await verifyTool.execute({}, { agent })
+    assert.strictEqual(agent._verifyPassed, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ---------------------------------------------------------------- delete / git 工具
 
 test("delete: 未跟踪文件可删，跟踪文件拒绝，force 可删跟踪文件", async () => {

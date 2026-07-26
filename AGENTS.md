@@ -21,8 +21,23 @@ LLM 走 OpenAI 兼容协议（`provider.mjs` 原生 fetch + SSE 流式），只�
 
 ## 验证
 
+分层自检策略，不为每一行改动跑全量测试：
+
 ```bash
-npm test    # node:test 离线测试，113 条，不碰网络/真实 API；改动必须全绿
+node --check file.mjs   # 语法检查：每次 write/edit 之后立即跑，毫秒级
+```
+
+```bash
+# verify 工具（默认 quick 模式）：语法检查所有变更文件 + git diff + 自检清单
+# 满足完成守卫，可结束任务
+# verify full=true：quick 之外还跑 npm test
+```
+
+```bash
+npm test    # 全量测试（113 条, ~11s）：仅在以下情况跑
+            #  a) 标记最后一个 task done 宣布完成时
+            #  b) 改了核心基础设施（agent/provider/config/tools/memory）
+            #  c) 用户明确要求
 ```
 
 TUI 交互路径（权限审批、todo 面板、压缩提示、状态栏）无离线覆盖，发布前走人工冒烟（见下文「发布」）。
