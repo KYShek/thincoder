@@ -1,95 +1,95 @@
-# AGENTS.md — ThinCoder 项目指引
+# AGENTS.md — ThinCoder Project Guide
 
-## 项目概述
+## Project Overview
 
-零依赖 AI 编码 CLI：纯 Node.js >= 24 标准库、无构建步骤、ESM（`.mjs`）。
-LLM 走 OpenAI 兼容协议（`provider.mjs` 原生 fetch + SSE 流式），只跟国内顶流厂商旗舰模型（DeepSeek / Kimi / GLM / Qwen / MiniMax）。
-设计文档在 `../thincoder-design/`（REQUIREMENTS.md / ARCHITECTURE.md / ARCHITECTURE-v2.md）。
+Zero-dependency AI coding CLI: pure Node.js >= 24 standard library, no build step, ESM (`.mjs`).
+LLMs are accessed via the OpenAI-compatible protocol (`provider.mjs` native fetch + SSE streaming), tracking only flagship models from leading Chinese vendors (DeepSeek / Kimi / GLM / Qwen / MiniMax).
+Design docs live in `../thincoder-design/` (REQUIREMENTS.md / ARCHITECTURE.md / ARCHITECTURE-v2.md).
 
-## 硬性约束
+## Hard Constraints
 
-- **零 npm 运行时依赖**：只用 `node:` 标准库（存储用 `node:sqlite`，终端用裸 ANSI）。新功能先想标准库能不能做，做不到再提出来讨论
-- 无 TypeScript、无任何构建/打包步骤
-- 所有改动必须实际跑过验证，不留"写了没跑"的代码
+- **Zero npm runtime dependencies**: only `node:` standard library (storage via `node:sqlite`, terminal via bare ANSI). For new features, first ask whether the standard library can do it; if not, raise it for discussion
+- No TypeScript, no build/bundling step of any kind
+- Every change must actually be verified by running it — no "written but never run" code
 
-## 设计原则（完整见 ../thincoder-design/ARCHITECTURE.md#设计原则）
+## Design Principles (full text: ../thincoder-design/ARCHITECTURE.md#设计原则)
 
-1. **零依赖** — 每引入一个 npm 包就引进一份技术债
-4. **准比短重要** — 上下文宁长勿缺，1M 窗口是常态
-5. **代码是问题，不是答案** — 别把现有代码当权威
-6. **面向全球，不做中文限定** — 代码和 TUI 均为英文
+1. **Zero dependencies** — every npm package is a unit of technical debt
+4. **Accuracy over brevity** — context should err on the long side; 1M windows are the norm
+5. **Code is the problem, not the answer** — don't treat existing code as authoritative
+6. **Global-facing, no Chinese-only assumptions** — code and TUI are in English
 
-## 验证
+## Verification
 
-分层自检策略，不为每一行改动跑全量测试：
-
-```bash
-node --check file.mjs   # 语法检查：每次 write/edit 之后立即跑，毫秒级
-```
+Tiered self-check strategy — don't run the full suite for every line changed:
 
 ```bash
-# verify 工具（默认 quick 模式）：语法检查所有变更文件 + git diff + 自检清单
-# 满足完成守卫，可结束任务
-# verify full=true：quick 之外还跑 npm test
+node --check file.mjs   # syntax check: run immediately after every write/edit, milliseconds
 ```
 
 ```bash
-npm test    # 全量测试（117 条, ~11s）：仅在以下情况跑
-            #  a) 标记最后一个 task done 宣布完成时
-            #  b) 改了核心基础设施行为（agent loop/provider protocol/config schema/tool execution/memory schema）——碰文件不算，改行为才算
-            #  c) 用户明确要求
+# verify tool (default quick mode): syntax-checks all changed files + git diff + self-review checklist
+# satisfies the completion guard, enough to finish a task
+# verify full=true: quick + npm test
 ```
 
-TUI 交互路径（权限审批、todo 面板、压缩提示、状态栏）无离线覆盖，发布前走人工冒烟（见下文「发布」）。
-
-## 结构
-
-```
-bin/thincoder.mjs   命令入口与分发（chat/memory/sync/distill/reindex/upgrade/-v）
-src/agent.mjs       主循环 + 自律工具（task/plan/goal/verify/subagent/skill/recent_changes）
-                    + 提醒注入（task/goal/plan/模式切换）+ 完成守卫 + 修复-验证循环
-                    + 增量索引（write/edit/delete 后自动 reindexFile）+ 依赖摘要注入
-src/provider.mjs    LLM 调用（SSE、reasoning_content、usage、重试 + TPM/RPM 主动节流闸门）
-src/tui.mjs         裸 ANSI TUI（对话区 / todo 面板 / 输入框 / 状态栏 / 选择器 / 子 agent 面板）
-                    斜杠命令全部改为列表游标选择
-src/tools.mjs       20+ 文件/网络/git 工具；描述存 src/tools/*.md
-                    文件修改后自动 node --check 增量语法检查
-src/context.mjs     上下文压缩（压缩前保存关键决策，压缩后回注 task/plan 状态）
-src/memory.mjs      三层记忆（personal/project/team）+ 代码/文档索引（code_chunks + doc_chunks，FTS5 + 向量 RRF）
-                    + JSDoc/docstring 提取 + 单文件增量索引
-src/repomap.mjs     仓库依赖大纲（import/export 解析，紧凑摘要 + 按需全量）
-src/session.mjs     会话持久化（最多 5 个归档槽位）
-src/embedding.mjs   向量嵌入（SiliconFlow bge-m3 / 通用 OpenAI /v1/embeddings）
-src/mcp.mjs         MCP client（stdio + HTTP + WebSocket）
-src/config.mjs      配置加载 + provider 预设管理
-src/checkpoint.mjs  git 存档点（快照 → 回滚）
-src/skills.mjs      项目技能加载
-src/markdown.mjs    frontmatter 解析（零依赖）
-src/distill.mjs     会话知识提取
-src/gitmem.mjs      Team 层 git 同步
-src/SYSTEM_PROMPT.md   核心提示词（主/子 agent 通用）
-src/main-overlay.md    主 agent 专属条款（subagent/goal/verify/skill/plan mode）
-src/{explore,coder,plan}-overlay.md   子 agent 角色文本
-test/units.test.mjs   全部离线测试（含 mock LLM server 驱动的 runAgent 端到端）
+```bash
+npm test    # full suite (117 tests, ~11s): run only when
+            #  a) marking the last task done and declaring completion
+            #  b) core infrastructure BEHAVIOR changed (agent loop / provider protocol / config schema / tool execution / memory schema) — touching a file doesn't count, changing behavior does
+            #  c) the user explicitly asks
 ```
 
-## 关键设计约束（改动前必读）
+TUI interaction paths (permission prompts, todo panel, compaction notice, status bar) have no offline coverage — do a manual smoke pass before release (see "Release" below).
 
-- **前缀缓存**：system prompt 必须跨 run 逐字节稳定——只能放按 cwd/会话稳定的内容；每轮变化的内容（如记忆注入）必须走独立 user 上下文消息。往 system prompt 加动态内容会打破 DeepSeek context caching
-- **thinking 回传**：带 tool_calls 的 assistant 消息是否回传 `reasoning_content` 由规格表 `reasoningEcho` 决定——`"required"`（DeepSeek/Kimi K3）必须回传；`"optional"`（GLM）不回传；未声明保守不回传
-- **提醒注入**统一格式：`role: "user"` 的 `[System reminder: ...]`；task 闲置提醒仅顶层 agent（depth=0）注入；用户/外部文本注入前必须 XML 转义 + `<untrusted_*>` 标签包裹
-- **工具结果**超 16k 字符自动落盘 `~/.thincoder/tool-results/`，模型只见预览 + 路径
-- **代码库理解**：三个检索工具——`repo_outline`（依赖图）、`code_search`（源码 FTS5 + 向量）、`doc_search`（文档按标题分块）。提示词指引模型按"结构→意图→细节"顺序使用
-- **文件修改后自动增量索引**：`reindexFile` 在 write/edit/delete 后运行
-- **修复-验证循环**：改完文件未 verify 自动推验证；verify 跑 `node --check` + `npm test`；失败最多 3 轮修复
+## Structure
 
-## 提交与发布
+```
+bin/thincoder.mjs   command entry & dispatch (chat/memory/sync/distill/reindex/upgrade/-v)
+src/agent.mjs       main loop + self-discipline tools (task/plan/goal/verify/subagent/skill/recent_changes)
+                    + reminder injection (task/goal/plan/mode switches) + completion guard + fix-verify loop
+                    + incremental indexing (auto reindexFile after write/edit/delete) + dependency summary injection
+src/provider.mjs    LLM calls (SSE, reasoning_content, usage, retries + TPM/RPM proactive rate gate)
+src/tui.mjs         bare-ANSI TUI (conversation / todo panel / input box / status bar / pickers / subagent panel)
+                    all slash commands converted to cursor-list pickers
+src/tools.mjs       20+ file/network/git tools; descriptions in src/tools/*.md
+                    automatic node --check incremental syntax check after file modifications
+src/context.mjs     context compaction (key decisions saved before compaction, task/plan state re-injected after)
+src/memory.mjs      three-layer memory (personal/project/team) + code/doc indexing (code_chunks + doc_chunks, FTS5 + vector RRF)
+                    + JSDoc/docstring extraction + single-file incremental indexing
+src/repomap.mjs     repo dependency outline (import/export parsing, compact summary + full detail on demand)
+src/session.mjs     session persistence (up to 5 archive slots)
+src/embedding.mjs   vector embeddings (SiliconFlow bge-m3 / generic OpenAI /v1/embeddings)
+src/mcp.mjs         MCP client (stdio + HTTP + WebSocket)
+src/config.mjs      config loading + provider preset management
+src/checkpoint.mjs  git checkpoints (snapshot → rewind)
+src/skills.mjs      project skill loading
+src/markdown.mjs    frontmatter parsing (zero-dependency)
+src/distill.mjs     session knowledge extraction
+src/gitmem.mjs      Team layer git sync
+src/SYSTEM_PROMPT.md   core prompt (shared by main/sub agents)
+src/main-overlay.md    main-agent-only clauses (subagent/goal/verify/skill/plan mode)
+src/{explore,coder,plan}-overlay.md   subagent role texts
+test/units.test.mjs   all offline tests (including runAgent end-to-end driven by a mock LLM server)
+```
 
-- commit message：`type: 摘要`（feat / fix / release / docs），英文单行；release 提交正文附变更清单
-- 发布流程：改 `package.json` 版本号 → `npm publish`（`prepublishOnly` 自动跑全量测试）→ commit + `git tag vX.Y.Z` → `git push origin main --tags`
-- 发布前人工冒烟（约 5 分钟）：
-  1. TUI 里给一个需要写文件的任务 → 权限审批展示内容预览（黄色），批准后有落痕
-  2. 给一个多步任务 → todo 面板出现，done 项带删除线，全部完成后自动收起；状态栏有计数
-  3. 长对话触发压缩 → 出现 `[context]` 提示，任务状态保留
-  4. 状态栏 token 用量（`↑x ↓y hit z%`）与上下文利用率随请求增长
-  5. `thincoder -v` 输出与 package.json 一致的版本号；`thincoder chat "..."` 一次性问答正常
+## Key Design Constraints (read before changing anything)
+
+- **Prefix caching**: the system prompt must be byte-stable across runs — it may only contain content stable per cwd/session; per-turn varying content (e.g. memory injection) must go through separate user context messages. Adding dynamic content to the system prompt breaks DeepSeek context caching
+- **Thinking echo**: whether assistant messages with tool_calls echo `reasoning_content` back is decided by the spec-table field `reasoningEcho` — `"required"` (DeepSeek/Kimi K3) must echo; `"optional"` (GLM) must not; undeclared conservatively does not
+- **Reminder injection** uniform format: `role: "user"` with `[System reminder: ...]`; task-idle reminders are injected only for the top-level agent (depth=0); user/external text must be XML-escaped and wrapped in `<untrusted_*>` tags before injection
+- **Tool results** over 16k chars are automatically offloaded to `~/.thincoder/tool-results/`; the model only sees a preview + path
+- **Codebase understanding**: three retrieval tools — `repo_outline` (dependency graph), `code_search` (source FTS5 + vectors), `doc_search` (docs chunked by headings). The prompt guides the model to use them in "structure → intent → details" order
+- **Auto incremental indexing after file modifications**: `reindexFile` runs after write/edit/delete
+- **Fix-verify loop**: file changes without verify get pushed back to verification; verify runs `node --check` + `npm test`; at most 3 repair rounds on failure
+
+## Commits & Release
+
+- Commit messages: `type: summary` (feat / fix / release / docs), single English line; release commits carry a change list in the body
+- Release flow: bump `package.json` version → `npm publish` (`prepublishOnly` runs the full suite automatically) → commit + `git tag vX.Y.Z` → `git push origin main --tags`
+- Manual smoke before release (~5 minutes):
+  1. Give a file-writing task in the TUI → permission prompt shows a content preview (yellow), approval leaves a trace
+  2. Give a multi-step task → todo panel appears, done items struck through, auto-collapses when all done; counter in the status bar
+  3. Trigger compaction with a long conversation → `[context]` notice appears, task state preserved
+  4. Status bar token usage (`↑x ↓y hit z%`) and context utilization grow with requests
+  5. `thincoder -v` prints the same version as package.json; `thincoder chat "..."` one-shot Q&A works
