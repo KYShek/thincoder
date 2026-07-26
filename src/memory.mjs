@@ -837,9 +837,9 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
   // 取两个 diff 的并集：已提交的变更（pull/merge）+ 工作区脏文件（用户在外部编辑器改的）
   let diffOut
   try {
-    // --diff-filter 只取增/改/重命名，不取删（删文件由 reindexFile 自己检测）
-    const committed = execSync(`git diff --name-only --diff-filter=ACMRT ${stored} HEAD`, opts).trim()
-    const dirty = execSync(`git diff --name-only --diff-filter=ACMRT`, opts).trim()
+    // 包含 D（删除）：外部删文件也要清理索引块
+    const committed = execSync(`git diff --name-only --diff-filter=ACMRTD ${stored} HEAD`, opts).trim()
+    const dirty = execSync(`git diff --name-only --diff-filter=ACMRTD`, opts).trim()
     const lines = [...new Set([...committed.split("\n").filter(Boolean), ...dirty.split("\n").filter(Boolean)])]
     diffOut = lines
   } catch {
@@ -852,7 +852,8 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
     return null
   }
 
-  let updated = 0, removed = 0, skipped = 0
+  let updated = 0, removed = 0, skipped = 0, failed = 0
+  const errors = []
   for (let i = 0; i < diffOut.length; i++) {
     const rel = diffOut[i].replaceAll("\\", "/")
     const abs = join(dir, rel)
@@ -879,22 +880,31 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
       }
       updated++
     } catch (e) {
-      // 文件已被删 → 清理索引
-      if (CODE_EXTS.has(ext)) memory.db.prepare(`DELETE FROM code_chunks WHERE origin = ? AND path = ?`).run(dir, rel)
-      else memory.db.prepare(`DELETE FROM doc_chunks WHERE origin = ? AND path = ?`).run(dir, rel)
-      removed++
+      // readFile 失败 = 文件已删 → 清理索引块；
+      // 其他错误（权限/SQLite）不推进锚点——下次 gitSync 会重试
+      const isDeleted = e.code === "ENOENT"
+      if (isDeleted) {
+        if (CODE_EXTS.has(ext)) memory.db.prepare(`DELETE FROM code_chunks WHERE origin = ? AND path = ?`).run(dir, rel)
+        else memory.db.prepare(`DELETE FROM doc_chunks WHERE origin = ? AND path = ?`).run(dir, rel)
+        removed++
+      } else {
+        failed++
+        if (errors.length < 5) errors.push(`${rel}: ${e.message}`)
+      }
     }
     if (onProgress && i % 5 === 0) {
       onProgress({ phase: "index", current: i + 1, total: diffOut.length, updated, removed, skipped })
     }
   }
 
-  // 更新锚点
-  memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_indexed_commit', ?)
-    ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(head)
+  // 更新锚点（有 failed 时不推进——下次 gitSync 会重试这些文件）
+  if (failed === 0) {
+    memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_indexed_commit', ?)
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(head)
+  }
 
-  onProgress?.({ phase: "done", total: diffOut.length, updated, removed, skipped })
-  return { updated, removed, skipped }
+  onProgress?.({ phase: "done", total: diffOut.length, updated, removed, skipped, failed })
+  return { updated, removed, skipped, failed, errors }
 }
 
 /**
@@ -969,7 +979,19 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
   }
 
   onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed })
+  // 全量同步成功后记录 git 锚点（下次启动 gitSync 用它做增量 diff 基准）
+  markIndexedCommit(memory, dir)
   return { updated, removed, skipped, failed, errors, total: files.length }
+}
+
+/** 记录当前 HEAD 作为索引锚点（gitSync 增量 diff 基准）；非 git 仓库静默跳过 */
+async function markIndexedCommit(memory, dir) {
+  try {
+    const { execSync } = await import("node:child_process")
+    const head = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim()
+    memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_indexed_commit', ?)
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(head)
+  } catch { /* 非 git 仓库或 git 不可用，跳过 */ }
 }
 
 /**
@@ -1203,6 +1225,7 @@ export async function docSync(memory, dir, { onProgress } = {}) {
   }
 
   onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed })
+  markIndexedCommit(memory, dir)
   return { updated, removed, skipped, failed, errors, total: files.length }
 }
 

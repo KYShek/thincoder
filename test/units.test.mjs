@@ -1690,12 +1690,13 @@ function makeMutationTool() {
   }
 }
 
-test("runAgent: 完成守卫——改了文件未 verify 时推回去验证（只推一次）", async () => {
+test("runAgent: 完成守卫——改了文件未 verify 时推回去验证（最多推 2 次）", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "mutate" } },
-    { content: "完成了" },       // 第一次想收工 → 守卫拦截
-    { content: "验证后完成" },   // 第二次收工 → 放行（守卫只推一次）
+    { content: "完成了" },       // 第一次想收工 → 守卫拦截（pushback 1）
+    { content: "还是完成了" },   // 第二次不调 verify → 守卫再拦截（pushback 2）
+    { content: "验证后完成" },   // 第三次 → 守卫放行（pushback 上限到达）
   ]
   const { server, port } = await mockLLM(script)
   try {
@@ -1707,7 +1708,7 @@ test("runAgent: 完成守卫——改了文件未 verify 时推回去验证（�
     const guards = agent.history.filter(
       (m) => typeof m.content === "string" && m.content.includes("have not verified the changes"),
     )
-    assert.equal(guards.length, 1)
+    assert.equal(guards.length, 2, "守卫应推回 2 次，第三次放行")
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()

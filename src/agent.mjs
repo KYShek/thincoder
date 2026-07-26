@@ -909,7 +909,8 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   agent._touchedFiles = []
   agent._verifyRetries = 0 // 修复-验证循环计数，每个新 run 从头开始
   const MAX_VERIFY_RETRIES = 3
-  let completionGuardFired = false
+  let guardPushbacks = 0 // 完成守卫推回次数（最多推 2 次：第三次直接放行，避免无限循环）
+  let honestReminderInjected = false // verify 耗尽后注入了诚实提醒，下一轮直接放行
   const recentCallSigs = [] // 停滞检测：最近的工具调用签名（同一调用连续 3 次即提醒）
 
   for (let turn = 0; turn < maxTurns; turn++) {
@@ -966,9 +967,10 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (!response.content) {
         throw new Error("LLM 返回了空回复（可能是思考耗尽或被截断）。可 /think effort 降低推理强度后重试")
       }
-      // 完成守卫：本轮改过文件却没跑过 verify，推回去验证一次
-      if (depth === 0 && agent._mutatedThisRun && !agent._verifiedThisRun && !completionGuardFired) {
-        completionGuardFired = true
+      // 完成守卫：本轮改过文件却没跑过 verify，推回去验证。
+      // 可重武装但最多推 2 次——第三次直接放行（避免 agent 死活不调 verify 时无限循环）
+      if (depth === 0 && agent._mutatedThisRun && !agent._verifiedThisRun && guardPushbacks < 2) {
+        guardPushbacks++
         agent.history.push({ role: "assistant", content: response.content })
         agent.history.push({
           role: "user",
@@ -987,10 +989,20 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         })
         continue
       }
-      // 重试用尽：测试仍然失败，诚实收尾
+      // 重试用尽：测试仍然失败，注入诚实提醒后给模型最后一轮总结
       if (depth === 0 && agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
+        if (honestReminderInjected) {
+          // 已经注入过诚实提醒且模型又给了最终回答 → 放行返回
+          agent.history.push({ role: "assistant", content: response.content })
+          return response.content
+        }
+        honestReminderInjected = true
         agent.history.push({ role: "assistant", content: response.content })
-        return response.content
+        agent.history.push({
+          role: "user",
+          content: `[System reminder: ${MAX_VERIFY_RETRIES} verify attempts exhausted and tests are still failing. In your response to the user, you MUST state explicitly: (1) what tests are still failing, (2) what you tried, (3) what you believe the root cause is. Do not present this as complete — the user needs to know the work is unfinished.]`,
+        })
+        continue
       }
       agent.history.push({ role: "assistant", content: response.content })
       return response.content

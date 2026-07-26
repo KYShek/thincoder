@@ -279,6 +279,7 @@ export async function startTUI(agent, opts = {}) {
     currentTool: null, // 正在执行的工具名 (状态栏显示）
     processingStarted: 0, // 本轮处理开始时间 (状态栏计时）
     status: "Ready",
+    queue: [], // 处理中排队的待执行消息：[{ text }]，处理完自动取下一条
   }
 
   // 恢复的会话如果所有任务completed，自动收起 todo 面板 (对齐运行时行为）
@@ -553,6 +554,13 @@ export async function startTUI(agent, opts = {}) {
       }
     }
 
+    // 队列预览 (暗色，紧挨输入框上方）：与子 agent 面板/权限预览共享输入框上方空间
+    // 只在 processing 时显示（非 processing 时队列应为空），且最多 1 行预览避免挤压对话区
+    if (state.queue.length > 0 && state.processing) {
+      const preview = sliceByWidth(state.queue[0].text, W - 20)
+      out.push(`${C.dim}❯ Queue: ${state.queue.length} pending${state.queue.length > 1 ? ` (next: ${preview}…)` : ` (next: ${preview})`} — Ctrl+D del${ansi.reset}${ansi.clearLine}`)
+    }
+
     // 输入框 (全边框，宽 W）
     let borderColor = C.tool
     let title
@@ -663,7 +671,8 @@ export async function startTUI(agent, opts = {}) {
           ? ` │ ${ansi.reset}${C.warn}ctx ${ctxPct}%${ansi.reset}${ansi.dim}`
           : ` │ ctx ${ctxPct}%`
         : ""
-      statusLine = ` ${statusText}${taskHint}${tokenHint}${ctxHint}${scrollHint} │ Enter: send │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
+      const queueHint = state.queue.length > 0 ? ` │ queue: ${state.queue.length}` : ""
+      statusLine = ` ${statusText}${taskHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
     }
     const autoBanner = agent.autoApprove ? `${C.warn} AUTO${ansi.reset}${ansi.dim}│` : ""
     const planBanner = agent.planMode ? `${C.tool} PLAN${ansi.reset}${ansi.dim}│` : ""
@@ -679,8 +688,8 @@ export async function startTUI(agent, opts = {}) {
       process.stdout.write(frame)
     }
 
-    // 光标：输入态定位到输入框内 (IME 候选框跟随真实光标）；处理中/权限确认/菜单态时隐藏
-    if (state.processing || state.permission || state.question || state.picker || state.wizard?.step === "provider") {
+    // 光标：输入态定位到输入框内 (IME 候选框跟随真实光标）；权限确认/菜单态时隐藏
+    if (state.permission || state.question || state.picker || state.wizard?.step === "provider") {
       process.stdout.write(ansi.hideCursor)
     } else {
       const cursorRow = 1 + convH + pickerH + taskPanelH + 2 + (layout.cursorLine - inputOffset) // header + 对话区 + todo 面板 + 上边框 + 行偏移
@@ -695,20 +704,43 @@ export async function startTUI(agent, opts = {}) {
 
   async function submit() {
     const text = state.input.join("").trim()
-    if (!text || state.processing) return
+    if (!text) return
     state.input = []
     state.cursor = 0
     state.history.push(text)
     state.historyIndex = -1
     state.scroll = 0
 
-    // 斜杠Commands：本地处理，不进入 agent
+    // 斜杠Commands：本地处理，不进入 agent（处理中也允许执行部分命令如 /cancel）
     if (text.startsWith("/")) {
+      if (state.processing) {
+        // 处理中只允许取消当前任务，其他命令排队
+        if (text === "/cancel" || text === "/exit") {
+          await handleSlash(text)
+        } else {
+          state.queue.push({ text })
+          render()
+        }
+        return
+      }
       await handleSlash(text)
       return
     }
 
-    pushLabel(`❯ You:`, ansi.bold + C.user)
+    // 处理中：入队等待，不立即执行
+    if (state.processing) {
+      state.queue.push({ text })
+      pushLabel(`❯ You: (queued #${state.queue.length})`, ansi.bold + C.user)
+      pushLine(text, C.dim)
+      render()
+      return
+    }
+
+    await runAgentTurn(text)
+  }
+
+  /** 执行一轮 agent 对话（从 submit 或队列取出调用） */
+  async function runAgentTurn(text) {
     pushLine(text, C.text)
 
     // 任务开始前自动打存档点 (git 仓库内；失败静默，不挡任务）
@@ -894,6 +926,24 @@ export async function startTUI(agent, opts = {}) {
       // 存失败不打断使用
     }
     render()
+
+    // 队列里有待执行消息：自动取下一条执行
+    if (state.queue.length > 0) {
+      const next = state.queue.shift()
+      // 队列里的斜杠命令直接执行
+      if (next.text.startsWith("/")) {
+        await handleSlash(next.text)
+        render()
+        // 斜杠命令执行完也继续检查队列
+        if (state.queue.length > 0 && !state.processing) {
+          const next2 = state.queue.shift()
+          await runAgentTurn(next2.text)
+        }
+      } else {
+        pushLabel(`❯ You: (from queue)`, ansi.bold + C.user)
+        await runAgentTurn(next.text)
+      }
+    }
   }
 
   function flushStream() {
@@ -2286,7 +2336,19 @@ export async function startTUI(agent, opts = {}) {
       return
     }
 
-    if (state.processing) return // 处理中锁定输入
+    if (state.processing) {
+      // 处理中允许输入（排队），但屏蔽方向键历史和 Tab 补全
+      if (key.name === "tab" || key.name === "up" || key.name === "down") return
+      // Ctrl+D：删除队列中最后一条
+      if (key.ctrl && key.name === "d") {
+        if (state.queue.length > 0) {
+          state.queue.pop()
+          render()
+        }
+        return
+      }
+      // 其余可打印字符正常进入输入框
+    }
 
     // Tab：斜杠Commands补全 (循环候选）；其余输入忽略 (\t 会顶破输入框，永不直接插入）
     if (key.name === "tab") {
