@@ -3,7 +3,7 @@
 ## Project Overview
 
 Zero-dependency AI coding CLI: pure Node.js >= 24 standard library, no build step, ESM (`.mjs`).
-LLMs are accessed via the OpenAI-compatible protocol (`provider.mjs` native fetch + SSE streaming), tracking only flagship models from leading Chinese vendors (DeepSeek / Kimi / GLM / Qwen / MiniMax).
+LLMs are accessed via the OpenAI-compatible protocol (`src/provider/` native fetch + SSE streaming), tracking only flagship models from leading Chinese vendors (DeepSeek / Kimi / GLM / Qwen / MiniMax).
 Design docs live in `../thincoder-design/` (REQUIREMENTS.md / ARCHITECTURE.md / ARCHITECTURE-v2.md).
 
 ## Hard Constraints
@@ -46,30 +46,36 @@ TUI interaction paths (permission prompts, todo panel, compaction notice, status
 
 ```
 bin/thincoder.mjs   command entry & dispatch (chat/memory/sync/distill/reindex/upgrade/-v)
-src/agent.mjs       main loop + self-discipline tools (task/plan/goal/verify/subagent/skill/recent_changes)
-                    + reminder injection (task/goal/plan/mode switches) + completion guard + fix-verify loop
+src/agent.mjs       main loop + reminder injection (task/goal/plan/mode) + completion guard + fix-verify loop
                     + incremental indexing (auto reindexFile after write/edit/delete) + dependency summary injection
-src/provider.mjs    LLM calls (SSE, reasoning_content, usage, retries + TPM/RPM proactive rate gate)
-src/tui.mjs         bare-ANSI TUI (conversation / todo panel / input box / status bar / pickers / subagent panel)
-                    all slash commands converted to cursor-list pickers
-src/tools.mjs       20+ file/network/git tools; descriptions in src/tools/*.md
+                    (self-discipline tools split into agent-tools/, loop helpers into agent/)
+src/agent/          agent loop helpers: dispatch (two-phase tool execution), setup (system prompt assembly), helpers
+src/agent-tools/    self-discipline tools (task/plan/goal/verify/subagent/skill/recent_changes), loaded via agent-tools.mjs
+src/provider/       LLM calls — core.mjs (SSE, reasoning_content, usage), rate.mjs (TPM/RPM gate), index.mjs (entry)
+src/tui/            bare-ANSI TUI — index.mjs (startTUI), render.mjs (drawing primitives), render-frame.mjs (frame layout), ansi.mjs
+                    (conversation / todo panel / input box / status bar / pickers / subagent panel; slash commands → cursor-list pickers)
+src/tui.mjs         re-export shim → src/tui/index.mjs
+src/tui-render.mjs  re-export shim → src/tui/render.mjs
+src/tools/          20+ file/network/git tools; descriptions in src/tools/*.md
+                    index.mjs (builtinTools registry), file/git/patch/system/web.mjs (tool groups), shared.mjs (schema utils)
+                    repomap.mjs (repo dependency outline: import/export parsing, compact summary + full detail on demand)
                     automatic node --check incremental syntax check after file modifications
+src/tools.mjs       re-export shim → src/tools/index.mjs
 src/context.mjs     context compaction (key decisions saved before compaction, task/plan state re-injected after)
-src/memory.mjs      three-layer memory (personal/project/team) + code/doc indexing (code_chunks + doc_chunks, FTS5 + vector RRF)
-                    + JSDoc/docstring extraction + single-file incremental indexing
-src/repomap.mjs     repo dependency outline (import/export parsing, compact summary + full detail on demand)
+src/memory/         three-layer memory — schema.mjs (constants/DDL), core.mjs (CRUD + retrieval), code-index.mjs + code-sync.mjs (code_chunks),
+                    docs.mjs (doc_chunks), FTS5 + vector RRF + JSDoc extraction + single-file incremental indexing
+src/memory.mjs      re-export shim → src/memory/*
 src/session.mjs     session persistence (up to 5 archive slots)
 src/embedding.mjs   vector embeddings (SiliconFlow bge-m3 / generic OpenAI /v1/embeddings)
-src/mcp.mjs         MCP client (stdio + HTTP + WebSocket)
+src/mcp/            MCP client — helpers.mjs, transport-stdio/http/ws.mjs
+src/mcp.mjs         MCP client entry (connectMcpServer), delegates to src/mcp/
 src/config.mjs      config loading + provider preset management
-src/checkpoint.mjs  git checkpoints (snapshot → rewind)
+src/git/            checkpoint.mjs (git checkpoints: snapshot → rewind), gitmem.mjs (Team layer git sync)
 src/skills.mjs      project skill loading
 src/markdown.mjs    frontmatter parsing (zero-dependency)
 src/distill.mjs     session knowledge extraction
-src/gitmem.mjs      Team layer git sync
-src/SYSTEM_PROMPT.md   core prompt (shared by main/sub agents)
-src/main-overlay.md    main-agent-only clauses (subagent/goal/verify/skill/plan mode)
-src/{explore,coder,plan}-overlay.md   subagent role texts
+src/prompts/        prompt texts — system.md (core, shared by main/sub), discipline.md (coding/testing rules),
+                    main.md (main-agent-only: subagent/goal/verify/skill/plan), explore.md / coder.md / plan.md (subagent role texts)
 test/units.test.mjs   all offline tests (including runAgent end-to-end driven by a mock LLM server)
 ```
 

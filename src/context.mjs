@@ -5,7 +5,7 @@
  * 压缩策略：保留最早 2 条 + 最近 N 条，中间由 LLM 摘要成一条（学 kimi-code，简化版）。
  */
 
-import { chat } from "./provider.mjs"
+import { chat } from "./provider/index.mjs"
 
 /** 粗估一段文本的 token 数：ASCII 约 4 字符 1 token，CJK 等非 ASCII 约 1 字符 1 token */
 function estimateText(s) {

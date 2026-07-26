@@ -4,9 +4,9 @@
  * 绝不做会话结束后的全自动沉淀。
  */
 
-import { chat } from "./provider.mjs"
+import { chat } from "./provider/index.mjs"
 import { put, putMarkdown } from "./memory.mjs"
-import { commitAndPush } from "./gitmem.mjs"
+import { commitAndPush } from "./git/gitmem.mjs"
 
 const DISTILL_PROMPT = `你是知识提取器。阅读下面的 agent 工作会话记录，提取值得跨会话长期记住的知识。
 

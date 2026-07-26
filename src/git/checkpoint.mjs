@@ -9,7 +9,7 @@ import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { cp, mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises"
 import { dirname, join, relative } from "node:path"
-import { configDir } from "./config.mjs"
+import { configDir } from "../config.mjs"
 
 const MAX_CHECKPOINTS = 20
 

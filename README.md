@@ -146,24 +146,35 @@ Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_
 ```
 bin/thincoder.mjs   command entry (tui / chat / memory / sync / distill)
 src/
-  provider.mjs      LLM calls (fetch, SSE streaming, retries)
+  provider/         LLM calls — core.mjs (fetch, SSE streaming, reasoning_content, usage, retries),
+                    rate.mjs (TPM/RPM proactive rate gate), index.mjs (entry)
   embedding.mjs     vector embeddings (OpenAI-compatible /v1/embeddings)
-  tools.mjs         16 builtin tools + MCP wrapping + readonly scheduling flags
-  mcp.mjs           MCP client (JSON-RPC + stdio transport, zero-dependency)
-  agent.mjs         main loop + two-phase tool execution + plan/task/goal/skill/subagent/verify tools
+  tools/            16 builtin tools + MCP wrapping + readonly scheduling flags
+                    index.mjs (registry), file/git/patch/system/web.mjs (groups), shared.mjs (schema utils),
+                    repomap.mjs (repo dependency outline: import/export regex parsing, on-demand via tool)
+  tools.mjs         re-export shim → src/tools/index.mjs
+  mcp/              MCP client — helpers.mjs, transport-stdio/http/ws.mjs (JSON-RPC, zero-dependency)
+  mcp.mjs           MCP client entry (connectMcpServer), delegates to src/mcp/
+  agent.mjs         main loop + two-phase tool execution + reminder injection + completion guard + fix-verify loop
                     + incremental indexing (auto reindexFile after write/edit/delete)
-  repomap.mjs       repo dependency outline (import/export regex parsing, on-demand via tool)
+  agent/            agent loop helpers — dispatch.mjs (two-phase execution), setup.mjs (system prompt assembly), helpers.mjs
+  agent-tools/      self-discipline tools (task/plan/goal/verify/subagent/skill/recent_changes)
   context.mjs       rough token estimation + history compaction + task re-injection
-  memory.mjs        memory core: three-layer merged retrieval + code/doc indexing (code_chunks/doc_chunks)
-                    + FTS5 + vector RRF + JSDoc extraction + single-file incremental indexing
+  memory/           three-layer memory — schema.mjs (DDL/constants), core.mjs (CRUD + retrieval),
+                    code-index.mjs + code-sync.mjs (code_chunks), docs.mjs (doc_chunks)
+  memory.mjs        re-export shim → src/memory/*
   session.mjs       session persistence (up to 5 archive slots, isolated by project cwd)
   skills.mjs        skill discovery/loading (.thincoder/skills/*.md)
   markdown.mjs      entry format (frontmatter parse/serialize)
-  gitmem.mjs        Team layer git sync (clone/pull --rebase/push, system git)
+  git/              checkpoint.mjs (git patch snapshots / rewind), gitmem.mjs (Team layer git sync)
   distill.mjs       session knowledge extraction (candidates + human confirmation)
-  checkpoint.mjs    git patch snapshots / rewind
   config.mjs        config loading
-  tui.mjs           bare-ANSI terminal UI (wide-char wrapping, scrolling, permission prompts, slash commands)
+  tui/              bare-ANSI terminal UI — index.mjs (startTUI), render.mjs (drawing primitives),
+                    render-frame.mjs (frame layout), ansi.mjs
+  tui.mjs           re-export shim → src/tui/index.mjs
+  tui-render.mjs    re-export shim → src/tui/render.mjs
+  prompts/          prompt texts — system.md (core), discipline.md (coding/testing rules),
+                    main.md (main-agent overlay), explore.md / coder.md / plan.md (subagent roles)
 test/               node:test offline unit tests (npm test)
 scripts/            real-environment verification scripts (compaction, team sync)
 ```

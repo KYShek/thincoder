@@ -8,13 +8,13 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
-import { stringWidth, wrapText } from "../src/tui.mjs"
+import { stringWidth, wrapText } from "../src/tui-render.mjs"
 import { createMemory, put, search, list, remove, putMarkdown, syncDir } from "../src/memory.mjs"
 import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
-import { builtinTools } from "../src/tools.mjs"
+import { builtinTools } from "../src/tools/index.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "../src/skills.mjs"
 import { historyToTranscript, saveCandidate } from "../src/distill.mjs"
-import { planTool, goalTool, verifyTool } from "../src/agent.mjs"
+import { planTool, goalTool, verifyTool } from "../src/agent-tools.mjs"
 
 // ---------------------------------------------------------------- tui 纯函数
 
@@ -32,7 +32,7 @@ test("wrapText: 按宽度折行，保留空行", () => {
 })
 
 test("sanitizeDisplay: 控制字符不破坏终端网格（\\r 覆盖、\\t 超宽、ANSI/响铃冲屏）", async () => {
-  const { sanitizeDisplay } = await import("../src/tui.mjs")
+  const { sanitizeDisplay } = await import("../src/tui-render.mjs")
   // CRLF 文件的 read 预览行：\r 残留会把光标打回行首，clearLine 误清整行
   assert.equal(sanitizeDisplay("1\tconst a = 1;\r"), "1    const a = 1;")
   // 行中间的 \r（老 Mac 文件）：后续字符会从行首覆盖前面内容
@@ -341,7 +341,7 @@ test("hybrid: 向量通道 + RRF + 惰性 embedding", async () => {
 
 test("team 层: 双 clone 同步 + 冲突诚实报错", async () => {
   const { execFileSync } = await import("node:child_process")
-  const { ensureClone, pullTeam, commitAndPush } = await import("../src/gitmem.mjs")
+  const { ensureClone, pullTeam, commitAndPush } = await import("../src/git/gitmem.mjs")
   const { writeFileSync, readFileSync } = await import("node:fs")
 
   const base = mkdtempSync(join(tmpdir(), "thincoder-team-"))
@@ -404,7 +404,7 @@ test("team 层: 双 clone 同步 + 冲突诚实报错", async () => {
 // ---------------------------------------------------------------- TUI 输入布局 / 项目指令 / websearch
 
 test("layoutInput: 折行与光标定位", async () => {
-  const { layoutInput } = await import("../src/tui.mjs")
+  const { layoutInput } = await import("../src/tui-render.mjs")
   // 空输入：一行带提示符，光标在提示符后
   let l = layoutInput([], 0, 10)
   assert.deepEqual(l.lines, ["▸ "])
@@ -534,7 +534,7 @@ test("fetch: HTML 转文本（本地 mock）", async () => {
 // ---------------------------------------------------------------- task 工具
 
 test("task: 更新 agent 任务列表并触发回调", async () => {
-  const { taskTool } = await import("../src/agent.mjs")
+  const { taskTool } = await import("../src/agent-tools.mjs")
   const agent = { tasks: [], _onTaskUpdate: null }
   let notified = null
   agent._onTaskUpdate = (items) => (notified = items)
@@ -663,7 +663,7 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
 // ---------------------------------------------------------------- markdown 表格重排
 
 test("formatTables: CJK 表格按显示宽度对齐", async () => {
-  const { formatTables, stringWidth } = await import("../src/tui.mjs")
+  const { formatTables, stringWidth } = await import("../src/tui-render.mjs")
   const md = [
     "前文不是表格",
     "| 工具 | 需要确认 | 作用 |",
@@ -685,7 +685,7 @@ test("formatTables: CJK 表格按显示宽度对齐", async () => {
 })
 
 test("formatTables: 超宽表格按列收缩到可用宽度", async () => {
-  const { formatTables, stringWidth } = await import("../src/tui.mjs")
+  const { formatTables, stringWidth } = await import("../src/tui-render.mjs")
   const md = [
     "| 标题 | 非常非常非常非常非常长的一列内容 |",
     "|---|---|",
@@ -762,7 +762,7 @@ test("repairHistory: 丢弃空 assistant 消息", async () => {
 
 test("checkpoint: 快照 → 改坏 → 回滚完全恢复", async () => {
   const { execFileSync } = await import("node:child_process")
-  const { createCheckpoint, rewind, listCheckpoints } = await import("../src/checkpoint.mjs")
+  const { createCheckpoint, rewind, listCheckpoints } = await import("../src/git/checkpoint.mjs")
   const { writeFile, readFile: rf, mkdir: mk, rm: del, access } = await import("node:fs/promises")
 
   const dir = mkdtempSync(join(tmpdir(), "thincoder-cp-"))
@@ -1388,7 +1388,7 @@ test("runAgent: 每个工具 turn 结束触发 onTurnEnd（TUI 增量保存钩�
 
 test("provider: CJK 字符跨 chunk 边界时正确拼装（TextDecoder 流式解码）", async () => {
   const { createServer } = await import("node:http")
-  const { chat } = await import("../src/provider.mjs")
+  const { chat } = await import("../src/provider/index.mjs")
   const full =
     `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "你好世界" } }] })}\n\n` +
     `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
@@ -1412,7 +1412,7 @@ test("provider: CJK 字符跨 chunk 边界时正确拼装（TextDecoder 流式�
 })
 
 test("provider: Partial Mode 截断续写——length 且有正文时自动续写（仅声明 partialMode 的模型）", async () => {
-  const { chat } = await import("../src/provider.mjs")
+  const { chat } = await import("../src/provider/index.mjs")
   // 第一轮截断在正文中间，第二轮（续写）正常结束
   const script = [
     { content: "前半段内容", finishReason: "length", reasoning: "思考链" },
@@ -1450,7 +1450,7 @@ test("provider: Partial Mode 截断续写——length 且有正文时自动续�
 })
 
 test("provider: DeepSeek Prefix Completion——length 时走 /beta 端点 prefix 续写", async () => {
-  const { chat } = await import("../src/provider.mjs")
+  const { chat } = await import("../src/provider/index.mjs")
   const script = [
     { content: "前半段", finishReason: "length" },
     { content: "后半段" },
@@ -1477,7 +1477,7 @@ test("provider: DeepSeek Prefix Completion——length 时走 /beta 端点 prefi
 })
 
 test("provider: DeepSeek Prefix 续写不处理思考模式（已产出 reasoning 直接返回）", async () => {
-  const { chat } = await import("../src/provider.mjs")
+  const { chat } = await import("../src/provider/index.mjs")
   const script = [{ content: "截断了", finishReason: "length", reasoning: "思考链" }]
   const { server, port, requests } = await mockLLM(script)
   try {
@@ -1492,7 +1492,7 @@ test("provider: DeepSeek Prefix 续写不处理思考模式（已产出 reasonin
 })
 
 test("provider: Partial Mode 续写不处理思考阶段截断（content 为空直接返回）", async () => {
-  const { chat } = await import("../src/provider.mjs")
+  const { chat } = await import("../src/provider/index.mjs")
   const script = [{ content: "", finishReason: "length", reasoning: "想了一半" }]
   const { server, port, requests } = await mockLLM(script)
   try {
@@ -1507,7 +1507,7 @@ test("provider: Partial Mode 续写不处理思考阶段截断（content 为空�
 })
 
 test("provider: tempRange 裁剪——GLM temperature 超范围裁到 [0,1] 两位小数", async () => {
-  const { chat } = await import("../src/provider.mjs")
+  const { chat } = await import("../src/provider/index.mjs")
   const script = [{ content: "ok", finishReason: "stop" }]
   const { server, port, requests } = await mockLLM(script)
   try {
@@ -1520,7 +1520,7 @@ test("provider: tempRange 裁剪——GLM temperature 超范围裁到 [0,1] 两�
 })
 
 test("provider: reasoningEffortEnum 校验——非法值报错，合法值透传", async () => {
-  const { chat } = await import("../src/provider.mjs")
+  const { chat } = await import("../src/provider/index.mjs")
   const script = [{ content: "ok", finishReason: "stop" }]
   const { server, port, requests } = await mockLLM(script)
   try {
@@ -1571,7 +1571,7 @@ const SSE_OK =
   "data: [DONE]\n\n"
 
 test("provider: 429 尊重 Retry-After 头", async () => {
-  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { chat, _rateHooks } = await import("../src/provider/index.mjs")
   const { server, port, requests } = await mockRaw([
     { status: 429, headers: { "retry-after": "2" }, body: JSON.stringify({ error: { type: "rate_limit_reached_error" } }) },
     { sse: SSE_OK },
@@ -1594,7 +1594,7 @@ test("provider: 429 尊重 Retry-After 头", async () => {
 })
 
 test("provider: 429 无 Retry-After 按 15s/30s/60s 退避后抛错", async () => {
-  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { chat, _rateHooks } = await import("../src/provider/index.mjs")
   const { server, port, requests } = await mockRaw([
     { status: 429, body: JSON.stringify({ error: { type: "rate_limit_reached_error" } }) },
   ])
@@ -1613,7 +1613,7 @@ test("provider: 429 无 Retry-After 按 15s/30s/60s 退避后抛错", async () =
 })
 
 test("provider: 配额/余额错误不重试直接抛", async () => {
-  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { chat, _rateHooks } = await import("../src/provider/index.mjs")
   const { server, port, requests } = await mockRaw([
     { status: 429, body: JSON.stringify({ error: { type: "exceeded_current_quota_error", message: "余额不足" } }) },
   ])
@@ -1632,7 +1632,7 @@ test("provider: 配额/余额错误不重试直接抛", async () => {
 })
 
 test("provider: TPM 闸门——窗口超预算睡到腾出空间，实测 usage 记账", async () => {
-  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { chat, _rateHooks } = await import("../src/provider/index.mjs")
   const big =
     'data: {"choices":[{"delta":{"content":"a"}}]}\n\n' +
     'data: {"choices":[],"usage":{"prompt_tokens":700,"completion_tokens":100}}\n\n' +
@@ -1661,7 +1661,7 @@ test("provider: TPM 闸门——窗口超预算睡到腾出空间，实测 usage
 })
 
 test("provider: TPM 闸门——单请求估算超预算时放行（不卡死）", async () => {
-  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { chat, _rateHooks } = await import("../src/provider/index.mjs")
   const { server, port, requests } = await mockRaw([{ sse: SSE_OK }])
   const orig = { ..._rateHooks }
   const sleeps = []
@@ -2454,7 +2454,7 @@ test("runAgent: 依赖摘要注入（紧凑版 + 每会话只注一次）", asyn
 // ---------------------------------------------------------------- goal 自主任务机制
 
 test("goal: set 必须有可验证的完成条件", async () => {
-  const { goalTool } = await import("../src/agent.mjs")
+  const { goalTool } = await import("../src/agent-tools.mjs")
   const agent = {}
   const err = await goalTool.execute({ action: "set", objective: "做个东西" }, { agent })
   assert.match(err, /criteria.*required|required.*criteria/)
@@ -2466,7 +2466,7 @@ test("goal: set 必须有可验证的完成条件", async () => {
 })
 
 test("goal: complete 的 verify 证据门槛", async () => {
-  const { goalTool } = await import("../src/agent.mjs")
+  const { goalTool } = await import("../src/agent-tools.mjs")
   const agent = { goal: { objective: "o", criteria: "c", status: "active" }, _mutatedThisRun: true, _verifiedThisRun: false }
   const err = await goalTool.execute({ action: "complete" }, { agent })
   assert.match(err, /verify has not run/)
@@ -2478,7 +2478,7 @@ test("goal: complete 的 verify 证据门槛", async () => {
 })
 
 test("goal: blocked 需同一条件连续 3 次，换条件重新计数", async () => {
-  const { goalTool } = await import("../src/agent.mjs")
+  const { goalTool } = await import("../src/agent-tools.mjs")
   const agent = { goal: { objective: "o", criteria: "c", status: "active", _blockTally: null } }
   const r1 = await goalTool.execute({ action: "blocked", reason: "API 限流" }, { agent })
   assert.match(r1, /1\/3/)
@@ -2748,7 +2748,7 @@ test("docSearch: 空查询返回空", async () => {
 
 test("repo_outline: 全量大纲 + 聚焦查询", async () => {
   const { codeSync } = await import("../src/memory.mjs")
-  const { buildOutline, repoOutlineTool } = await import("../src/repomap.mjs")
+  const { buildOutline, repoOutlineTool } = await import("../src/tools/repomap.mjs")
   const { writeFile, mkdir } = await import("node:fs/promises")
   const m = freshMemory()
 

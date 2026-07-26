@@ -17,8 +17,8 @@ import { join } from "node:path"
 import { createAgent, runAgent } from "../src/agent.mjs"
 import { loadConfig, saveConfig, configDir, configPath, PROVIDER_PRESETS } from "../src/config.mjs"
 import { createMemory, memoryTools, put, remove, search, list, syncDir, codeSearchTool, docSearchTool } from "../src/memory.mjs"
-import { repoOutlineTool } from "../src/repomap.mjs"
-import { builtinTools } from "../src/tools.mjs"
+import { repoOutlineTool } from "../src/tools/repomap.mjs"
+import { builtinTools } from "../src/tools/index.mjs"
 
 const [command, ...args] = process.argv.slice(2)
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
@@ -86,7 +86,7 @@ async function makeAgent() {
   // Team 层（可选）：首次自动 clone；启动只索引本地目录，拉取远端走显式 thincoder sync
   const team = teamConfig(config)
   if (team) {
-    const { ensureClone } = await import("../src/gitmem.mjs")
+    const { ensureClone } = await import("../src/git/gitmem.mjs")
     await ensureClone(team)
     await syncDir(memory, { layer: "team", dir: team.dir })
   }
@@ -247,7 +247,7 @@ switch (command) {
       break
     }
     const memory = createMemory({ dbPath: config.memory.dbPath })
-    const { ensureClone, pullTeam } = await import("../src/gitmem.mjs")
+    const { ensureClone, pullTeam } = await import("../src/git/gitmem.mjs")
     try {
       const cloned = await ensureClone(team)
       if (cloned) console.log(`Cloned team repo to ${team.dir}`)
@@ -350,7 +350,7 @@ switch (command) {
     }
     const team = teamConfig(config)
     if (team) {
-      const { ensureClone } = await import("../src/gitmem.mjs")
+      const { ensureClone } = await import("../src/git/gitmem.mjs")
       await ensureClone(team)
       const s = await syncDir(memory, { layer: "team", dir: team.dir })
       total.added += s.added

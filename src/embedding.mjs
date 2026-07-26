@@ -5,7 +5,7 @@
  * 向量在入库前归一化，之后点积即余弦相似度。
  */
 
-import { RETRYABLE_STATUS } from "./provider.mjs"
+import { RETRYABLE_STATUS } from "./provider/index.mjs"
 const MAX_RETRIES = 3
 const BATCH_SIZE = 32 // 单次请求的文本数上限（SiliconFlow 限制内）
 
