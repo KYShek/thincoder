@@ -189,6 +189,17 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 
 ## 更新日志
 
+### 0.7.1（2026-07）
+- **修复上下文爆炸（紧急）**：依赖大纲开局注入不再无界——多仓库父目录（索引数千文件）的全量大纲实测达 140 万字符 ≈ 35 万 token，且每轮对话重复注入累积，几轮即打爆上下文并触发 TPM 限流。现截断到 6000 字符（超出指引用 `repo_outline` 聚焦查询）且每会话只注一次
+- **压缩逃逸口**：历史太短（≤13 条）切不出中间段时压缩永远不发生，一条巨型消息（大段粘贴/超大注入）即可卡死。现走确定性瘦身：超长 user/tool 正文截断换桩，不动 reasoning_content 与 tool_calls 配对
+- **修复 docSync ReferenceError**：`failed`/`errors` 未声明导致文档索引同步每次调用必抛错（两个测试挂红）
+- **apply_patch 工具**：统一 diff 多文件原子打补丁（任一 hunk 不上整体不写盘），权限预览直接展示 diff
+- **checkpoint 工具**：`list`/`create`/`rewind` 快照能力暴露给模型（此前只接 TUI 自动快照 + /rewind，模型无法自救）；bash 销毁性 git 护栏升级为分段检测（`&&`/`;`/`|`/命令替换链式写法不再绕过）
+- **bash 进程树杀**：超时/中断整树杀（POSIX 进程组 / Windows taskkill /T），不再残留孙进程
+- **子 agent 显示契约**：只 relay 正文/思考 token 到 TUI 滚动区，内部工具调用不再刷屏
+- **路径安全**：`resolveInCwd` 防 symlink 逃逸（realpath 二次校验）；edit 拒绝空 old_string；单文件增量索引跳过隐藏目录与 node_modules
+- **其他**：SQLite WAL + busy_timeout、schema 迁移单事务、升级语义化版本比较、MCP cmd.exe 引号翻倍转义、gitmem 无变更不提交
+
 ### 0.7.0（2026-07）
 - **模型协议深度适配**：reasoning_content 回传按模型区分（`reasoningEcho` 规格表字段）——DeepSeek/Kimi 必须回传，GLM 不回传；reasoning_effort 枚举校验（`reasoningEffortEnum`）；temperature 范围裁剪（`tempRange`）
 - **Qwen/MiniMax 规格补齐**：reasoning_effort 枚举（Qwen 3.8-max-preview）、temperature 范围（Qwen [0,2)、MiniMax [0,2]）、MiniMax M3 thinking 模式
