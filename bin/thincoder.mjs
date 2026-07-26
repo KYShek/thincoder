@@ -179,6 +179,9 @@ switch (command) {
     try {
       await runAgent(agent, prompt, {
         onToken: (text) => process.stdout.write(text),
+        onWait: ({ phase, seconds }) => {
+          console.error(phase === "gate" ? `[rate-limit] TPM 节流等待 ~${seconds}s` : `[rate-limit] 429，${seconds}s 后重试`)
+        },
         onToolCall: (name, toolArgs) => {
           console.error(`\n[tool] ${name} ${summarize(toolArgs)}`)
         },

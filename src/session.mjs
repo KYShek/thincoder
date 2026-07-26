@@ -63,7 +63,14 @@ export function archiveCurrent(cwd, { exclude } = {}) {
 
   const dst = slotPath(cwd, slot)
   // 复制（rename 会丢当前）；走原子写，防中途崩溃留下截断的 JSON 丢归档
-  writeSessionFile(dst, JSON.parse(readFileSync(src, "utf8")))
+  let data
+  try {
+    data = JSON.parse(readFileSync(src, "utf8"))
+  } catch {
+    // 会话文件损坏，放弃归档，下次保存会覆盖
+    return
+  }
+  writeSessionFile(dst, data)
   m.slots[slot] = Date.now()
   delete m.slots._currentName
   saveManifest(cwd, m)
@@ -91,10 +98,14 @@ export function switchToSlot(cwd, slot) {
   const src = slotPath(cwd, slot)
   const dst = sessionPath(cwd)
   if (!existsSync(src)) return null
-  // 先删当前文件（archiveCurrent 是复制不是移动，所以它还在）
-  try { unlinkSync(dst) } catch { /* 不存在就算了 */ }
-  copyFileSync(src, dst)
-  unlinkSync(src)
+  try {
+    try { unlinkSync(dst) } catch { /* 不存在就算了 */ }
+    copyFileSync(src, dst)
+    unlinkSync(src)
+  } catch {
+    // 文件操作失败（磁盘满/权限不足/锁文件），放弃切换
+    return null
+  }
 
   // 重读 manifest（archiveCurrent 改了它）
   const m2 = loadManifest(cwd)

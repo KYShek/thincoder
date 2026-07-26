@@ -28,7 +28,7 @@ bin/thincoder.mjs   命令入口与分发（chat/memory/sync/distill/reindex/upg
 src/agent.mjs       主循环 + 自律工具（task/plan/goal/verify/subagent/skill）
                     + 提醒注入（task/goal/plan/模式切换）+ 完成守卫
                     + 增量索引（write/edit/delete 后自动 reindexFile）
-src/provider.mjs    LLM 调用（SSE、reasoning_content、usage、重试）
+src/provider.mjs    LLM 调用（SSE、reasoning_content、usage、重试 + TPM/RPM 主动节流闸门）
 src/context.mjs     上下文压缩（压缩后回注 task/plan 状态）
 src/tui.mjs         裸 ANSI TUI（对话区 / todo 面板 / 输入框 / 状态栏）
 src/tools.mjs       16 个文件/网络/git 工具；描述存 src/tools/*.md

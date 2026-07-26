@@ -101,6 +101,10 @@ TUI 内斜杠命令：`/help`、`/model`（方向键选择全部 provider 的全
       "baseURL": "https://api.deepseek.com/v1", // 任意 OpenAI 兼容端点
       "apiKey": "sk-...", // 或留空走环境变量
       "model": "deepseek-chat",
+      // 可选：主动节流预算（按账户限速等级自配，不配则关闭闸门，429 退避仍生效）。
+      // 限速是账户级独立计数器（RPM/TPM 按 60s 窗口），等级查各厂商控制台
+      // "tpm": 200000, // tokens/分钟（输入+输出总量）
+      // "rpm": 50,     // 请求数/分钟
     },
   ],
   "activeProvider": "deepseek", // 当前激活的 provider 名

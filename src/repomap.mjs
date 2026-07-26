@@ -109,15 +109,15 @@ function normalizeExt(p) {
   return p.replace(/\.(m?js|jsx|tsx?)$/i, "")
 }
 
-/** 从 code_chunks 取已知文件列表（复用索引），按路径解析生成大纲文本 */
-export function buildOutline(db, cwd, focusPath) {
+/**
+ * 内部：扫描全量文件，构建正向依赖图 + 反向引用图。
+ * 返回 { deps, importers, fileCount } 供 buildOutline / buildSummary 共用。
+ */
+function _buildDepGraph(db, cwd) {
   const allFiles = db.prepare(`SELECT DISTINCT path FROM code_chunks ORDER BY path`).all().map((r) => r.path)
+  if (allFiles.length === 0) return null
 
-  if (allFiles.length === 0) return "(no indexed source files; run codeSync or /reindex first)"
-
-  // 构建正向（谁 import 谁）+ 反向（被谁 import）图——总是全量扫描，
-  // 因为聚焦一个文件也需要知道别的文件是否 import 了它
-  const deps = new Map()      // path → { imports: Set, exports: Set, size: number }
+  const deps = new Map()      // path → { imports: Set, exports: Set, size: number, dir: string }
   const importers = new Map() // importee → Set<importer>
 
   for (const rel of allFiles) {
@@ -140,7 +140,6 @@ export function buildOutline(db, cwd, focusPath) {
     // 把 import 路径解析成相对路径（处理 ./ ../）
     const resolved = []
     for (let imp of imports) {
-      // 去掉 ./ 前缀
       if (imp.startsWith("./")) imp = imp.slice(2)
       const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : ""
       const parts = imp.split("/")
@@ -154,7 +153,8 @@ export function buildOutline(db, cwd, focusPath) {
       }
     }
 
-    deps.set(rel, { imports: new Set(resolved), exports: new Set(exports), size: Math.floor(text.length / 1024) })
+    const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "."
+    deps.set(rel, { imports: new Set(resolved), exports: new Set(exports), size: Math.floor(text.length / 1024), dir })
 
     for (const r of resolved) {
       if (!importers.has(r)) importers.set(r, new Set())
@@ -162,7 +162,97 @@ export function buildOutline(db, cwd, focusPath) {
     }
   }
 
-  // 生成文本
+  return { deps, importers, fileCount: allFiles.length }
+}
+
+/**
+ * 生成紧凑架构摘要（替换旧的全量注入）。
+ * 三层信息，每层信息密度递减：
+ *  1. 目录级依赖（多目录项目才有意义，单目录跳过）
+ *  2. 枢纽文件 Top-12（被 import 最多的文件——架构骨架）
+ *  3. 入口文件（无人 import 的文件——启动/顶层入口）
+ * 输出天然有界（~1000-2000 字符），不再需要 OUTLINE_INJECT_MAX 硬截断。
+ */
+export function buildSummary(db, cwd) {
+  const graph = _buildDepGraph(db, cwd)
+  if (!graph) return "(no indexed source files; run codeSync or /reindex first)"
+  const { deps, importers, fileCount } = graph
+
+  const out = []
+  out.push(`${fileCount} source files indexed.`)
+
+  // 1) 目录级依赖
+  const dirDeps = new Map() // dir → Set<imported-dir>
+  const dirSet = new Set()
+  for (const [rel, d] of deps) {
+    dirSet.add(d.dir)
+    if (!dirDeps.has(d.dir)) dirDeps.set(d.dir, new Set())
+    for (const imp of d.imports) {
+      const targetDir = imp.includes("/") ? imp.slice(0, imp.lastIndexOf("/")) : "."
+      if (targetDir !== d.dir) dirDeps.get(d.dir).add(targetDir)
+    }
+  }
+  if (dirSet.size > 1) {
+    out.push("Directory dependencies:")
+    for (const dir of [...dirSet].sort()) {
+      const targets = dirDeps.get(dir)
+      if (targets?.size) {
+        out.push(`  ${dir}/ → ${[...targets].sort().join(", ")}/`)
+      } else {
+        out.push(`  ${dir}/ (leaf)`)
+      }
+    }
+  }
+
+  // 2) 枢纽文件 Top-12：按被 import 次数降序
+  const HUB_LIMIT = 12
+  const hubScores = []
+  for (const [rel] of deps) {
+    const key = rel.replace(/\.(m?js|jsx|tsx?)$/i, "")
+    const rev = importers.get(key)
+    if (rev?.size) hubScores.push({ path: rel, count: rev.size })
+  }
+  hubScores.sort((a, b) => b.count - a.count)
+  if (hubScores.length > 0) {
+    out.push(`Hub files (by inbound dependencies, top ${Math.min(hubScores.length, HUB_LIMIT)}):`)
+    for (const h of hubScores.slice(0, HUB_LIMIT)) {
+      const d = deps.get(h.path)
+      const kb = d?.size ? ` (${d.size} KB)` : ""
+      const key = h.path.replace(/\.(m?js|jsx|tsx?)$/i, "")
+      const rev = importers.get(key)
+      const shortRefs = rev.size <= 5
+        ? [...rev].join(", ")
+        : [...rev].slice(0, 4).join(", ") + ` +${rev.size - 4} more`
+      out.push(`  ${h.path}${kb} — imported by: ${shortRefs}`)
+    }
+  }
+
+  // 3) 入口文件：无人 import 的（叶子/入口）
+  const entries = []
+  for (const [rel] of deps) {
+    const key = rel.replace(/\.(m?js|jsx|tsx?)$/i, "")
+    if (!importers.has(key) || importers.get(key).size === 0) {
+      entries.push(rel)
+    }
+  }
+  if (entries.length > 0 && entries.length < fileCount) {
+    const limit = 8
+    const shown = entries.slice(0, limit)
+    out.push(`Entry points (not imported by others):`)
+    for (const e of shown) out.push(`  ${e}`)
+    if (entries.length > limit) out.push(`  ... +${entries.length - limit} more`)
+  }
+
+  out.push("For detailed per-file relationships, call repo_outline with a file path.")
+  return out.join("\n")
+}
+
+/** 从 code_chunks 取已知文件列表（复用索引），按路径解析生成大纲文本 */
+export function buildOutline(db, cwd, focusPath) {
+  const graph = _buildDepGraph(db, cwd)
+  if (!graph) return "(no indexed source files; run codeSync or /reindex first)"
+  const { deps, importers } = graph
+
   const files = focusPath ? [focusPath] : [...deps.keys()]
   const out = []
   const sorted = files.sort()

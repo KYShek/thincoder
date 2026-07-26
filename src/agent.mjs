@@ -133,9 +133,10 @@ function escapeXml(s) {
 const TOOL_RESULT_OFFLOAD_LIMIT = 16_000 // 工具结果超过此长度即落盘（防单次输出灌爆上下文）
 const TOOL_RESULT_PREVIEW = 2_000
 
-/** 依赖大纲注入：前缀（历史查重去重用）与长度硬上限（多仓库父目录的全量大纲可达百万字符） */
+/** 依赖摘要注入：前缀（历史查重去重用）。
+ *  v0.7 从全量大纲改为紧凑摘要（buildSummary）——目录级依赖 + 枢纽文件 + 入口，
+ *  天然有界 ~1-2k 字符，不再需要 OUTLINE_INJECT_MAX 硬截断。 */
 const OUTLINE_INJECT_PREFIX = "[System reminder: project dependency outline:"
-const OUTLINE_INJECT_MAX = 6_000
 
 /** 会改文件的写工具（文件触碰追踪 + 增量索引用） */
 const FILE_MUTATORS = new Set(["write", "edit", "insert_after", "apply_patch", "delete"])
@@ -739,21 +740,16 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (tree) {
         agent.history.push({ role: "user", content: `[System reminder: working directory snapshot:\n<untrusted_cwd_listing>\n${escapeXml(tree)}\n</untrusted_cwd_listing>]`, transient: true })
       }
-      // 依赖大纲：模型开局就能看见谁 import 谁，不用盲调 repo_outline。
-      // 两道保险（多仓库父目录的全量大纲实测可达 140 万字符 ≈ 35 万 token，曾直接打爆上下文 + TPM）：
-      // 1) 硬截断到 OUTLINE_INJECT_MAX，超了让模型用 repo_outline 工具按需查聚焦视图；
-      // 2) 每会话只注一次（历史已有则跳过）——runAgent 每轮都跑，重复注入会让大纲按轮数累积
+      // 依赖摘要（紧凑版，替代旧的全量大纲注入）：
+      // 目录级依赖 + 枢纽文件 + 入口文件，天然 ~1-2k 字符；
+      // 详细 import/export 用 repo_outline 工具按需查。
+      // 每会话只注一次（历史已有则跳过）
       if (agent.memory && !agent.history.some((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_INJECT_PREFIX))) {
         try {
-          const { buildOutline } = await import("./repomap.mjs")
-          let outline = buildOutline(agent.memory.db, agent.cwd, null)
-          if (outline && !outline.startsWith("(no indexed")) {
-            if (outline.length > OUTLINE_INJECT_MAX) {
-              outline =
-                outline.slice(0, OUTLINE_INJECT_MAX).replace(/\n[^\n]*$/, "") +
-                "\n... (outline truncated — call repo_outline with a file path for a focused view)"
-            }
-            agent.history.push({ role: "user", content: `${OUTLINE_INJECT_PREFIX}\n${outline}]`, transient: true })
+          const { buildSummary } = await import("./repomap.mjs")
+          const summary = buildSummary(agent.memory.db, agent.cwd)
+          if (summary && !summary.startsWith("(no indexed")) {
+            agent.history.push({ role: "user", content: `${OUTLINE_INJECT_PREFIX}\n${summary}]`, transient: true })
           }
         } catch { /* 索引未就绪不报错 */ }
       }
@@ -878,6 +874,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       tools: toolSchemas,
       onToken: callbacks.onToken,
       onReasoning: callbacks.onReasoning,
+      onWait: callbacks.onWait,
       signal,
     })
     // token 用量（含 DeepSeek 缓存命中/未命中）透传给 UI 层展示

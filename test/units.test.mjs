@@ -1490,6 +1490,145 @@ test("provider: reasoningEffortEnum 校验——非法值报错，合法值透�
   }
 })
 
+// ---------------------------------------------------------------- TPM/RPM 节流与 429 退避
+
+/** 可控制状态码/响应头的 mock server：steps = [{ status, headers, body } | { sse }] */
+function mockRaw(steps) {
+  return import("node:http").then(({ createServer }) => {
+    let i = 0
+    const requests = []
+    const server = createServer((req, res) => {
+      let bodyText = ""
+      req.on("data", (c) => (bodyText += c))
+      req.on("end", () => {
+        requests.push(JSON.parse(bodyText))
+        const step = steps[Math.min(i++, steps.length - 1)]
+        if (step.sse) {
+          res.writeHead(200, { "content-type": "text/event-stream" })
+          res.end(step.sse)
+        } else {
+          res.writeHead(step.status ?? 500, step.headers ?? {})
+          res.end(step.body ?? "")
+        }
+      })
+    })
+    return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port, requests })))
+  })
+}
+
+const SSE_OK =
+  'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n' +
+  'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n' +
+  "data: [DONE]\n\n"
+
+test("provider: 429 尊重 Retry-After 头", async () => {
+  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { server, port, requests } = await mockRaw([
+    { status: 429, headers: { "retry-after": "2" }, body: JSON.stringify({ error: { type: "rate_limit_reached_error" } }) },
+    { sse: SSE_OK },
+  ])
+  const orig = { ..._rateHooks }
+  const sleeps = []
+  _rateHooks.sleep = (ms) => { sleeps.push(ms); return Promise.resolve() }
+  try {
+    const p = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const waits = []
+    const r = await chat(p, { messages: [{ role: "user", content: "hi" }], onWait: (w) => waits.push(w) })
+    assert.equal(r.content, "ok")
+    assert.equal(requests.length, 2)
+    assert.deepEqual(sleeps, [2000])
+    assert.deepEqual(waits, [{ phase: "retry", seconds: 2 }])
+  } finally {
+    Object.assign(_rateHooks, orig)
+    server.close()
+  }
+})
+
+test("provider: 429 无 Retry-After 按 15s/30s/60s 退避后抛错", async () => {
+  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { server, port, requests } = await mockRaw([
+    { status: 429, body: JSON.stringify({ error: { type: "rate_limit_reached_error" } }) },
+  ])
+  const orig = { ..._rateHooks }
+  const sleeps = []
+  _rateHooks.sleep = (ms) => { sleeps.push(ms); return Promise.resolve() }
+  try {
+    const p = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    await assert.rejects(() => chat(p, { messages: [{ role: "user", content: "hi" }] }), /LLM API error 429/)
+    assert.equal(requests.length, 4) // 首发 + 3 次重试
+    assert.deepEqual(sleeps, [15_000, 30_000, 60_000])
+  } finally {
+    Object.assign(_rateHooks, orig)
+    server.close()
+  }
+})
+
+test("provider: 配额/余额错误不重试直接抛", async () => {
+  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { server, port, requests } = await mockRaw([
+    { status: 429, body: JSON.stringify({ error: { type: "exceeded_current_quota_error", message: "余额不足" } }) },
+  ])
+  const orig = { ..._rateHooks }
+  const sleeps = []
+  _rateHooks.sleep = (ms) => { sleeps.push(ms); return Promise.resolve() }
+  try {
+    const p = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    await assert.rejects(() => chat(p, { messages: [{ role: "user", content: "hi" }] }), /exceeded_current_quota_error/)
+    assert.equal(requests.length, 1) // 重试无用，一次就抛
+    assert.deepEqual(sleeps, [])
+  } finally {
+    Object.assign(_rateHooks, orig)
+    server.close()
+  }
+})
+
+test("provider: TPM 闸门——窗口超预算睡到腾出空间，实测 usage 记账", async () => {
+  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const big =
+    'data: {"choices":[{"delta":{"content":"a"}}]}\n\n' +
+    'data: {"choices":[],"usage":{"prompt_tokens":700,"completion_tokens":100}}\n\n' +
+    "data: [DONE]\n\n"
+  const { server, port, requests } = await mockRaw([{ sse: big }, { sse: SSE_OK }, { sse: SSE_OK }])
+  const orig = { ..._rateHooks }
+  let fakeNow = 0
+  const sleeps = []
+  _rateHooks.now = () => fakeNow
+  _rateHooks.sleep = (ms) => { sleeps.push(ms); fakeNow += ms; return Promise.resolve() }
+  try {
+    const p = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m", tpm: 810 }
+    const waits = []
+    const onWait = (w) => waits.push(w)
+    await chat(p, { messages: [{ role: "user", content: "hi" }], onWait }) // 记账 800
+    await chat(p, { messages: [{ role: "user", content: "hi" }], onWait }) // 800+估算1 ≤ 810 → 不等；实测记 15，累计 815
+    assert.deepEqual(sleeps, [])
+    await chat(p, { messages: [{ role: "user", content: "hi" }], onWait }) // 815+1 > 810 → 睡到首条记录过期
+    assert.deepEqual(sleeps, [60_000])
+    assert.deepEqual(waits, [{ phase: "gate", seconds: 60 }])
+    assert.equal(requests.length, 3)
+  } finally {
+    Object.assign(_rateHooks, orig)
+    server.close()
+  }
+})
+
+test("provider: TPM 闸门——单请求估算超预算时放行（不卡死）", async () => {
+  const { chat, _rateHooks } = await import("../src/provider.mjs")
+  const { server, port, requests } = await mockRaw([{ sse: SSE_OK }])
+  const orig = { ..._rateHooks }
+  const sleeps = []
+  _rateHooks.sleep = (ms) => { sleeps.push(ms); return Promise.resolve() }
+  try {
+    const p = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m", tpm: 1 }
+    const r = await chat(p, { messages: [{ role: "user", content: "hi" }] })
+    assert.equal(r.content, "ok")
+    assert.equal(requests.length, 1)
+    assert.deepEqual(sleeps, [])
+  } finally {
+    Object.assign(_rateHooks, orig)
+    server.close()
+  }
+})
+
 // ---------------------------------------------------------------- 完成守卫（改了东西未 verify 不直接收工）
 
 function makeMutationTool() {
@@ -2227,14 +2366,14 @@ test("context: 历史太短切不出中间段时，巨型消息被确定性瘦�
   assert.equal(await compressIfNeeded(agent, 1_000), false)
 })
 
-test("runAgent: 依赖大纲注入截断到上限且每会话只注一次", async () => {
+test("runAgent: 依赖摘要注入（紧凑版 + 每会话只注一次）", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const { codeSync } = await import("../src/memory.mjs")
   const { writeFile } = await import("node:fs/promises")
   const m = freshMemory()
   const dir = mkdtempSync(join(tmpdir(), "thincoder-outline-inject-"))
   try {
-    // 120 个互相 import 的文件：全量大纲必然超过 6000 字符的注入上限（实测约 71 字符/文件）
+    // 120 个互相 import 的文件：新版摘要天然有界，无需硬截断
     for (let i = 0; i < 120; i++) {
       const prev = i > 0 ? `import { v${i - 1} } from "./f${i - 1}.mjs"\n` : ""
       await writeFile(join(dir, `f${i}.mjs`), `${prev}export const v${i} = ${i}\nexport function fn${i}() { return v${i} }\n`)
@@ -2249,8 +2388,9 @@ test("runAgent: 依赖大纲注入截断到上限且每会话只注一次", asyn
       await runAgent(agent, "第一个问题")
       const outlines = () => agent.history.filter((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_PREFIX))
       assert.equal(outlines().length, 1)
-      assert.ok(outlines()[0].content.includes("outline truncated"), "超上限应截断并指引 repo_outline")
-      assert.ok(outlines()[0].content.length < 6_500, `注入应有硬上限，实际 ${outlines()[0].content.length} 字符`)
+      assert.ok(outlines()[0].content.includes("Hub files"), "摘要应含枢纽文件列表")
+      assert.ok(outlines()[0].content.includes("repo_outline"), "摘要应指引 repo_outline 查详情")
+      assert.ok(outlines()[0].content.length < 3_000, `摘要应自然有界，实际 ${outlines()[0].content.length} 字符`)
       await runAgent(agent, "第二个问题")
       assert.equal(outlines().length, 1, "每会话只注一次，不按轮数累积")
     } finally {
