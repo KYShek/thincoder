@@ -15,7 +15,7 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 - **Agent 主循环**：LLM ↔ 工具调用循环，上限 100 轮防失控，完成守卫拦截未验证的改动
 - **代码库理解** ⭐0.5.0：`repo_outline`（依赖大纲，启动自动注入）、`code_search`（源码 FTS5 + 向量 + JSDoc 提取）、`doc_search`（文档按 ## 标题分块检索）——后台索引、写文件自动增量更新、三工具按"结构→意图→细节"引导
 - **模型适配** ⭐：只跟顶流、只跟最新。内置 DeepSeek / Kimi / GLM / Qwen / MiniMax 五家国内顶流厂商的旗舰模型，不做老旧模型兼容、不做本地模型适配。自动匹配上下文窗口、截断续写协议（prefix/partial）、思考模式 API（thinking.type / reasoning_effort）、输出上限。
-- **工具集**：`read` / `write` / `edit` / `bash` / `glob`（支持 `**`） / `grep` / `websearch` / `ls` / `fetch` + 三个检索工具 + MCP，全部零依赖，文件工具目录隔离
+- **工具集**：`read` / `write` / `edit` / `bash` / `glob`（支持 `**`） / `grep` / `websearch` / `ls` / `fetch` + `read_image`（图片/视频粘贴） + 三个检索工具 + MCP，全部零依赖，文件工具目录隔离
 - **记忆系统**：三层（personal/project/team），FTS5 + 向量 RRF 混合检索，markdown 格式 git 友好
 - **两段式工具调度**：权限确认串行，只读工具并行，副作用工具串行
 - **会话持久化** ⭐0.5.0：最多 5 个归档槽位，`/session` 随时切换，恢复时工具结果可见
@@ -24,7 +24,7 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 - **AUTO 模式**：`/auto` 完全授权，长任务免确认
 - **任务跟踪**：`task` 工具拆解多步任务，状态栏 ✓n/m 实时进度，自动过滤已完成项
 - **Goal/Verify/Skills**：长目标跟踪、完成验证、可复用技能
-- **流式 TUI**：裸 ANSI，权限预览紧挨输入框，write/edit 自动展示 diff
+- **流式 TUI**：裸 ANSI，权限预览紧挨输入框，write/edit 自动展示 diff，多模态模型时输入框右上角显示粘贴快捷键提示（Win: Alt+V / Mac/Linux: Ctrl+V）
 
 ## 记忆系统：一人学到，全队皆知
 
@@ -192,6 +192,10 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 - 更多内置 skills
 
 ## 更新日志
+
+### 0.7.3（2026-07）
+- **图片粘贴**：新增 `read_image` 工具，支持从剪贴板粘贴图片/视频，多模态模型可直接理解截图、UI 设计稿、架构图（Win: `Alt+V` / Mac/Linux: `Ctrl+V`）
+- **TUI 粘贴提示**：使用多模态模型时，输入框右上角自动显示操作系统对应的粘贴快捷键，纯文本模型不显示
 
 ### 0.7.2（2026-07）
 - **TPM/RPM 主动节流闸门**：provider 配置 `tpm`/`rpm` 预算后，发请求前本地滑动窗口记账（60s，输入+输出），超预算先睡到窗口腾出空间而不是打 429 碰运气；主循环/压缩摘要/子 agent/截断续写全覆盖。等待时状态栏显示 `TPM 节流等待 ~Ns`，不配的 provider 闸门关闭
