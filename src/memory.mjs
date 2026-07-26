@@ -1101,6 +1101,10 @@ export async function reindexFile(memory, cwd, absPath) {
     try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
     _upsertDocFile(memory, cwd, rel, lines, mtimeMs)
   }
+  // 立即补算向量，不等惰性检索（刚改的文件应该有语义搜索能力）
+  if (memory.embedder) {
+    try { await ensureEmbeddings(memory) } catch { /* embedding 失败不阻塞 */ }
+  }
 }
 
 // ========== 文档索引 ==========

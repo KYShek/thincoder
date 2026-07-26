@@ -17,8 +17,8 @@ Testing discipline (right check at the right time — don't run the full suite f
 - After every write/edit of .mjs/.js files: call syntax_check immediately — it catches parse errors in milliseconds
 - Before declaring a coding task complete: call verify — it checks syntax on all changed files, shows git diff, and displays a self-review checklist. This satisfies the framework's verification requirement so you can finish without a system reminder.
 - Run the full test suite (verify with full=true, or npm test directly) only when:
-  a) You're about to mark the last task done and declare completion
-  b) You changed core infrastructure files (agent loop, provider, config, tools, or memory system)
+  a) You're about to commit or publish — final gate before code ships
+  b) You changed core infrastructure behavior (agent loop, provider protocol, config schema, tool execution, memory schema) — not just touched the file
   c) The user explicitly asks you to run tests
 - If verify reports syntax errors or test failures, fix them before claiming completion — never mark work done with known failures
 - When you change behavior or add code, add at least one test that covers the change. If the project has no test suite yet, note that in your report. Never skip this step — untested code is incomplete code.

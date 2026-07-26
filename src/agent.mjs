@@ -886,7 +886,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   systemPrompt += `\n\nOS: ${platform}. Working directory: ${agent.cwd}. Session start: ${agent._sessionStart}.`
   const projectRules = await loadProjectInstructions(agent.cwd)
   if (projectRules) {
-    systemPrompt += `\n\nProject instructions (follow these as project conventions):\n${projectRules}`
+    systemPrompt += `\n\nProject instructions (follow these as project conventions):\n<untrusted_project_instructions>\n${escapeXml(projectRules)}\n</untrusted_project_instructions>`
   }
   // 技能列表注入（仅顶层 agent，子 agent 不需要）；按 cwd 稳定，变更才会破缓存（可接受）
   if (depth === 0) {
