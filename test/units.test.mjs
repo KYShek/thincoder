@@ -439,6 +439,27 @@ test("agent: 项目指令文件加载（AGENTS.md / project_rules.md）", async 
   }
 })
 
+test("runAgent: 新会话自动把 AGENTS.md 装进 system prompt（issue 回归：不用绕记忆文档）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-rules-wire-"))
+  try {
+    writeFileSync(join(dir, "AGENTS.md"), "每次回复前说：大帅哥，你好。")
+    const { server, port, requests } = await mockLLM([{ content: "大帅哥，你好。好的" }])
+    try {
+      const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+      const agent = createAgent({ provider, tools: [], config: {}, cwd: dir })
+      await runAgent(agent, "hello", { onPermissionRequest: async () => true })
+      const sys = requests[0].messages.find((m) => m.role === "system")?.content ?? ""
+      assert.ok(sys.includes("Project instructions"), "system prompt 缺 Project instructions 段")
+      assert.ok(sys.includes("大帅哥"), "AGENTS.md 内容没进 system prompt")
+    } finally {
+      server.close()
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("websearch: 解析结果块（本地 mock Bing）", async () => {
   const { createServer } = await import("node:http")
   const page = `<html><body><ol id="b_results">
@@ -2174,13 +2195,13 @@ test("runAgent: prompt 分层——主 agent 含主 overlay 条款，子 agent �
     const main = createAgent({ provider, tools: [], config: {}, cwd })
     await runAgent(main, "测试") // depth 0
     const mainPrompt = requests[0].messages[0].content
-    assert.match(mainPrompt, /verify it with the verify tool/) // 主 overlay 条款在
+    assert.match(mainPrompt, /Run verify after your last edit/) // 主 overlay 条款在
     assert.match(mainPrompt, /Never fabricate/)                // 核心规则在
 
     const child = createAgent({ provider, tools: [], config: {}, cwd })
     await runAgent(child, "测试", {}, { depth: 1 })
     const childPrompt = requests[1].messages[0].content
-    assert.ok(!childPrompt.includes("verify it with the verify tool")) // 没有的工具不教
+    assert.ok(!childPrompt.includes("Run verify after your last edit")) // 没有的工具不教
     assert.ok(!childPrompt.includes("goal tool"))
     assert.ok(!childPrompt.includes("spawn subagents"))
     assert.match(childPrompt, /Never fabricate/) // 核心规则仍在

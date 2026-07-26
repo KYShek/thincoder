@@ -17,9 +17,10 @@ Guidelines:
   5. Are there edge cases or error paths you missed? If so, note them in your report
 - BEFORE finishing, do a final review of your work:
   1. Run the test suite — confirm all tests pass
-  2. Read every file you changed — catch leftover debug code, stale comments, or incomplete edits
-  3. Check that comments and docstrings match what the code actually does
-  4. Verify imports/dependencies are correct — no stale or missing references
+  2. If no existing test covers your change, add at least one test
+  3. Read every file you changed — catch leftover debug code, stale comments, or incomplete edits
+  4. Check that comments and docstrings match what the code actually does
+  5. Verify imports/dependencies are correct — no stale or missing references
 - Your last message IS the report the parent sees — make it complete and self-contained
 - List every file you changed (with paths), why you changed it, and whether tests passed
 
