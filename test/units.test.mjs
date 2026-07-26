@@ -654,9 +654,9 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
 
   // 显式配置优先
   assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
-  // 未配置时按模型推导（窗口 * 0.8）
-  assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 800000, auto: true })
-  // deepseek-chat 已弃用并映射到 v4-flash（256K 窗口）
+  // 未配置时按模型推导：1M 窗口 × 0.8 = 80万，但 cap 到 30万（防历史涨到打爆 TPM）
+  assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 300000, auto: true })
+  // 256K 窗口 × 0.8 = 20万，未触 cap
   assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 204800, auto: true })
 })
 

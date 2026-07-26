@@ -93,7 +93,11 @@ const MODEL_SPECS = [
 const DEFAULT_SPEC = { context: 128_000, maxOutput: 32_000, cacheMode: "none" }
 // 窗口利用率上限：0.8（DeepSeek 内部即全窗口；压缩本身要花一次 LLM 调用，过早压缩是纯浪费。
 // 留 20% 余量给压缩后的尾部增长与输出 token）
+// 但 1M 窗口模型按 0.8 算 = 80 万 token，历史涨到那么大才压缩会打爆 TPM 预算、
+// 压缩请求本身也可能 429。加 cap：不超过 maxOutput 的 8 倍（128K×8≈100万→实际仍偏大但合理），
+// 不超过 30 万（大窗口模型的合理工作上限，再大缓存命中率下降）
 const COMPACT_RATIO = 0.8
+const COMPACT_CAP_TOKENS = 300_000
 
 /** 按模型名前缀查规格（大小写不敏感），未知模型给保守默认 */
 export function specForModel(model) {
@@ -111,7 +115,11 @@ export function contextWindowForModel(model) {
 /** 推导压缩阈值；explicit 为配置文件中显式设置的值（优先），否则按模型自动算 */
 export function resolveCompactThreshold(explicit, model) {
   if (explicit != null) return { value: explicit, auto: false }
-  return { value: Math.floor(contextWindowForModel(model) * COMPACT_RATIO), auto: true }
+  const spec = specForModel(model)
+  const ratioBased = Math.floor(spec.context * COMPACT_RATIO)
+  // 大窗口模型（1M）按比例算出来太大，用 cap 限制——宁可早压缩也别让历史涨到打爆 TPM
+  const value = Math.min(ratioBased, COMPACT_CAP_TOKENS)
+  return { value, auto: true }
 }
 
 /**

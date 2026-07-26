@@ -193,6 +193,16 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 
 ## 更新日志
 
+### 0.7.6（2026-07）
+- **SYSTEM_PROMPT 拆分为 core + discipline**：核心规则（所有 agent 通用）与编码/测试/调试纪律（主 agent + coder）分离，explore/plan 子 agent 不再被无关的写代码条款消耗注意力——单一真相源，修一条规则只改一个文件
+- **git 驱动增量索引**：新增 `gitSync`，启动时用 `git diff` 找出上次索引以来的变更文件，只重建这些文件的 FTS5 块。非 git 仓库 / 首次运行 / 大范围变更（>200 文件）自动退到全量扫描。`codeSync` + `docSync` 启动并行化
+- **reindexFile 后立即补向量**：agent 每次 write/edit 后的增量索引不再留向量 NULL，直接调 `ensureEmbeddings`——刚改的文件立刻有语义搜索能力
+- **项目指令防注入**：AGENTS.md 内容用 `escapeXml` + `<untrusted_project_instructions>` 包裹，堵住恶意项目指令的提示注入漏洞
+- **压缩阈值 cap**：1M 窗口模型的压缩阈值从 80 万 token 降到 30 万（`COMPACT_CAP_TOKENS`），防历史涨到打爆 TPM 预算、压缩请求本身 429
+- **readSSE tool_calls name 去重**：个别 API（GLM 偶尔）流里重发完整 name 而非增量，`+=` 累加会导致 `readread`。改为只取第一次非空值
+- **边缘场景思考覆盖全 prompt 层**：plan/explore/coder/main 四层 overlay 各加边缘场景识别规则（开放式提问，不枚举具体场景）
+- **测试纪律优化**：全量测试触发条件从"改了核心设施文件"改为"改了核心设施行为"——碰 memory.mjs 加个工具函数不再触发全量
+
 ### 0.7.5（2026-07）
 - **提示词复合指令拆分**：SYSTEM_PROMPT / main-overlay / coder-overlay 共 8 处复合句拆为独立 bullet（每条指令一个注意力节点），提升 DeepSeek/GLM/Qwen 等模型的指令遵从度——尤其"改完代码补测试"这类兜底条款不再被漏读
 - **测试纪律强化**：SYSTEM_PROMPT Testing discipline 新增独立 hard rule（改行为/加代码必须补测试）；main-overlay 自检清单新增"现有测试是否覆盖变更"；coder-overlay 最终检查清单新增补测试项

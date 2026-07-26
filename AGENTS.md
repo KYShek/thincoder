@@ -34,9 +34,9 @@ node --check file.mjs   # 语法检查：每次 write/edit 之后立即跑，毫
 ```
 
 ```bash
-npm test    # 全量测试（113 条, ~11s）：仅在以下情况跑
+npm test    # 全量测试（117 条, ~11s）：仅在以下情况跑
             #  a) 标记最后一个 task done 宣布完成时
-            #  b) 改了核心基础设施（agent/provider/config/tools/memory）
+            #  b) 改了核心基础设施行为（agent loop/provider protocol/config schema/tool execution/memory schema）——碰文件不算，改行为才算
             #  c) 用户明确要求
 ```
 

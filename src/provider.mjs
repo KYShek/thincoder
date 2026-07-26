@@ -353,11 +353,12 @@ async function readSSE(response, { onToken, onReasoning }) {
         result.content += delta.content
         onToken?.(delta.content)
       }
-      // tool_calls 按 index 分槽累积，name/arguments 都是分片到达的
+      // tool_calls 按 index 分槽累积，arguments 是分片到达的需拼接；
+      // name 个别 API（GLM 偶尔）会重发完整 name 而非增量，用 += 会拼成 "readread"——只取第一次非空值
       for (const tc of delta.tool_calls ?? []) {
         const slot = (result.toolCalls[tc.index] ??= { id: "", name: "", arguments: "" })
         if (tc.id) slot.id = tc.id
-        if (tc.function?.name) slot.name += tc.function.name
+        if (tc.function?.name && !slot.name) slot.name = tc.function.name
         if (tc.function?.arguments) slot.arguments += tc.function.arguments
       }
     }
