@@ -1285,7 +1285,7 @@ export function memoryTools(memory, opts = {}) {
     {
       name: "memory_search",
       description:
-        "Search long-term memory across all layers (personal/project/team) for relevant knowledge saved in previous sessions. Query in the same language as the memories (Chinese memories need Chinese queries).",
+        "Search long-term memory across all layers (personal/project/team) for relevant knowledge saved in previous sessions. Use the same language as the memories being searched.",
       parameters: {
         type: "object",
         properties: {

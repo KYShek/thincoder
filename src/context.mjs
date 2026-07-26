@@ -19,6 +19,12 @@ export function estimateTokens(messages) {
   let tokens = 0
   for (const m of messages) {
     if (typeof m.content === "string") tokens += estimateText(m.content)
+    else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part.type === "text") tokens += estimateText(part.text)
+        else if (part.type === "image_url") tokens += 256 // 图片占位估算
+      }
+    }
     if (typeof m.reasoning_content === "string") tokens += estimateText(m.reasoning_content)
     for (const tc of m.tool_calls ?? []) {
       tokens += estimateText(tc.function?.name ?? "") + estimateText(tc.function?.arguments ?? "")
@@ -33,10 +39,11 @@ const KEEP_TAIL = 10 // 最近的工作现场，不能丢
 const SUMMARIZE_PROMPT = `你是一个对话压缩器。把下面的 agent 工作记录压缩成一份紧凑的摘要，供后续对话作为上下文使用。
 要求：
 - 用第一人称、现在时书写——这是"我"的交接笔记，延续自己的思路
-- 保留：用户的原始需求、做出的决策、修改过的文件及原因、未解决的问题、下一步计划
+- 最重要的：保留设计决策与原因——架构选择、API 约定、命名规范、取舍理由。这是后续代码不能偏离的锚点
+- 保留：用户的原始需求、修改过的文件及原因、未解决的问题、下一步计划
 - 丢弃：客套话、重复内容、工具输出的细枝末节
 - 诚实标注不确定项：没有实际验证过的事必须写"未验证"，不要把猜测写成事实
-- 用中文条目式输出，控制在 500 字以内
+- 用条目式输出，以信息完整为目标，不要硬卡字数（旧 500 字限制已作废，1M 上下文时代宁长勿缺）
 
 工作记录：
 `
@@ -45,7 +52,8 @@ const SUMMARIZE_PROMPT = `你是一个对话压缩器。把下面的 agent 工�
 const COMPACTION_PREFIX =
   "[Context was automatically compacted. Below is a summary of earlier work. " +
   "Treat it as notes, not proof — trust its conclusions (don't redo what it reports as done) " +
-  "but re-verify transient state (open files, running processes) with tools before relying on them.]\n\n"
+  "but re-verify transient state (open files, running processes) with tools before relying on them. " +
+  "Design decisions made earlier may be summarized — if you recall a decision that is missing from the summary, check memory_search or re-examine the code.]\n\n"
 
 /** 压缩摘要调用连续失败达到此次数后，降级为确定性截断（丢信息好过任务被 400 打死） */
 export const COMPRESS_FAILURE_LIMIT = 3

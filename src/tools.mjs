@@ -117,6 +117,18 @@ function gitDiffOne(cwd, abs) {
   }
 }
 
+/** 文件变更后自动语法检查：仅对 .mjs/.js 文件，不抛错，结果追加到工具返回值 */
+function autoSyntaxCheck(abs) {
+  if (!/\.(m?js)$/i.test(abs)) return ""
+  try {
+    execFileSync("node", ["--check", abs], { stdio: ["ignore", "pipe", "pipe"], timeout: 10000 })
+    return "\nSyntax: OK"
+  } catch (e) {
+    const err = (e.stderr || e.stdout || e.message || "").toString().split("\n").slice(0, 3).join("\n")
+    return `\nSyntax: FAILED — ${err}`
+  }
+}
+
 /** 目标可能不存在（write 新文件），逐级向上找真实存在的祖先做 realpath */
 function realpathNearest(abs) {
   let cur = abs
@@ -223,6 +235,45 @@ const readTool = {
   },
 }
 
+// ---------------------------------------------------------------- read_image
+
+const IMAGE_EXTENSIONS = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml" }
+
+const readImageTool = {
+  name: "read_image",
+  description: DESC("read_image"),
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Path to image file (relative to cwd or absolute). Supports png, jpg, gif, webp, bmp, svg." },
+    },
+    required: ["path"],
+  },
+  readonly: true,
+  /** 返回 JSON：{ text, images }，供 agent 层转为多模态 user 消息 */
+  async execute(args, ctx) {
+    const abs = resolveInCwd(ctx, args.path)
+    const ext = abs.slice(abs.lastIndexOf(".") + 1).toLowerCase()
+    const mime = IMAGE_EXTENSIONS[ext]
+    if (!mime) throw new Error(`Unsupported image format: .${ext}. Supported: ${Object.keys(IMAGE_EXTENSIONS).join(", ")}`)
+    const buf = await readFile(abs) // raw buffer, no encoding
+    const b64 = buf.toString("base64")
+    // 图片太大（>20MB base64）拒绝，避免撑爆上下文
+    if (b64.length > 20_000_000) throw new Error(`Image too large: ${(b64.length / 1_000_000).toFixed(1)}MB base64 (max 20MB)`)
+    const bytes = buf.length
+    const result = JSON.stringify({
+      text: `[read_image: ${args.path} (${mime}, ${bytes} bytes)]`,
+      images: [{ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }],
+    })
+    // 粘贴产生的临时文件用完即删，不留垃圾
+    const basename = abs.includes("/") ? abs.slice(abs.lastIndexOf("/") + 1) : abs.slice(abs.lastIndexOf("\\") + 1)
+    if (basename.startsWith(".thincoder-paste-")) {
+      try { await unlink(abs) } catch { /* 删不掉就算了 */ }
+    }
+    return result
+  },
+}
+
 // ---------------------------------------------------------------- write
 
 const writeTool = {
@@ -244,7 +295,7 @@ const writeTool = {
     if (st?.isDirectory()) throw new Error(`Path is a directory: ${abs}`)
     await writeFile(abs, args.content, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Wrote ${args.content.length} chars to ${abs}${diff ? "\n" + diff : ""}`
+    return `Wrote ${args.content.length} chars to ${abs}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
   },
 }
 
@@ -289,7 +340,7 @@ const editTool = {
       : content.replace(args.old_string, () => args.new_string)
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Edited ${abs}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}`
+    return `Edited ${abs}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
   },
 }
 
@@ -340,7 +391,7 @@ const insertAfterTool = {
     const updated = lines.join("\n")
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Inserted after line ${targetLine} in ${abs}${diff ? "\n" + diff : ""}`
+    return `Inserted after line ${targetLine} in ${abs}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
   },
 }
 
@@ -468,7 +519,11 @@ const applyPatchTool = {
       await writeFile(p.abs, p.content, "utf8")
     }
     const summary = planned.map((p) => `  ${p.isNew ? "created " : "modified"} ${p.path}`).join("\n")
-    return `Applied patch to ${planned.length} file(s):\n${summary}`
+    const syntaxResults = planned.map((p) => {
+      const r = autoSyntaxCheck(p.abs)
+      return r ? `${p.path}:${r.replace("Syntax: ", "")}` : ""
+    }).filter(Boolean).join("\n")
+    return `Applied patch to ${planned.length} file(s):\n${summary}${syntaxResults ? "\n\nSyntax checks:\n" + syntaxResults : ""}`
   },
 }
 
@@ -924,7 +979,7 @@ function htmlToText(html) {
     .trim()
 }
 
-export const builtinTools = [readTool, writeTool, editTool, insertAfterTool, applyPatchTool, syntaxCheckTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]
+export const builtinTools = [readTool, writeTool, editTool, insertAfterTool, applyPatchTool, syntaxCheckTool, readImageTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]
 
 // ---------------------------------------------------------------- delete
 

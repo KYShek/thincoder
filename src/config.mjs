@@ -79,15 +79,15 @@ const MODEL_SPECS = [
   ["gpt-4.1",           { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "prompt" }],
   ["gpt-4o",            { context: 128_000,   maxOutput: 16_000,  thinking: false, multimodal: true, cacheMode: "prompt" }],
   // Qwen 系列
-  ["qwen3.8-max-preview", { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort", reasoningEffortEnum: ["xhigh", "medium", "low"], tempRange: [0, 2] }],
-  ["qwen3.7-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
-  ["qwen3.8-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
-  ["qwen-max",          { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
-  ["qwen-plus",         { context: 1_000_000, maxOutput: 32_000,  thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
-  ["qwen",              { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
+  ["qwen3.8-max-preview", { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", reasoningEffortEnum: ["xhigh", "medium", "low"], tempRange: [0, 2] }],
+  ["qwen3.7-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
+  ["qwen3.8-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
+  ["qwen-max",          { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
+  ["qwen-plus",         { context: 1_000_000, maxOutput: 32_000,  thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
+  ["qwen",              { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
   // MiniMax 系列
-  ["MiniMax-M3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
-  ["minimax-m3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
+  ["MiniMax-M3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
+  ["minimax-m3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
   ["minimax-m1",        { context: 256_000,   maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
 ]
 const DEFAULT_SPEC = { context: 128_000, maxOutput: 32_000, cacheMode: "none" }

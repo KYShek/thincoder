@@ -1,7 +1,7 @@
 /**
  * tui.mjs — 裸 ANSI 终端 UI
  * 零依赖：raw mode 键盘输入、ANSI 转义渲染、自研宽字符换行。
- * 布局：header / 对话区（可滚动）/ todo 面板（有任务时）/ 输入框 / 状态栏。
+ * 布局：header / 对话区 (可滚动）/ todo 面板 (有任务时）/ 输入框 / 状态栏。
  */
 
 import { emitKeypressEvents } from "node:readline"
@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { runAgent, ContinueError } from "./agent.mjs"
 import { estimateTokens } from "./context.mjs"
 import { saveSession, clearSession, archiveCurrent, listSlots, switchToSlot, sessionPath } from "./session.mjs"
-import { PROVIDER_PRESETS as PRESETS } from "./config.mjs"
+import { PROVIDER_PRESETS as PRESETS, specForModel } from "./config.mjs"
 import { closeAllMcp } from "./mcp.mjs"
 
 // ---------------------------------------------------------------- ANSI 工具
@@ -22,7 +22,7 @@ const ansi = {
   showCursor: `${ESC}[?25h`,
   altBuffer: `${ESC}[?1049h`,
   mainBuffer: `${ESC}[?1049l`,
-  mouseOn: `${ESC}[?1000h${ESC}[?1006h`, // 基本鼠标 + SGR 扩展坐标（滚轮上报）
+  mouseOn: `${ESC}[?1000h${ESC}[?1006h`, // 基本鼠标 + SGR 扩展坐标 (滚轮上报）
   mouseOff: `${ESC}[?1000l${ESC}[?1006l`,
   home: `${ESC}[H`,
   clearLine: `${ESC}[K`,
@@ -34,10 +34,10 @@ const ansi = {
 }
 
 const C = {
-  user: ansi.fg(4), // blue（标签）
-  assistant: ansi.fg(2), // green（标签）
-  text: ansi.fg(7), // white（对话正文）
-  reason: `${ESC}[2m${ESC}[3m`, // dim + italic（思考流）
+  user: ansi.fg(4), // blue (标签）
+  assistant: ansi.fg(2), // green (标签）
+  text: ansi.fg(7), // white (对话正文）
+  reason: `${ESC}[2m${ESC}[3m`, // dim + italic (思考流）
   tool: ansi.fg(6), // cyan
   error: ansi.fg(1), // red
   dim: ansi.gray,
@@ -100,7 +100,7 @@ const isTableRow = (line) => (line.match(/\|/g) ?? []).length >= 2
 const isTableSeparator = (line) => /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes("-")
 
 /**
- * 识别文本中的 markdown 表格块，按显示宽度重排（修 CJK 错位）。
+ * 识别文本中的 markdown 表格块，按显示宽度重排 (修 CJK 错位）。
  * width 为可用显示宽度；过宽的表格按列收缩。非表格行原样保留。
  */
 export function formatTables(text, width) {
@@ -135,7 +135,7 @@ function renderTable(block, width) {
   const colCount = Math.max(...rows.map((r) => r.length))
   for (const r of rows) while (r.length < colCount) r.push("")
 
-  // 列宽：先按内容，超宽则从最宽列开始收缩（收缩到至少 3）
+  // 列宽：先按内容，超宽则从最宽列开始收缩 (收缩到至少 3）
   const widths = Array.from({ length: colCount }, (_, c) =>
     Math.max(3, ...rows.map((r) => stringWidth(r[c] ?? ""))),
   )
@@ -145,7 +145,7 @@ function renderTable(block, width) {
     widths[widest]--
   }
 
-  // 单元格渲染：sliceByWidth 截断（表头单行），padByWidth 补齐
+  // 单元格渲染：sliceByWidth 截断 (表头单行），padByWidth 补齐
   const fmtCell = (text, ci) => padByWidth(sliceByWidth(text, widths[ci]), widths[ci])
   const fmtRow = (cells) => "│ " + cells.map((c, i) => fmtCell(c, i)).join(" │ ") + " │"
 
@@ -153,7 +153,7 @@ function renderTable(block, width) {
   const separator = "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤"
 
   const out = []
-  // 表头：单行截断（表头通常是短标签，折行不如截断直观）
+  // 表头：单行截断 (表头通常是短标签，折行不如截断直观）
   out.push(fmtRow(rows[0]))
   out.push(separator)
 
@@ -170,7 +170,7 @@ function renderTable(block, width) {
   return out
 }
 
-/** 输入区布局：把输入缓冲折行，同时算出光标的 (行, 列) 位置（显示宽度） */
+/** 输入区布局：把输入缓冲折行，同时算出光标的 (行, 列) 位置 (显示宽度） */
 export function layoutInput(chars, cursor, width) {
   const PROMPT = "▸ "
   const lines = []
@@ -207,7 +207,7 @@ export function layoutInput(chars, cursor, width) {
 }
 
 /**
- * 显示净化：控制字符会破坏终端网格数学（\r 回车覆盖、\t 宽度误判致整帧错位、ANSI/响铃冲屏）。
+ * 显示净化：控制字符会破坏终端网格数学 (\r 回车覆盖、\t 宽度误判致整帧错位、ANSI/响铃冲屏）。
  * 只动显示层——模型看到的工具结果原文不变；session 里已存的脏 display 回放时也经此净化。
  */
 const ANSI_SEQUENCE_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g
@@ -221,7 +221,7 @@ export function sanitizeDisplay(s) {
     .replace(/\n+$/, "")
 }
 
-/** 文本按宽度折行（保留 \n），返回行数组 */
+/** 文本按宽度折行 (保留 \n），返回行数组 */
 export function wrapText(text, width) {
   const lines = []
   for (const rawLine of text.split("\n")) {
@@ -256,8 +256,8 @@ export async function startTUI(agent, opts = {}) {
 
   const state = {
     lines: [], // 对话区行：{ text, color }
-    streaming: "", // 当前流式缓冲
-    input: [], // 输入缓冲区（码点数组）
+    streaming: "", // current流式缓冲
+    input: [], // 输入缓冲区 (码点数组）
     cursor: 0,
     history: [],
     historyIndex: -1,
@@ -265,30 +265,29 @@ export async function startTUI(agent, opts = {}) {
     processing: false,
     controller: null, // AbortController for current agent run
     permission: null, // { name, args, resolve }
-    permissionPreview: [], // 权限审批的内容预览行（渲染在输入框上方，不分隔）
+    permissionPreview: [], // 权限审批的内容预览行 (渲染在输入框上方，不分隔）
     question: null, // { text, options, resolve } — agent 的 question 工具回调
     picker: null, // 模型选择器 { entries, lines, index, scroll, selectedLine }
-    wizard: null, // 首次配置向导 { step, index, scroll, selectedLine, fields, error, lines }
-    tasks: agent.tasks ?? [], // task 工具的任务列表（状态栏显示进度）；会话恢复时直接带上，全完成自动收起
-    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }, // 累计 token 用量（状态栏显示）
-    ctxCache: { len: -1, tokens: 0 }, // 上下文占用估算缓存（estimateTokens 是 O(n)，history 变长才重算）
-    reasoning: "", // 思考流缓冲（暗色展示）
+    wizard: null, // 首次Config向导 { step, index, scroll, selectedLine, fields, error, lines }
+    tasks: agent.tasks ?? [], // task 工具的任务列表 (状态栏显示进度）；会话恢复时直接带上，全完成自动收起
+    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }, // 累计 token 用量 (状态栏显示）
+    ctxCache: { len: -1, tokens: 0 }, // 上下文占用估算缓存 (estimateTokens 是 O(n)，history 变长才重算）
+    reasoning: "", // 思考流缓冲 (暗色展示）
     completion: null, // Tab 补全状态 { candidates, index }
-    toolStreams: {}, // 各工具的实时输出（按工具名隔离，并行工具互不串扰）
-    subOutput: "", // 子 agent 流式输出（滚动显示，最长保留末尾 300 字符）
-    currentSub: null, // 当前活跃的子 agent 角色名
-    currentTool: null, // 正在执行的工具名（状态栏显示）
-    processingStarted: 0, // 本轮处理开始时间（状态栏计时）
+    toolStreams: {}, // 各工具的实时输出 (按工具名隔离，并行工具互不串扰）
+    subTasks: {}, // 子 agent 面板：{ roleName: { role, text, done } }，每 role 一行，完成后标记 done 停留片刻
+    currentTool: null, // 正在执行的工具名 (状态栏显示）
+    processingStarted: 0, // 本轮处理开始时间 (状态栏计时）
     status: "Ready",
   }
 
-  // 恢复的会话如果所有任务已完成，自动收起 todo 面板（对齐运行时行为）
+  // 恢复的会话如果所有任务completed，自动收起 todo 面板 (对齐运行时行为）
   if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
     state.tasks = []
   }
 
-  // 输入流先过一道滤网：鼠标序列（滚轮）在这里拦截处理，剥净后才交给 keypress 解析，
-  // 防止序列残片（如 "64;72;42M"）漏进输入框
+  // 输入流先过一道滤网：鼠标序列 (滚轮）在这里拦截处理，剥净后才交给 keypress 解析，
+  // 防止序列残片 (如 "64;72;42M"）漏进输入框
   const keyStream = new PassThrough()
   let mousePending = "" // 跨 chunk 的不完整鼠标序列尾部
   let lastRenderedScroll = 0
@@ -300,7 +299,7 @@ export async function startTUI(agent, opts = {}) {
     let text = mousePending + chunk.toString("utf8")
     mousePending = ""
 
-    // 滚轮：\x1b[<64;…M 上滚，\x1b[<65;…M 下滚（每次 3 行）
+    // 滚轮：\x1b[<64;…M 上滚，\x1b[<65;…M 下滚 (每次 3 行）
     for (const m of text.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)) {
       if (Number(m[1]) === 64) {
         state.scroll += 3
@@ -328,14 +327,14 @@ export async function startTUI(agent, opts = {}) {
   const cleanup = () => {
     if (cleanedUp) return
     cleanedUp = true
-    // 退出前保存会话（同步写）；先归档当前到槽位，再落新——不丢
+    // 退出前保存会话 (同步写）；先归档current到槽位，再落新——不丢
     try {
       archiveCurrent(agent.cwd)
       saveSession(agent, state.lines)
     } catch {
       // 存失败不耽误退出
     }
-    // 关闭 MCP stdio 子进程，不留孤儿
+    // Off MCP stdio 子进程，不留孤儿
     try {
       closeAllMcp(agent)
     } catch {
@@ -348,7 +347,7 @@ export async function startTUI(agent, opts = {}) {
 
   const pushLine = (text, color) => {
     state.lines.push({ text, color })
-    if (state.lines.length > 5000) state.lines.splice(0, 1000) // 防无限增长
+    if (state.lines.length > 5000) state.lines.splice(0, 1000) // 防none限增长
     render()
   }
 
@@ -359,7 +358,7 @@ export async function startTUI(agent, opts = {}) {
     render()
   }
 
-  // 每轮对话只打一次助手标签（首个 token 或首个工具调用时）
+  // 每轮对话只打一次助手标签 (首个 token 或首个工具调用时）
   let assistantLabeled = false
   const ensureAssistantLabel = () => {
     if (!assistantLabeled) {
@@ -370,11 +369,11 @@ export async function startTUI(agent, opts = {}) {
 
   // ---------------------------------------------------------- 渲染
 
-  // 帧去重 + 流式限流：内容没变的帧不重写（防闪屏）；token 洪流合并到 ~25fps
+  // 帧去重 + 流式限流：内容没变的帧不重写 (防闪屏）；token 洪流合并到 ~25fps
   let lastFrame = ""
   let renderTimer = null
 
-  /** 流式期间的限流渲染（trailing edge：最后一次变化一定渲染到） */
+  /** 流式期间的限流渲染 (trailing edge：最后一次变化一定渲染到） */
   function scheduleRender() {
     if (renderTimer) return
     renderTimer = setTimeout(() => {
@@ -389,10 +388,11 @@ export async function startTUI(agent, opts = {}) {
     const model = agent.provider.model
     const thinking = agent.provider.thinking
     const effort = agent.provider.reasoningEffort
+    const isMultimodal = specForModel(model).multimodal
     const thinkBadge = thinking?.type === "disabled" ? "│ think: off"
       : effort ? `│ think: ${effort}` : thinking?.type === "enabled" ? "│ think: on" : ""
 
-    // 输入区：全边框盒，宽度 W（所有输出行严格 ≤ cols-1，防自动折行错位）
+    // 输入区：全边框盒，宽度 W (所有输出行严格 ≤ cols-1，防自动折行错位）
     const W = Math.max(20, cols - 1)
     const layout = layoutInput(state.input, state.cursor, W - 4)
     // 最多显示 5 行；超出时以光标所在行为中心滚动
@@ -402,12 +402,12 @@ export async function startTUI(agent, opts = {}) {
       inputOffset = Math.min(layout.cursorLine, layout.lines.length - MAX_INPUT_LINES)
     }
     const inputLines = layout.lines.slice(inputOffset, inputOffset + MAX_INPUT_LINES)
-    // question 模式下输入框显示选项/答案草稿，而不是普通输入（高度也要跟着走）
+    // question 模式下输入框显示选项/答案草稿，而不是普通输入 (高度也要跟着走）
     let boxLines = inputLines
     if (state.question) {
       const q = state.question
       if (q.options.length > 0) {
-        // 选项窗口：只显示选中项 ±2，选项过多时防输入框无限增高撑破锚定布局
+        // 选项窗口：只显示选中项 ±2，选项过多时防输入框none限增高撑破锚定布局
         const sel = q.selected ?? 0
         const QWIN = 5
         const start = Math.max(0, Math.min(sel - 2, q.options.length - QWIN))
@@ -422,7 +422,7 @@ export async function startTUI(agent, opts = {}) {
 
     const headerH = 1
     const statusH = 1
-    // 浮层（模型选择器 / 初始配置向导）打开时，在对话区下方预留一块（标题 + 列表窗口）
+    // 浮层 (模型选择器 / 初始Config向导）打开时，在对话区下方预留一块 (标题 + 列表窗口）
     const overlay = state.picker ?? state.wizard
     const pickerH = overlay
       ? Math.min(overlay.lines.length + 1, Math.max(6, rows - 12))
@@ -440,9 +440,11 @@ export async function startTUI(agent, opts = {}) {
       visibleTasks = [...inProgress, ...pending, ...done].slice(0, MAX_TASK_LINES)
     }
     const taskPanelH = visibleTasks.length
-    // 子 agent 流式输出占位（显示时占最多 2 行）
-    const subOutLen = (state.subOutput && state.processing) ? wrapText(state.subOutput, W - 8).slice(-2).length : 0
-    // 权限预览占位：字符数之外再封顶显示行数（rows-8），多行短行也能把帧撑过终端高度，破坏锚定布局
+    // 子 agent 面板 (subTasks）：每活跃子 agent 一行，上方对话区下方，最多 4 行折叠
+    const activeSubs = Object.values(state.subTasks).filter((s) => !s.done)
+    const subPanelH = Math.min(activeSubs.length, 4)
+    const subOutLen = subPanelH
+    // 权限预览占位：字符数之外再封顶显示行数 (rows-8），多行短行也能把帧撑过终端高度，破坏锚定布局
     let permPreviewLines = []
     if (state.permission) {
       const maxLines = Math.max(1, rows - 8)
@@ -456,7 +458,7 @@ export async function startTUI(agent, opts = {}) {
     const permPreviewLen = state.permission ? 1 + permPreviewLines.length : 0
     const convH = Math.max(1, rows - headerH - inputBoxH - statusH - pickerH - taskPanelH - subOutLen - permPreviewLen)
 
-    // 对话区内容行（含流式缓冲）；markdown 表格先按显示宽度重排
+    // 对话区内容行 (含流式缓冲）；markdown 表格先按显示宽度重排
     const convLines = []
     for (const l of state.lines) {
       for (const line of formatTables(sanitizeDisplay(l.text), cols - 1)) {
@@ -465,7 +467,7 @@ export async function startTUI(agent, opts = {}) {
         }
       }
     }
-    // 思考流（暗色）在正文流之前
+    // 思考流 (暗色）在正文流之前
     if (state.reasoning) {
       for (const wrapped of wrapText(sanitizeDisplay(state.reasoning), cols - 1)) {
         convLines.push({ text: wrapped, color: C.reason })
@@ -478,7 +480,7 @@ export async function startTUI(agent, opts = {}) {
         }
       }
     }
-    // 工具实时输出（暗色，只保留末尾防刷屏；按工具名隔离防止并行工具串扰）
+    // 工具实时输出 (暗色，只保留末尾防刷屏；按工具名隔离防止并行工具串扰）
     const allStreams = Object.values(state.toolStreams).join("")
     if (allStreams) {
       const tail = sanitizeDisplay(allStreams.slice(-4000))
@@ -494,26 +496,26 @@ export async function startTUI(agent, opts = {}) {
 
     const out = [ansi.home]
 
-    // header（超宽截断，防终端折行）
+    // header (超宽截断，防终端折行）
     out.push(
       `${ansi.bold}${C.tool} ThinCoder ${ansi.reset}${ansi.dim}│ ${sliceByWidth(model, 30)}${thinkBadge ? " " + thinkBadge : ""} │ ${sliceByWidth(basename(agent.cwd), Math.max(10, cols - 60))}${ansi.reset}${ansi.clearLine}`,
     )
 
-    // 对话区（不足部分补空行，把输入框钉在底部）
+    // 对话区 (不足部分补空行，把输入框钉在底部）
     const pad = convH - visible.length
     for (let i = 0; i < pad; i++) out.push(ansi.clearLine)
     for (const l of visible) {
       out.push(`${l.color}${l.text}${ansi.reset}${ansi.clearLine}`)
     }
 
-    // 浮层（模型选择器 / 初始配置向导）：列表滚动跟随选中行
+    // 浮层 (模型选择器 / 初始Config向导）：列表滚动跟随选中行
     if (overlay) {
       const winH = pickerH - 1
       if (overlay.selectedLine < overlay.scroll) overlay.scroll = overlay.selectedLine
       if (overlay.selectedLine >= overlay.scroll + winH) overlay.scroll = overlay.selectedLine - winH + 1
       const start = Math.max(0, Math.min(overlay.scroll, Math.max(0, overlay.lines.length - winH)))
       const shown = overlay.lines.slice(start, start + winH)
-      const overlayTitle = state.picker ? ` ❯ ${state.picker.title} ` : " ❯ 初始配置 "
+      const overlayTitle = state.picker ? ` ❯ ${state.picker.title} ` : " ❯ 初始Config "
       out.push(`${ansi.bold}${C.tool}${overlayTitle}${ansi.reset}${ansi.dim}${state.picker ? "(↑↓ 移动, Enter 确认, Esc 取消)" : ""}${ansi.reset}${ansi.clearLine}`)
       for (const l of shown) {
         out.push(`${l.color}${sliceByWidth(l.text, cols - 1)}${ansi.reset}${ansi.clearLine}`)
@@ -521,23 +523,29 @@ export async function startTUI(agent, opts = {}) {
       for (let i = shown.length; i < winH; i++) out.push(ansi.clearLine)
     }
 
-    // todo 面板（对话区与输入框之间）：▶ in_progress / ✓ done(删除线) / ○ pending
+    // todo 面板 (对话区与输入框之间）：▶ in_progress / ✓ done(删除线) / ○ pending
     for (const t of visibleTasks) {
       const mark = t.status === "done" ? "✓" : t.status === "in_progress" ? "▶" : "○"
       const color = t.status === "done" ? `${C.dim}${ESC}[9m` : t.status === "in_progress" ? C.tool : C.text
       out.push(`${color} ${mark} ${sliceByWidth(t.title, cols - 4)}${ansi.reset}${ansi.clearLine}`)
     }
 
-    // 子 agent 流式输出（最多 2 行，滚动显示最新内容）
-    if (state.subOutput && state.processing) {
-      const lines = wrapText(state.subOutput, W - 8)
-      const tail = lines.slice(-2)
-      for (const l of tail) {
-        out.push(`${C.dim}[${state.currentSub}] ${l}${ansi.reset}${ansi.clearLine}`)
+    // 子 agent 面板：每活跃子 agent 一行，done 的灰色显示后 3 秒自动清除
+    const subs = Object.values(state.subTasks)
+    if (subs.length > 0 && state.processing) {
+      for (const s of subs.slice(0, 4)) {
+        const icon = s.done ? "✓" : "…"
+        const color = s.done ? C.dim : C.tool
+        const label = `[${s.role}]`.padEnd(10)
+        const text = s.text ? sliceByWidth(s.text, W - 14) : (s.done ? "done" : "running...")
+        out.push(`${color} ${icon} ${label} ${text}${ansi.reset}${ansi.clearLine}`)
+      }
+      if (subs.length > 4) {
+        out.push(`${C.dim}  ... +${subs.length - 4} more subagents${ansi.reset}${ansi.clearLine}`)
       }
     }
 
-    // 权限审批内容预览（黄色，紧挨输入框上方）；用上方已封顶的 permPreviewLines，渲染行数与占位一致
+    // 权限审批内容预览 (黄色，紧挨输入框上方）；用上方已封顶的 permPreviewLines，渲染行数与占位一致
     if (state.permission) {
       out.push(`${ansi.bold}${C.warn}❯ 权限请求${ansi.reset}${ansi.clearLine}`)
       for (const wrapped of permPreviewLines) {
@@ -545,7 +553,7 @@ export async function startTUI(agent, opts = {}) {
       }
     }
 
-    // 输入框（全边框，宽 W）
+    // 输入框 (全边框，宽 W）
     let borderColor = C.tool
     let title
     if (state.question) {
@@ -567,7 +575,13 @@ export async function startTUI(agent, opts = {}) {
     } else {
       title = " Input "
     }
-    const topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 3 - stringWidth(title)))}╮`
+    let topBorder
+    if (title === " Input " && isMultimodal) {
+      const hint = process.platform === "win32" ? " Alt+V paste " : " Ctrl+V paste "
+      topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 4 - stringWidth(title) - stringWidth(hint)))}${hint}─╮`
+    } else {
+      topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 3 - stringWidth(title)))}╮`
+    }
     out.push(`${borderColor}${topBorder}${ansi.reset}${ansi.clearLine}`)
     for (const l of boxLines) {
       const content = sliceByWidth(l, W - 4)
@@ -576,59 +590,59 @@ export async function startTUI(agent, opts = {}) {
     }
     out.push(`${borderColor}╰${"─".repeat(Math.max(0, W - 2))}╯${ansi.reset}${ansi.clearLine}`)
 
-    // 状态栏（输入 / 开头时变为命令提示）
+    // 状态栏 (输入 / 开头时变为Commands提示）
     const scrollHint = state.scroll > 0 ? ` │ scrolled ${state.scroll}` : ""
     const rawInput = state.input.join("")
     let statusLine
     if (state.question) {
       const q = state.question
       statusLine = q.options.length > 0
-        ? " ↑↓: 选择 │ Enter: 确认 │ Esc: 取消"
-        : " 输入回答后 Enter 提交 │ Esc: 取消"
+        ? " ↑↓: select │ Enter: confirm │ Esc: cancel"
+        : " Type answer then Enter │ Esc: cancel"
     } else if (state.permission) {
       statusLine = state.permission.name === "continue"
-        ? " y: 继续 │ n: 停止"
-        : " y: 批准 │ n: 拒绝 │ a: 批准并全部放行（AUTO）"
+        ? " y: continue │ n: stop"
+        : " y: approve │ n: deny │ a: approve all (AUTO)"
     } else if (state.picker) {
-      statusLine = " ↑↓: 选择 │ Enter: 确认 │ Esc: 取消"
+      statusLine = " ↑↓: select │ Enter: confirm │ Esc: cancel"
     } else if (state.wizard) {
       statusLine = state.wizard.step === "provider"
-        ? " ↑↓: 选择 │ Enter: 确认 │ Esc: 跳过"
-        : " 输入后 Enter 确认 │ Esc: 取消"
+        ? " ↑↓: select │ Enter: confirm │ Esc: skip"
+        : " Type then Enter │ Esc: cancel"
     } else if (rawInput.startsWith("/") && !state.processing && !state.permission) {
       const [cmd, sub] = rawInput.split(/\s+/)
       const cmds = SLASH_COMMANDS.filter((c) => c.name.startsWith(cmd))
       const match = cmds.length === 1 ? cmds[0] : null
       if (match?.name === "/config" && cmd === "/config") {
-        statusLine = " /config 打开配置菜单"
+        statusLine = " /config open config menu"
       } else if (match?.name === "/provider" && cmd === "/provider") {
-        statusLine = " /provider 打开 Provider 管理菜单"
+        statusLine = " /provider open provider management menu"
       } else if (match?.name === "/model" && cmd === "/model" && !sub) {
-        statusLine = " /model 打开模型选择器"
+        statusLine = " /model open model picker"
       } else if (match?.name === "/think" && cmd === "/think") {
-        statusLine = " /think 打开思维模式菜单"
+        statusLine = " /think open thinking mode menu"
       } else if (match?.name === "/mcp" && cmd === "/mcp") {
-        statusLine = " /mcp 打开 MCP 管理菜单"
+        statusLine = " /mcp open MCP management menu"
       } else if (match?.name === "/goal" && cmd === "/goal") {
-        statusLine = " /goal 打开目标管理菜单"
+        statusLine = " /goal open goal management menu"
       } else if (match?.name === "/session" && cmd === "/session") {
-        statusLine = " /session 选择归档会话"
+        statusLine = " /session select archived session"
       } else if (match?.name === "/rewind" && cmd === "/rewind") {
-        statusLine = " /rewind 选择存档点回滚"
+        statusLine = " /rewind select checkpoint to restore"
       } else if (cmds.length > 0) {
         if (cmds.length <= 4) {
           statusLine = ` ${cmds.map((c) => `${c.name} ${c.desc}`).join("  │  ")}`
         } else {
-          statusLine = ` ${cmds.map((c) => c.name).join("  ")}  │  Tab 补全`
+          statusLine = ` ${cmds.map((c) => c.name).join("  ")}  │  Tab complete`
         }
       } else {
-        statusLine = ` 未知命令（/help 查看可用命令）`
+        statusLine = ` unknown command (/help for available commands)`
       }
     } else {
       const taskHint = state.tasks.length > 0
         ? ` │ ✓${state.tasks.filter((t) => t.status === "done").length}/${state.tasks.length}`
         : ""
-      // token 用量：↑输入 ↓输出 + 缓存命中率（DeepSeek usage 带 prompt_cache_hit/miss_tokens）
+      // token 用量：↑输入 ↓输出 + 缓存命中率 (DeepSeek usage 带 prompt_cache_hit/miss_tokens）
       const tk = state.tokens
       const fmtK = (n) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
       const cacheTotal = tk.cacheHit + tk.cacheMiss
@@ -638,7 +652,7 @@ export async function startTUI(agent, opts = {}) {
       const elapsed = state.processing ? ` ${Math.floor((Date.now() - state.processingStarted) / 1000)}s` : ""
       const toolHint = state.currentTool ? ` ${state.currentTool}…` : ""
       const statusText = state.processing ? `${state.status}${toolHint}${elapsed}` : state.status
-      // 上下文利用率：占压缩阈值百分比（到 100% 触发压缩；≥80% 变黄提醒该收尾或 /new）
+      // 上下文利用率：占压缩阈值百分比 (到 100% 触发压缩；≥80% 变黄提醒该收尾或 /new）
       if (state.ctxCache.len !== agent.history.length) {
         state.ctxCache = { len: agent.history.length, tokens: estimateTokens(agent.history) }
       }
@@ -665,12 +679,12 @@ export async function startTUI(agent, opts = {}) {
       process.stdout.write(frame)
     }
 
-    // 光标：输入态定位到输入框内（IME 候选框跟随真实光标）；处理中/权限确认/菜单态时隐藏
+    // 光标：输入态定位到输入框内 (IME 候选框跟随真实光标）；处理中/权限确认/菜单态时隐藏
     if (state.processing || state.permission || state.question || state.picker || state.wizard?.step === "provider") {
       process.stdout.write(ansi.hideCursor)
     } else {
       const cursorRow = 1 + convH + pickerH + taskPanelH + 2 + (layout.cursorLine - inputOffset) // header + 对话区 + todo 面板 + 上边框 + 行偏移
-      const cursorCol = 3 + layout.cursorCol // 左边框 + 空格 + 文本偏移（1 基）
+      const cursorCol = 3 + layout.cursorCol // 左边框 + 空格 + 文本偏移 (1 基）
       process.stdout.write(`${ESC}[${cursorRow};${cursorCol}H${ansi.showCursor}`)
     }
   }
@@ -688,7 +702,7 @@ export async function startTUI(agent, opts = {}) {
     state.historyIndex = -1
     state.scroll = 0
 
-    // 斜杠命令：本地处理，不进入 agent
+    // 斜杠Commands：本地处理，不进入 agent
     if (text.startsWith("/")) {
       await handleSlash(text)
       return
@@ -697,7 +711,7 @@ export async function startTUI(agent, opts = {}) {
     pushLabel(`❯ You:`, ansi.bold + C.user)
     pushLine(text, C.text)
 
-    // 任务开始前自动打存档点（git 仓库内；失败静默，不挡任务）
+    // 任务开始前自动打存档点 (git 仓库内；失败静默，不挡任务）
     try {
       const { createCheckpoint } = await import("./checkpoint.mjs")
       await createCheckpoint(agent.cwd)
@@ -710,10 +724,11 @@ export async function startTUI(agent, opts = {}) {
     state.status = "Processing..."
     state.streaming = ""
     state.reasoning = ""
+    state.subTasks = {}
     state.currentTool = null
     state.processingStarted = Date.now()
     state.controller = new AbortController()
-    // 处理中每秒刷新一次状态栏（运行计时）
+    // 处理中每秒刷新一次状态栏 (运行计时）
     const ticker = setInterval(() => {
       if (state.processing) render()
     }, 1000)
@@ -721,11 +736,12 @@ export async function startTUI(agent, opts = {}) {
 
     const callbacks = {
       onToken: (t) => {
-        // 子 agent 流式输出：前缀匹配 explore/coder/plan/sub（无角色子 agent 用 sub/）的 token 进 subOutput
+        // 子 agent 流式输出：前缀匹配 explore/coder/plan/sub 的 token 进 subTasks 面板
         const subMatch = t.match(/^(explore|coder|plan|sub)\//)
         if (subMatch) {
-          state.currentSub = subMatch[1]
-          state.subOutput = (state.subOutput + t.slice(subMatch[0].length)).slice(-300)
+          const role = subMatch[1]
+          if (!state.subTasks[role]) state.subTasks[role] = { role, text: "", done: false }
+          state.subTasks[role].text = (state.subTasks[role].text + t.slice(subMatch[0].length)).slice(-200)
           scheduleRender()
           return
         }
@@ -734,11 +750,11 @@ export async function startTUI(agent, opts = {}) {
         scheduleRender()
       },
       onReasoning: (t) => {
-        // 子 agent 的思考 token 同样带 role/ 前缀，进 subOutput 滚动区，不污染主思考流
+        // 子 agent 的思考 token 同样带 role/ 前缀，进 subTasks 面板，不污染主思考流
         const subMatch = t.match(/^(explore|coder|plan|sub)\//)
         if (subMatch) {
-          state.currentSub = subMatch[1]
-          state.subOutput = (state.subOutput + t.slice(subMatch[0].length)).slice(-300)
+          const role = subMatch[1]
+          if (!state.subTasks[role]) state.subTasks[role] = { role, text: "", done: false }
           scheduleRender()
           return
         }
@@ -754,17 +770,25 @@ export async function startTUI(agent, opts = {}) {
       },
       onToolResult: (name, result) => {
         state.currentTool = null
-        // 子 agent 结束（父 agent 侧的 subagent 工具结果带着最终报告）：清空流式缓冲，报告进对话区。
-        // 注意只能用精确匹配——子 agent 内部工具调用不 relay 到 TUI（刷了满屏的教训）
+        // 子 agent 结束：标记 done，面板保留片刻后清除
         const isSubagent = name === "subagent"
         if (isSubagent) {
-          state.subOutput = ""
-          state.currentSub = null
-          // 子 agent 报告摘要（最多 8 行）直接展示在对话区
+          // 所有活跃子 agent 标记 done
+          for (const key of Object.keys(state.subTasks)) {
+            state.subTasks[key].done = true
+          }
+          // 子 agent 报告摘要 (最多 8 行）直接展示在对话区
           const lines = result.split("\n")
           const preview = lines.slice(0, 8).map((l) => l.slice(0, 120)).join("\n")
           if (preview) pushLine(preview, C.dim)
           if (lines.length > 8) pushLine(`  ... (${lines.length - 8} more lines)`, C.dim)
+          // 3 秒后清除面板中 done 的条目
+          setTimeout(() => {
+            for (const key of Object.keys(state.subTasks)) {
+              if (state.subTasks[key].done) delete state.subTasks[key]
+            }
+            if (state.processing) render()
+          }, 3000)
         }
         const stream = state.toolStreams[name]
         if (stream) {
@@ -784,7 +808,7 @@ export async function startTUI(agent, opts = {}) {
       onPermissionRequest: (name, args) => askPermission(name, args),
       onQuestion: (text, options) => askQuestion(text, options),
       onCompress: () => {
-        pushLine("  [context] 上下文过长，已自动压缩（早期对话由 LLM 摘要，任务状态保留）", C.warn)
+        pushLine("  [context] Context too long, auto-compacted (early conversation summarized by LLM, task state preserved)", C.warn)
       },
       onUsage: (usage) => {
         state.tokens.prompt += usage.prompt_tokens ?? 0
@@ -792,7 +816,7 @@ export async function startTUI(agent, opts = {}) {
         state.tokens.cacheHit += usage.prompt_cache_hit_tokens ?? 0
         state.tokens.cacheMiss += usage.prompt_cache_miss_tokens ?? 0
       },
-      // 节流等待（主动闸门 / 429 退避）：状态栏明示，防用户以为卡死
+      // 节流等待 (主动闸门 / 429 退避）：状态栏明示，防用户以为卡死
       onWait: ({ phase, seconds }) => {
         state.status = phase === "gate" ? `TPM 节流等待 ~${seconds}s` : `限流 429，${seconds}s 后重试`
         render()
@@ -800,7 +824,7 @@ export async function startTUI(agent, opts = {}) {
       onTaskUpdate: (items) => {
         state.tasks = items
         const done = items.filter((i) => i.status === "done").length
-        // 留痕带上当前任务标题：回看历史时知道进行到哪一项
+        // 留痕带上current任务标题：回看历史时知道进行到哪一项
         const current = items.find((i) => i.status === "in_progress")
         pushLine(`  [task] ${done}/${items.length}${current ? ` ▶ ${current.title}` : ""}`, C.dim)
         render()
@@ -823,12 +847,12 @@ export async function startTUI(agent, opts = {}) {
       } catch (error) {
         flushStream()
         if (error.name === "AbortError" || state.controller?.signal.aborted) {
-          pushLine("[已中止]", C.warn)
+          pushLine("[stopped]", C.warn)
           break
         }
         if (error instanceof ContinueError) {
           pushLabel(`❯ Continue`, ansi.bold + C.warn)
-          pushLine(`已执行 ${error.turn} 轮（上限 ${error.turn}），要继续吗？`, C.warn)
+          pushLine(`Ran ${error.turn} turns (limit ${error.turn}). Continue?`, C.warn)
           // 暂停询问：复用 permission 机制
           const willContinue = await new Promise((resolve) => {
             state.permission = {
@@ -841,11 +865,11 @@ export async function startTUI(agent, opts = {}) {
           })
           state.permission = null
           if (!willContinue) {
-            pushLine("[已取消继续]", C.warn)
+            pushLine("[continue cancelled]", C.warn)
             break
           }
-          pushLine("[继续执行…]", C.tool)
-          // 重创新 AbortController：旧 signal 一旦 abort 过，resume 会立即失败（防御性，当前路径不可达但耦合紧）
+          pushLine("[continuing…]", C.tool)
+          // 重创新 AbortController：旧 signal 一旦 abort 过，resume 会立即失败 (防御性，current路径不可达但耦合紧）
           state.controller = new AbortController()
           continue
         }
@@ -856,13 +880,14 @@ export async function startTUI(agent, opts = {}) {
 
     clearInterval(ticker)
     state.processing = false
+    state.subTasks = {}
     state.controller = null
     state.status = "Ready"
-    // 全部完成时自动收起 todo 面板（对齐 kimi-code TUI；agent.tasks 本身保留）
+    // 全部完成时自动收起 todo 面板 (对齐 kimi-code TUI；agent.tasks 本身保留）
     if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
       state.tasks = []
     }
-    // 每轮结束后保存会话（崩溃也不丢）
+    // 每轮结束后保存会话 (崩溃也不丢）
     try {
       saveSession(agent, state.lines)
     } catch {
@@ -897,14 +922,14 @@ export async function startTUI(agent, opts = {}) {
     })
   }
 
-  /** 权限请求的关键信息（按工具定制），返回行数组。name 可能带子 agent 前缀（"coder/bash"），取基名匹配 */
+  /** 权限请求的关键信息 (按工具定制），返回行数组。name 可能带子 agent 前缀 ("coder/bash"），取基名匹配 */
   function formatPermission(name, args) {
-    const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(共 ${s.length} 字符)` : s)
+    const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(${s.length} chars total)` : s)
     const base = name.includes("/") ? name.split("/").pop() : name
     if (base === "bash") return cap(args.command ?? "").split("\n")
     if (base === "write") {
       // 批准写文件必须看得到要写什么：路径 + 内容预览
-      return [`${args.path}（写入 ${(args.content ?? "").length} 字符）`, ...cap(args.content ?? "", 1000).split("\n")]
+      return [`${args.path} (write ${(args.content ?? "").length} chars)`, ...cap(args.content ?? "", 1000).split("\n")]
     }
     if (base === "edit") {
       // 简易 diff：- 旧内容 / + 新内容
@@ -919,7 +944,7 @@ export async function startTUI(agent, opts = {}) {
       // 补丁本身就是可读的 diff，直接预览
       return cap(args.patch ?? "", 1500).split("\n")
     }
-    if (base === "delete") return [`${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`]
+    if (base === "delete") return [`${args.path}${args.force ? " (force: also delete tracked files)" : ""}`]
     if (base === "subagent") return cap(args.task ?? "", 500).split("\n")
     if (base === "memory_put") return [`[${args.type ?? ""}] ${args.title ?? ""}`, ...cap(args.content ?? "", 500).split("\n")]
     return [cap(summarize(args), 300)]
@@ -927,9 +952,9 @@ export async function startTUI(agent, opts = {}) {
 
   function askQuestion(text, options = []) {
     // 一次只能问一个：question 是只读工具走并行通道，同批第二个直接驳回，
-    // 否则后到的会覆盖 state.question，先到的 Promise 永远悬挂（agent 死等）
+    // 否则后到的会覆盖 state.question，先到的 Promise 永远悬挂 (agent 死等）
     if (state.question) {
-      return Promise.resolve("(error: 已有问题在等待回答；请一次只问一个，得到答复后再问下一个)")
+      return Promise.resolve("(error: another question is pending; ask one at a time and wait for the answer)")
     }
     if (!options.length) {
       // 自由文本：打开输入态让用户打字，Enter 提交
@@ -951,27 +976,71 @@ export async function startTUI(agent, opts = {}) {
     })
   }
 
-  // ---------------------------------------------------------- 斜杠命令
+  /** Ctrl+V / Alt+V：读取剪贴板图片 → 写入工作目录临时文件 → 输入框插入 read_image 命令 */
+  async function pasteClipboardImage(agent) {
+    const { execFile } = await import("node:child_process")
+    const { mkdir, stat, unlink } = await import("node:fs/promises")
+    const { join } = await import("node:path")
+
+    const run = (cmd, args) => new Promise((resolve, reject) => {
+      execFile(cmd, args, { timeout: 10000 }, (err, stdout) => { if (err) reject(err); else resolve(stdout) })
+    })
+
+    const dest = join(agent.cwd, `.thincoder-paste-${Date.now()}.png`)
+    const isWin = process.platform === "win32"
+    const isMac = process.platform === "darwin"
+
+    try {
+      if (isWin) {
+        const psScript = `Add-Type -AssemblyName System.Windows.Forms; if ([System.Windows.Forms.Clipboard]::ContainsImage()) { [System.Windows.Forms.Clipboard]::GetImage().Save('${dest.replace(/\\/g, "\\\\")}', [System.Drawing.Imaging.ImageFormat]::Png); exit 0 } else { exit 1 }`
+        await run("powershell", ["-NoProfile", "-Command", psScript])
+      } else if (isMac) {
+        const script = `try; set f to (POSIX file "${dest}"); set img to the clipboard as «class PNGf»; set fd to open for access f with write permission; write img to fd; close access fd; end try`
+        await run("osascript", ["-e", script])
+      } else {
+        await run("bash", ["-c", `xclip -selection clipboard -t image/png -o > "${dest}" 2>/dev/null || { which wl-paste >/dev/null 2>&1 && wl-paste -t image/png > "${dest}" 2>/dev/null; } || exit 1`])
+      }
+    } catch {
+      pushLine("Clipboard does not contain an image, or clipboard access failed", C.dim)
+      try { await unlink(dest) } catch {}
+      return
+    }
+
+    const st = await stat(dest).catch(() => null)
+    if (!st || st.size === 0) {
+      pushLine("Clipboard does not contain an image, or clipboard access failed", C.dim)
+      try { await unlink(dest) } catch {}
+      return
+    }
+
+    const cmd = `read_image ${dest}`
+    state.input.splice(state.cursor, 0, ...[...cmd])
+    state.cursor += cmd.length
+    pushLine(`[image pasted → ${dest}]`, C.tool)
+    render()
+  }
+
+  // ---------------------------------------------------------- 斜杠Commands
 
   const SLASH_COMMANDS = [
-    { name: "/plan", group: "Agent", desc: "规划模式（先设计、再实现）" },
-    { name: "/auto", group: "Agent", desc: "自动授权开关" },
-    { name: "/model", group: "Agent", desc: "选择模型" },
-    { name: "/goal", group: "Agent", desc: "设置/查看/取消长期目标" },
-    { name: "/think", group: "Agent", desc: "思维模式与推理强度" },
-    { name: "/init", group: "Tools", desc: "生成项目 AGENTS.md 骨架" },
-    { name: "/skills", group: "Tools", desc: "列出项目技能" },
-    { name: "/mcp", group: "Tools", desc: "管理 MCP server" },
-    { name: "/provider", group: "Config", desc: "管理 provider（增/删/配 key）" },
-    { name: "/config", group: "Config", desc: "配置管理（embedding / agent）" },
-    { name: "/reindex", group: "Config", desc: "重建记忆索引" },
-    { name: "/new", group: "Session", desc: "新会话（旧会话归档到槽位）" },
-    { name: "/session", group: "Session", desc: "列出/切换归档会话" },
-    { name: "/clear", group: "Session", desc: "清屏" },
-    { name: "/distill", group: "Session", desc: "从会话提取知识" },
-    { name: "/rewind", group: "Session", desc: "回滚到存档点" },
-    { name: "/exit", group: "Session", desc: "退出" },
-    { name: "/help", group: "", desc: "此列表" },
+    { name: "/plan", group: "Agent", desc: "toggle plan mode (design first, then implement)" },
+    { name: "/auto", group: "Agent", desc: "toggle auto-approve" },
+    { name: "/model", group: "Agent", desc: "select model" },
+    { name: "/goal", group: "Agent", desc: "set/view/cancel long-term goal" },
+    { name: "/think", group: "Agent", desc: "thinking mode & reasoning effort" },
+    { name: "/init", group: "Tools", desc: "generate project AGENTS.md skeleton" },
+    { name: "/skills", group: "Tools", desc: "list project skills" },
+    { name: "/mcp", group: "Tools", desc: "manage MCP servers" },
+    { name: "/provider", group: "Config", desc: "manage providers (add/remove/set key)" },
+    { name: "/config", group: "Config", desc: "config management (embedding / agent)" },
+    { name: "/reindex", group: "Config", desc: "rebuild memory index" },
+    { name: "/new", group: "Session", desc: "new session (old one archived to slot)" },
+    { name: "/session", group: "Session", desc: "list/switch archived sessions" },
+    { name: "/clear", group: "Session", desc: "clear screen" },
+    { name: "/distill", group: "Session", desc: "extract knowledge from session" },
+    { name: "/rewind", group: "Session", desc: "restore checkpoint" },
+    { name: "/exit", group: "Session", desc: "exit" },
+    { name: "/help", group: "", desc: "this list" },
   ]
 
   async function handleSlash(text) {
@@ -992,7 +1061,7 @@ export async function startTUI(agent, opts = {}) {
         state.lines = []
         state.streaming = ""
         clearSession(agent.cwd)
-        pushLine("已开始新会话（旧会话已归档到槽位；/session 可查看）", C.dim)
+        pushLine("New session started (old session archived to slot; /session to view)", C.dim)
         return
       case "/exit":
         cleanup()
@@ -1001,19 +1070,19 @@ export async function startTUI(agent, opts = {}) {
       case "/session": {
         const slots = listSlots(agent.cwd)
         if (slots.length === 0) {
-          pushLine("没有归档会话（用 /new 后旧会话会自动归档）", C.dim)
+          pushLine("No archived sessions (use /new and old sessions auto-archive to slots)", C.dim)
         } else {
           const entries = [
-            { type: "header", text: "归档会话（↑↓ 选择, Enter 切换, Esc 取消）" },
-            ...slots.map((s) => ({ type: "item", text: `槽位 ${s.slot} — ${s.date}`, slot: s.slot })),
+            { type: "header", text: "Archived sessions (↑↓ select, Enter switch, Esc cancel)" },
+            ...slots.map((s) => ({ type: "item", text: `Slot ${s.slot} — ${s.date}`, slot: s.slot })),
           ]
           openPicker({
-            title: "切换会话",
+            title: "Switch Session",
             entries,
             onSelect: (e) => {
               const data = switchToSlot(agent.cwd, e.slot)
               if (!data) {
-                pushLine(`槽位 ${e.slot} 不存在`, C.dim)
+                pushLine(`Slot ${e.slot} not found`, C.dim)
                 return
               }
               applySession(agent, data)
@@ -1024,7 +1093,7 @@ export async function startTUI(agent, opts = {}) {
               if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
                 state.tasks = []
               }
-              pushLabel(`── 已切换到槽位 ${e.slot}（${data.history.length} 条消息）──`, C.warn)
+              pushLabel(`── Switched to slot ${e.slot} (${data.history.length} messages) ──`, C.warn)
               render()
             },
           })
@@ -1033,7 +1102,7 @@ export async function startTUI(agent, opts = {}) {
       }
       case "/reindex": {
         const { syncDir, codeSync, docSync } = await import("./memory.mjs")
-        pushLine("[reindex] 重建索引...", C.tool)
+        pushLine("[reindex] Rebuilding index...", C.tool)
         agent.memory.db.prepare("DELETE FROM files").run()
         agent.memory.db.prepare("DELETE FROM code_chunks").run()
         agent.memory.db.prepare("DELETE FROM doc_chunks").run()
@@ -1049,26 +1118,26 @@ export async function startTUI(agent, opts = {}) {
           pushLine(`  team: +${s.added} ~${s.updated} -${s.removed}`, C.dim)
         }
         // 重建代码索引
-        pushLine(`  [code] 重建代码索引...`, C.tool)
+        pushLine(`  [code] Rebuilding code index...`, C.tool)
         const cr = await codeSync(agent.memory, agent.cwd, {
           onProgress: (p) => {
             if (p.phase === "index" && p.current % 20 === 0) {
-              pushLine(`    索引中... ${p.current}/${p.total}`, C.dim)
+              pushLine(`    Indexing... ${p.current}/${p.total}`, C.dim)
             }
           }
         })
-        pushLine(`  code: ${cr.total} 文件，+${cr.updated} ~${cr.skipped} -${cr.removed}`, C.dim)
+        pushLine(`  code: ${cr.total} files, +${cr.updated} ~${cr.skipped} -${cr.removed}`, C.dim)
         // 重建文档索引
-        pushLine(`  [doc] 重建文档索引...`, C.tool)
+        pushLine(`  [doc] Rebuilding doc index...`, C.tool)
         const dr = await docSync(agent.memory, agent.cwd, {
           onProgress: (p) => {
             if (p.phase === "index" && p.current % 5 === 0) {
-              pushLine(`    索引中... ${p.current}/${p.total}`, C.dim)
+              pushLine(`    Indexing... ${p.current}/${p.total}`, C.dim)
             }
           }
         })
-        pushLine(`  doc: ${dr.total} 文件，+${dr.updated} ~${dr.skipped} -${dr.removed}`, C.dim)
-        pushLine(`[reindex] 完成，共 ${total} 条目。向量将在下次搜索时惰性生成。`, C.tool)
+        pushLine(`  doc: ${dr.total} files, +${dr.updated} ~${dr.skipped} -${dr.removed}`, C.dim)
+        pushLine(`[reindex] Done, ${total} entries total. Vectors will be lazily generated on next search.`, C.tool)
         return
       }
       case "/distill":
@@ -1080,7 +1149,7 @@ export async function startTUI(agent, opts = {}) {
         const { join, basename } = await import("node:path")
         const agPath = join(agent.cwd, "AGENTS.md")
         if (existsSync(agPath)) {
-          pushLine(`AGENTS.md 已存在: ${agPath}`, C.warn)
+          pushLine(`AGENTS.md already exists: ${agPath}`, C.warn)
           return
         }
 
@@ -1131,45 +1200,45 @@ export async function startTUI(agent, opts = {}) {
 
         const lines = [`# ${name}`, ""]
         if (lang) {
-          lines.push(`## 技术栈`, "", lang, "")
-          if (cmds) lines.push(`## 命令`, "", cmds, "")
+          lines.push(`## Tech Stack`, "", lang, "")
+          if (cmds) lines.push(`## Commands`, "", cmds, "")
         }
 
         const template = lines.join("\n")
         await writeFile(agPath, template, "utf8")
         pushLabel(`❯ Init`, ansi.bold + C.tool)
-        pushLine(`已生成 AGENTS.md → ${agPath}${lang ? ` (${lang})` : ""}`, C.tool)
-        if (lang) pushLine("可继续告诉我项目信息，我来补充约定和结构", C.dim)
+        pushLine(`Generated AGENTS.md → ${agPath}${lang ? ` (${lang})` : ""}`, C.tool)
+        if (lang) pushLine("Tell me more about the project and I will fill in conventions and structure", C.dim)
         return
       }
       case "/rewind": {
         const { listCheckpoints, rewind, isGitRepo } = await import("./checkpoint.mjs")
         if (!isGitRepo(agent.cwd)) {
-          pushLine("[rewind] 当前目录不是 git 仓库，无法使用存档点", C.error)
+          pushLine("[rewind] not a git repository, checkpoints unavailable", C.error)
           return
         }
         const cps = await listCheckpoints(agent.cwd)
         if (cps.length === 0) {
-          pushLine("（暂无存档点——每次提交任务前自动创建）", C.dim)
+          pushLine("(no checkpoints — created automatically before each task)", C.dim)
           return
         }
         const entries = [
-          { type: "header", text: "存档点（↑↓ 选择, Enter 回滚, Esc 取消）" },
+          { type: "header", text: "Checkpoints (↑↓ select, Enter restore, Esc cancel)" },
           ...cps.slice(0, 12).map((cp) => ({
             type: "item",
-            text: `${cp.id}  ${new Date(cp.time).toLocaleString()}  (+${cp.untracked} 个未跟踪文件)`,
+            text: `${cp.id}  ${new Date(cp.time).toLocaleString()}  (+${cp.untracked}  untracked files)`,
             id: cp.id,
           })),
         ]
         openPicker({
-          title: "回滚存档点",
+          title: "Restore Checkpoint",
           entries,
           onSelect: async (e) => {
             try {
               const summary = await rewind(agent.cwd, e.id)
               pushLabel(`❯ Rewind`, ansi.bold + C.warn)
-              pushLine(`已回滚到 ${e.id}：补丁${summary.patchApplied ? "已应用" : "无"}，删除新建文件 ${summary.deleted} 个，还原文件 ${summary.restored} 个`, C.tool)
-              pushLine("（当前状态已先存为新存档点，可再次 /rewind 回到刚才）", C.dim)
+              pushLine(`Restored to ${e.id}: patch ${summary.patchApplied ? "applied" : "none"}，deleted ${summary.deleted}  new files, restored ${summary.restored} 个`, C.tool)
+              pushLine("(current state saved as new checkpoint; /rewind again to go back)", C.dim)
             } catch (error) {
               pushLine(`[rewind] ${error.message}`, C.error)
             }
@@ -1188,50 +1257,50 @@ export async function startTUI(agent, opts = {}) {
         pushLabel(`❯ Plan`, ansi.bold + (agent.planMode ? C.tool : C.dim))
         pushLine(
           agent.planMode
-            ? `规划模式已开启：只读工具受限，先设计方案再实现。再次 /plan 退出。`
-            : `规划模式已关闭：可以编辑文件和执行命令了。`,
+            ? `Plan mode ON: read-only tools only. Design first, then implement. /plan again to exit.`
+            : `Plan mode OFF: you may now edit files and run commands.`,
           agent.planMode ? C.tool : C.dim,
         )
         return
       }
       case "/goal": {
         const entries = [
-          { type: "header", text: agent.goal ? `当前目标: ${agent.goal.objective.slice(0, 60)}` : "操作" },
-          { type: "item", text: "设置新目标", action: "set" },
+          { type: "header", text: agent.goal ? `Current goal: ${agent.goal.objective.slice(0, 60)}` : "Actions" },
+          { type: "item", text: "Set new goal", action: "set" },
         ]
         if (agent.goal) {
-          entries.push({ type: "item", text: "取消目标", action: "cancel" })
-          entries.push({ type: "item", text: "查看详情", action: "view" })
+          entries.push({ type: "item", text: "Cancel goal", action: "cancel" })
+          entries.push({ type: "item", text: "View details", action: "view" })
         }
         openPicker({
-          title: "目标管理",
+          title: "Goal",
           entries,
           onSelect: (e) => {
             if (e.action === "view") {
-              const statusText = { active: "进行中", complete: "已完成", blocked: "已阻塞" }[agent.goal.status] ?? agent.goal.status
+              const statusText = { active: "active", complete: "completed", blocked: "blocked" }[agent.goal.status] ?? agent.goal.status
               pushLabel(`❯ Goal`, ansi.bold + C.warn)
-              pushLine(`目标: ${agent.goal.objective}`, C.tool)
-              if (agent.goal.criteria) pushLine(`  完成条件: ${agent.goal.criteria}`, C.dim)
-              pushLine(`  状态: ${statusText} │ 已用轮数: ${agent.goal.turnsUsed ?? 0} │ 设置于: ${new Date(agent.goal.setAt).toLocaleString()}`, C.dim)
+              pushLine(`Goal: ${agent.goal.objective}`, C.tool)
+              if (agent.goal.criteria) pushLine(`  Criteria: ${agent.goal.criteria}`, C.dim)
+              pushLine(`  Status: ${statusText} │ Turns used: ${agent.goal.turnsUsed ?? 0} │ Set at: ${new Date(agent.goal.setAt).toLocaleString()}`, C.dim)
               return
             }
             if (e.action === "cancel") {
               agent.goal = null
               pushLabel(`❯ Goal`, ansi.bold + C.dim)
-              pushLine(`目标已取消。`, C.dim)
+              pushLine(`Goal cancelled.`, C.dim)
               return
             }
             // set — 需要输入目标文本
-            askQuestion("请输入目标描述（; 分隔完成条件）").then((text) => {
+            askQuestion("Enter goal description (; separates criteria)").then((text) => {
               if (!text) return
               const semi = text.indexOf("；") >= 0 ? "；" : text.indexOf(";") >= 0 ? ";" : null
               const objective = semi ? text.slice(0, semi).trim() : text.trim()
               const criteria = semi ? text.slice(semi + 1).trim() : ""
               agent.goal = { objective, criteria, setAt: Date.now(), status: "active", turnsUsed: 0, _blockTally: null }
               pushLabel(`❯ Goal`, ansi.bold + C.warn)
-              pushLine(`目标已设置: ${objective}`, C.tool)
-              if (criteria) pushLine(`  完成条件: ${criteria}`, C.dim)
-              else pushLine(`  ⚠ 未完成条件——agent 用 goal set 设立时会被要求补上可验证的完成条件`, C.warn)
+              pushLine(`Goal set: ${objective}`, C.tool)
+              if (criteria) pushLine(`  Criteria: ${criteria}`, C.dim)
+              else pushLine(`  ⚠ No criteria — agent will be asked to provide verifiable criteria when using goal set`, C.warn)
             })
           },
         })
@@ -1242,7 +1311,7 @@ export async function startTUI(agent, opts = {}) {
         const skills = await loadSkills(agent.cwd)
         pushLabel(`❯ Skills`, ansi.bold + C.tool)
         if (skills.length === 0) {
-          pushLine("（无项目技能——在 .thincoder/skills/ 下创建 .md 文件即可添加）", C.dim)
+          pushLine(" (none项目技能——在 .thincoder/skills/ 下创建 .md 文件即可添加）", C.dim)
         }
         for (const s of skills) {
           pushLine(`  ${s.name}: ${s.description.slice(0, 100)}`, C.dim)
@@ -1253,24 +1322,24 @@ export async function startTUI(agent, opts = {}) {
       case "/mcp": {
         const servers = agent.config?.mcp?.servers ?? []
         const entries = [
-          { type: "header", text: `已配置 ${servers.length} 个 MCP server` },
-          { type: "item", text: "查看列表", action: "list" },
-          { type: "item", text: "添加服务器", action: "add" },
+          { type: "header", text: `${servers.length} MCP servers configured` },
+          { type: "item", text: "View list", action: "list" },
+          { type: "item", text: "Add server", action: "add" },
         ]
         if (servers.length > 0) {
           entries.push(
-            { type: "item", text: "移除服务器", action: "remove" },
-            { type: "item", text: "重连服务器", action: "connect" },
+            { type: "item", text: "Remove server", action: "remove" },
+            { type: "item", text: "Reconnect server", action: "connect" },
           )
         }
         openPicker({
-          title: "MCP 管理",
+          title: "MCP",
           entries,
           onSelect: async (e) => {
             if (e.action === "list") {
               pushLabel(`❯ MCP Servers`, ansi.bold + C.tool)
               if (servers.length === 0) {
-                pushLine("（无 MCP server）", C.dim)
+                pushLine(" (none MCP server）", C.dim)
               }
               for (const srv of servers) {
                 const connected = agent.tools.some((t) => t._mcpName === srv.name)
@@ -1284,11 +1353,11 @@ export async function startTUI(agent, opts = {}) {
             }
             if (e.action === "remove") {
               const removeEntries = [
-                { type: "header", text: "选择要移除的服务器" },
+                { type: "header", text: "Select server to remove" },
                 ...servers.map((s) => ({ type: "item", text: s.name, name: s.name })),
               ]
               openPicker({
-                title: "移除 MCP",
+                title: "Remove MCP",
                 entries: removeEntries,
                 onSelect: async (se) => {
                   const { removeMcpTools } = await import("./mcp.mjs")
@@ -1296,18 +1365,18 @@ export async function startTUI(agent, opts = {}) {
                   await persistRaw((raw) => { raw.mcp ??= { servers: [] }; raw.mcp.servers = raw.mcp.servers.filter((s) => s.name !== se.name) })
                   if (agent.config?.mcp?.servers) agent.config.mcp.servers = agent.config.mcp.servers.filter((s) => s.name !== se.name)
                   pushLabel(`❯ MCP`, ansi.bold + C.tool)
-                  pushLine(`${se.name} 已断开并从配置移除。`, C.tool)
+                  pushLine(`${se.name} disconnected and removed from config.`, C.tool)
                 },
               })
               return
             }
             if (e.action === "connect") {
               const connEntries = [
-                { type: "header", text: "选择要重连的服务器" },
+                { type: "header", text: "Select server to reconnect" },
                 ...servers.map((s) => ({ type: "item", text: s.name, name: s.name })),
               ]
               openPicker({
-                title: "重连 MCP",
+                title: "Reconnect MCP",
                 entries: connEntries,
                 onSelect: async (se) => {
                   const srv = servers.find((s) => s.name === se.name)
@@ -1315,11 +1384,11 @@ export async function startTUI(agent, opts = {}) {
                   const { removeMcpTools, connectMcpServer } = await import("./mcp.mjs")
                   removeMcpTools(agent, se.name)
                   try {
-                    pushLine(`[mcp] 重连 ${se.name}...`, C.dim)
+                    pushLine(`[mcp] Reconnecting ${se.name}...`, C.dim)
                     const tools = await connectMcpServer(srv)
                     agent.tools.push(...tools)
                     pushLabel(`❯ MCP`, ansi.bold + C.tool)
-                    pushLine(`${se.name} 已重连，${tools.length} 个工具可用。`, C.tool)
+                    pushLine(`${se.name} reconnected, ${tools.length}  tools available.`, C.tool)
                   } catch (error) {
                     pushLine(`[mcp] ${se.name}: ${error.message}`, C.error)
                   }
@@ -1328,13 +1397,13 @@ export async function startTUI(agent, opts = {}) {
               return
             }
             if (e.action === "add") {
-              askQuestion("输入: <名称> <URL|命令> [参数...]\nURL 自动识别: https://… → HTTP, ws://… → WebSocket, 其他 → stdio 命令").then(async (text) => {
+              askQuestion("输入: <名称> <URL|Commands> [参数...]\nURL 自动识别: https://… → HTTP, ws://… → WebSocket, 其他 → stdio Commands").then(async (text) => {
                 if (!text) return
                 const parts = text.split(/\s+/)
-                if (parts.length < 2) { pushLine("用法: <名称> <URL|命令> [参数...]", C.error); return }
+                if (parts.length < 2) { pushLine("用法: <名称> <URL|Commands> [参数...]", C.error); return }
                 const [name, second, ...extras] = parts
                 const existing = (agent.config?.mcp?.servers ?? []).find((s) => s.name === name)
-                if (existing) { pushLine(`[mcp] "${name}" 已存在`, C.error); return }
+                if (existing) { pushLine(`[mcp] "${name}" already exists`, C.error); return }
                 const isWS = /^wss?:\/\//.test(second)
                 const isHTTP = /^https?:\/\//.test(second)
                 let srv
@@ -1355,7 +1424,7 @@ export async function startTUI(agent, opts = {}) {
         return
       }
 
-      // ---- header 解析（/mcp add 共享）----
+      // ---- header 解析 (/mcp add 共享）----
       function parseHeaders(pairs) {
         const headers = {}
         for (const pair of pairs) {
@@ -1365,7 +1434,7 @@ export async function startTUI(agent, opts = {}) {
         return headers
       }
 
-      // ---- /mcp 共享 helper: 保存配置 + 连接 ----
+      // ---- /mcp 共享 helper: 保存Config + Connecting ----
       async function addAndConnect(srv) {
         await persistRaw((raw) => {
           raw.mcp ??= { servers: [] }
@@ -1379,16 +1448,16 @@ export async function startTUI(agent, opts = {}) {
         agent.config.mcp ??= { servers: [] }
         agent.config.mcp.servers.push(srv)
         try {
-          pushLine(`[mcp] 连接 ${srv.name}...`, C.dim)
+          pushLine(`[mcp] Connecting ${srv.name}...`, C.dim)
           const { connectMcpServer } = await import("./mcp.mjs")
           const tools = await connectMcpServer(srv)
           agent.tools.push(...tools)
           pushLabel(`❯ MCP`, ansi.bold + C.tool)
           const desc = srv.wsUrl ? srv.wsUrl : srv.url ? srv.url : `${srv.command} ${(srv.args ?? []).join(" ")}`
-          pushLine(`${srv.name} (${desc}) 已连接，${tools.length} 个工具:`, C.tool)
+          pushLine(`${srv.name} (${desc}) connected, ${tools.length} tools:`, C.tool)
           for (const t of tools) pushLine(`  ${t.name}: ${t.description.slice(0, 100)}`, C.dim)
         } catch (error) {
-          pushLine(`[mcp] ${srv.name}: ${error.message}（配置已保存，重启后重试）`, C.error)
+          pushLine(`[mcp] ${srv.name}: ${error.message} (config saved, retry after restart)`, C.error)
         }
       }
       case "/auto":
@@ -1402,8 +1471,8 @@ export async function startTUI(agent, opts = {}) {
         pushLabel(`❯ Auto`, ansi.bold + (agent.autoApprove ? C.warn : C.tool))
         pushLine(
           agent.autoApprove
-            ? `AUTO 已开启：所有工具调用（含写文件/bash/子 agent）不再询问，自动执行。长任务专用，/auto 关闭。`
-            : `AUTO 已关闭：有副作用的工具调用恢复逐个确认。`,
+            ? `AUTO ON: all tool calls (write/bash/subagent) auto-approved. For long tasks. /auto to disable.`
+            : `AUTO OFF: destructive tool calls require per-use approval again.`,
           agent.autoApprove ? C.warn : C.dim,
         )
         return
@@ -1415,19 +1484,19 @@ export async function startTUI(agent, opts = {}) {
         const isEffortOnly = spec.thinkApi === "effort"
 
         const entries = [
-          { type: "header", text: "思维模式" },
-          { type: "item", text: `开启${thinkingEnabled ? "  ← 当前" : ""}`, action: "on" },
-          { type: "item", text: `关闭${!thinkingEnabled ? "  ← 当前" : ""}`, action: "off" },
-          { type: "header", text: "推理强度" },
+          { type: "header", text: "Thinking mode" },
+          { type: "item", text: `On${thinkingEnabled ? "  ← current" : ""}`, action: "on" },
+          { type: "item", text: `Off${!thinkingEnabled ? "  ← current" : ""}`, action: "off" },
+          { type: "header", text: "Reasoning effort" },
           ...["low", "high", "max"].map((l) => ({
             type: "item",
-            text: `${l}${cur.reasoningEffort === l ? "  ← 当前" : ""}`,
+            text: `${l}${cur.reasoningEffort === l ? "  ← current" : ""}`,
             action: "effort",
             level: l,
           })),
         ]
         openPicker({
-          title: "思维模式",
+          title: "Thinking mode",
           entries,
           defaultIndex: thinkingEnabled ? 0 : 1,
           onSelect: async (e) => {
@@ -1435,7 +1504,7 @@ export async function startTUI(agent, opts = {}) {
               cur.reasoningEffort = e.level
               await syncProviderField("reasoningEffort", e.level)
               pushLabel(`❯ Think`, ansi.bold + C.tool)
-              pushLine(`推理强度已设为 ${e.level}`, C.tool)
+              pushLine(`Reasoning effort set to ${e.level}`, C.tool)
             } else {
               const enable = e.action === "on"
               if (isEffortOnly) {
@@ -1452,8 +1521,8 @@ export async function startTUI(agent, opts = {}) {
                 else await syncProviderField("reasoningEffort", cur.reasoningEffort)
               }
               pushLabel(`❯ Think`, ansi.bold + C.tool)
-              pushLine(`思维模式已${enable ? "开启" : "关闭"}`, C.tool)
-              if (enable) pushLine(`推理强度: ${cur.reasoningEffort}`, C.dim)
+              pushLine(`Thinking mode已${enable ? "On" : "Off"}`, C.tool)
+              if (enable) pushLine(`Reasoning effort: ${cur.reasoningEffort}`, C.dim)
             }
           },
         })
@@ -1465,22 +1534,22 @@ export async function startTUI(agent, opts = {}) {
       }
       case "/provider": {
         const entries = [
-          { type: "header", text: `已配置 ${agent.providers.length} 个 provider` },
-          { type: "item", text: "查看列表", action: "list" },
-          { type: "item", text: "添加 provider", action: "add" },
+          { type: "header", text: `${agent.providers.length} providers` },
+          { type: "item", text: "View list", action: "list" },
+          { type: "item", text: "Add provider", action: "add" },
         ]
         if (agent.providers.length > 0) {
           entries.push(
-            { type: "item", text: "移除 provider", action: "remove" },
+            { type: "item", text: "Remove provider", action: "remove" },
           )
         }
         if (!agent.provider.apiKey) {
-          entries.push({ type: "item", text: "设置 API Key", action: "key" })
+          entries.push({ type: "item", text: "Set API Key", action: "key" })
         } else {
-          entries.push({ type: "item", text: "更换 API Key", action: "key" })
+          entries.push({ type: "item", text: "Change API Key", action: "key" })
         }
         openPicker({
-          title: "Provider 管理",
+          title: "Providers",
           entries,
           onSelect: async (e) => {
             if (e.action === "list") {
@@ -1488,7 +1557,7 @@ export async function startTUI(agent, opts = {}) {
               for (const p of agent.providers) {
                 const active = p.name === agent.activeProvider
                 pushLine(
-                  `${active ? " ▸" : "  "} ${p.name.padEnd(12)} ${p.model.padEnd(20)} ${p.baseURL}${p.apiKey ? " ●key" : " ○无key"}${active ? " ← 当前" : ""}`,
+                  `${active ? " ▸" : "  "} ${p.name.padEnd(12)} ${p.model.padEnd(20)} ${p.baseURL}${p.apiKey ? " ●key" : " ○nonekey"}${active ? " ← current" : ""}`,
                   active ? C.tool : C.dim,
                 )
               }
@@ -1497,22 +1566,22 @@ export async function startTUI(agent, opts = {}) {
             if (e.action === "remove") {
               const candidates = agent.providers.filter((p) => p.name !== agent.activeProvider)
               if (candidates.length === 0) {
-                pushLine("只有当前 provider，无法移除（先用 /model 切换到别的 provider）", C.warn)
+                pushLine("Cannot remove current provider (switch to another with /model first)", C.warn)
                 return
               }
               const removeEntries = [
-                { type: "header", text: "选择要移除的 provider（当前使用的不可移除）" },
+                { type: "header", text: "选择要移除的 provider (current使用的不可移除）" },
                 ...candidates.map((p) => ({ type: "item", text: `${p.name} (${p.model})`, name: p.name })),
               ]
               openPicker({
-                title: "移除 Provider",
+                title: "Remove Provider",
                 entries: removeEntries,
                 onSelect: async (se) => {
                   const at = agent.providers.findIndex((p) => p.name === se.name)
                   agent.providers.splice(at, 1)
                   await persistRaw((raw) => { raw.providers = agent.providers })
                   pushLabel(`❯ Provider`, ansi.bold + C.tool)
-                  pushLine(`已删除 ${se.name}`, C.tool)
+                  pushLine(`Removed ${se.name}`, C.tool)
                 },
               })
               return
@@ -1520,47 +1589,47 @@ export async function startTUI(agent, opts = {}) {
             if (e.action === "add") {
               // Add needs text input: name baseURL model
               askQuestion(
-                `输入: <名称> <baseURL> <模型>\n预设可用: ${Object.keys(PRESETS).join(", ")}\n或只输预设名（如 deepseek）自动补全`,
+                `输入: <名称> <baseURL> <model>\n预设可用: ${Object.keys(PRESETS).join(", ")}\nor just a preset name (e.g. deepseek) for auto-fill`,
               ).then(async (text) => {
                 if (!text) return
                 const parts = text.split(/\s+/)
                 const name = parts[0]
                 if (!name) return
                 if (agent.providers.some((p) => p.name === name)) {
-                  pushLine(`"${name}" 已存在；先 /provider → 移除`, C.warn)
+                  pushLine(`"${name}" already exists；先 /provider → 移除`, C.warn)
                   return
                 }
                 const preset = PRESETS[name]
                 const baseURL = (parts[1] ?? preset?.baseURL)?.replace(/\/+$/, "")
                 const model = parts[2] ?? preset?.model
                 if (!baseURL || !model) {
-                  pushLine(`缺少参数: ${name} <baseURL> <模型>`, C.error)
+                  pushLine(`Missing args: ${name} <baseURL> <model>`, C.error)
                   return
                 }
-                if (!/^https?:\/\//.test(baseURL)) { pushLine(`baseURL 应以 http(s):// 开头`, C.error); return }
+                if (!/^https?:\/\//.test(baseURL)) { pushLine(`baseURL must start with http(s)://`, C.error); return }
                 agent.providers.push({ name, baseURL, model, ...(preset?.desc ? { desc: preset.desc } : {}) })
                 await persistRaw((raw) => { raw.providers = agent.providers })
                 pushLabel(`❯ Provider`, ansi.bold + C.tool)
-                pushLine(`已添加 ${name}（${baseURL} / ${model}）`, C.tool)
-                pushLine(`下一步: /provider → 设置 Key`, C.dim)
+                pushLine(`Added ${name} (${baseURL} / ${model}）`, C.tool)
+                pushLine(`Next: /provider → Set Key`, C.dim)
               })
               return
             }
             if (e.action === "key") {
               // Key: pick which provider, then prompt for key
               const keyEntries = [
-                { type: "header", text: "选择要配 key 的 provider" },
+                { type: "header", text: "Select provider to configure key" },
                 ...agent.providers.map((p) => ({
                   type: "item",
-                  text: `${p.name}${p.name === agent.activeProvider ? " ← 当前" : ""}${p.apiKey ? " ●已有key" : " ○无key"}`,
+                  text: `${p.name}${p.name === agent.activeProvider ? " ← current" : ""}${p.apiKey ? " ●has key" : " ○nonekey"}`,
                   name: p.name,
                 })),
               ]
               openPicker({
-                title: "配置 API Key",
+                title: "Configure API Key",
                 entries: keyEntries,
                 onSelect: (se) => {
-                  askQuestion(`为 ${se.name} 输入 API Key:`).then(async (key) => {
+                  askQuestion(`Enter API key for ${se.name}:`).then(async (key) => {
                     if (!key) return
                     await setProviderKey(se.name, key)
                   })
@@ -1573,29 +1642,29 @@ export async function startTUI(agent, opts = {}) {
       }
       case "/config": {
         const entries = [
-          { type: "header", text: "配置管理" },
-          { type: "item", text: "查看当前配置", action: "view" },
-          { type: "item", text: "设置 embedding key（向量检索）", action: "embedkey" },
-          { type: "item", text: "高级设置（set path value）", action: "set" },
+          { type: "header", text: "Config" },
+          { type: "item", text: "View current config", action: "view" },
+          { type: "item", text: "Set embedding key (vector search)", action: "embedkey" },
+          { type: "item", text: "Advanced (set path value)", action: "set" },
         ]
         openPicker({
-          title: "配置管理",
+          title: "Config",
           entries,
           onSelect: async (e) => {
             if (e.action === "view") {
               const { configPath: cp } = await import("./config.mjs")
-              pushLabel(`❯ 配置`, ansi.bold + C.tool)
-              pushLine(`激活:   ${agent.activeProvider} / ${agent.provider.model}`, C.dim)
+              pushLabel(`❯ Config`, ansi.bold + C.tool)
+              pushLine(`Active: ${agent.activeProvider} / ${agent.provider.model}`, C.dim)
               pushLine(`Key:    ${maskKey(agent.provider.apiKey)}`, C.dim)
               const ac = agent.config?.agent ?? {}
               const tn = `${ac.compactThreshold ?? 100000}${ac.compactThresholdAuto ? " (auto)" : ""}`
               pushLine(`agent:  maxTurns=${ac.maxTurns ?? 100} | compactThreshold=${tn}`, C.dim)
-              pushLine(`embedding: ${agent.memory?.embedder ? `enabled (${agent.config?.embedding?.model ?? ""})` : "disabled（纯 FTS 检索）"}`, C.dim)
-              pushLine(`配置文件: ${cp}`, C.dim)
+              pushLine(`embedding: ${agent.memory?.embedder ? `enabled (${agent.config?.embedding?.model ?? ""})` : "disabled (FTS only)"}`, C.dim)
+              pushLine(`Config文件: ${cp}`, C.dim)
               return
             }
             if (e.action === "embedkey") {
-              askQuestion("输入 embedding 服务的 API Key（默认 SiliconFlow bge-m3）:").then(async (key) => {
+              askQuestion("Enter embedding API key (default: SiliconFlow bge-m3):").then(async (key) => {
                 if (!key) return
                 agent.config.embedding ??= {}
                 agent.config.embedding.apiKey = key
@@ -1605,16 +1674,16 @@ export async function startTUI(agent, opts = {}) {
                   agent.memory.embedder = createEmbedder(agent.config.embedding)
                 }
                 pushLabel(`❯ Config`, ansi.bold + C.tool)
-                pushLine(`embedding key 已保存，向量检索已启用`, C.tool)
+                pushLine(`Embedding key saved, vector search enabled`, C.tool)
               })
               return
             }
             if (e.action === "set") {
-              askQuestion("输入: <path> <value>（如 agent.maxTurns 80，支持 a.b 嵌套）:").then(async (text) => {
+              askQuestion("Enter: <path> <value> (e.g. agent.maxTurns 80, supports a.b nesting):").then(async (text) => {
                 if (!text) return
                 const parts = text.split(/\s+/)
                 const [path, value] = [parts[0], parts.slice(1).join(" ")]
-                if (!path || !value) { pushLine("用法: <path> <value>  如 agent.maxTurns 80", C.error); return }
+                if (!path || !value) { pushLine("Usage: <path> <value>  e.g. agent.maxTurns 80", C.error); return }
                 try {
                   const { configPath, loadConfig, saveConfig } = await import("./config.mjs")
                   const raw = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {}
@@ -1629,9 +1698,9 @@ export async function startTUI(agent, opts = {}) {
                   agent.activeProvider = cfg.activeProvider
                   agent.config = cfg
                   pushLabel(`❯ Config`, ansi.bold + C.tool)
-                  pushLine(`已保存: ${path} = ${value}`, C.tool)
+                  pushLine(`Saved: ${path} = ${value}`, C.tool)
                 } catch (error) {
-                  pushLine(`保存失败: ${error.message}`, C.error)
+                  pushLine(`Save failed: ${error.message}`, C.error)
                 }
               })
             }
@@ -1662,7 +1731,7 @@ export async function startTUI(agent, opts = {}) {
         return
       }
       default:
-        pushLine(`Unknown command: ${cmd}（/help 查看可用命令）`, C.error)
+        pushLine(`Unknown command: ${cmd} (/help 查看可用Commands）`, C.error)
         return
     }
   }
@@ -1673,18 +1742,18 @@ export async function startTUI(agent, opts = {}) {
     return `${key.slice(0, 5)}…${key.slice(-4)}`
   }
 
-  /** Tab 补全候选：命令名 / 子命令 / provider 名 / 预设名 / think 参数 */
+  /** Tab 补全候选：Commands名 / 子Commands / provider 名 / 预设名 / think 参数 */
   function completions(input) {
     if (!input.startsWith("/")) return []
     const parts = input.split(/\s+/)
-    // 还在敲第一个 token：补命令名
+    // 还在敲第一个 token：补Commands名
     if (parts.length === 1) {
       return SLASH_COMMANDS.filter((c) => c.name.startsWith(parts[0])).map((c) => c.name)
     }
     const cmd = parts[0]
-    const last = parts.at(-1) // 结尾是空格时为 ""，即列出全部候选
+    const last = parts.at(-1) // 结尾是空格时Enter API key for ""，即列出全部候选
     const head = parts.slice(0, -1).join(" ")
-    const argIndex = parts.length - 2 // 正在敲第几个参数（0 基）
+    const argIndex = parts.length - 2 // 正在敲第几个参数 (0 基）
     const match = (cands) => cands.filter((c) => c.startsWith(last)).map((c) => `${head} ${c}`)
     if (cmd === "/model" && argIndex === 0) return match(agent.providers.map((p) => p.name))
     if (cmd === "/provider") {
@@ -1722,7 +1791,7 @@ export async function startTUI(agent, opts = {}) {
     render()
   }
 
-  /** 读配置文件 → 修改 → 写回；文件不存在时从空对象开始 */
+  /** 读Config文件 → 修改 → 写回；文件not found时从空对象开始 */
   async function persistRaw(mutate) {
     const { saveConfig, configPath } = await import("./config.mjs")
     const raw = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {}
@@ -1730,7 +1799,7 @@ export async function startTUI(agent, opts = {}) {
     saveConfig(raw)
   }
 
-  /** 把当前激活 provider 的某个字段同步到 providers 列表并持久化 */
+  /** 把current激活 provider 的某个字段同步到 providers 列表并持久化 */
   async function syncProviderField(field, value) {
     const target = agent.providers.find((p) => p.name === agent.activeProvider)
     if (!target) return
@@ -1742,12 +1811,12 @@ export async function startTUI(agent, opts = {}) {
     })
   }
 
-  // ---------------------------------------------------------- 模型选择器（/model）
+  // ---------------------------------------------------------- 模型选择器 (/model）
 
   const pickerItems = () => state.picker?.entries.filter((e) => e.type === "item") ?? []
 
   /** 打开通用列表选择器。entries 含 { type: "header"|"item", text, note?, ...extra }，
-   *  onSelect 拿到选中条目（含 extra 字段透传），onCancel 在 Esc 时调。 */
+   *  onSelect 拿到选中条目 (含 extra 字段透传），onCancel 在 Esc 时调。 */
   function openPicker({ title, entries, onSelect, onCancel, defaultIndex = 0 }) {
     state.picker = { title, entries, lines: [], index: defaultIndex, scroll: 0, selectedLine: 0, onSelect, onCancel }
     renderPickerLines()
@@ -1785,17 +1854,17 @@ export async function startTUI(agent, opts = {}) {
     render()
   }
 
-  // ========== 模型选择器（基于通用 picker，异步拉取远端模型列表） ==========
+  // ========== 模型选择器 (基于通用 picker，异步拉取远端模型列表） ==========
 
   async function openModelPicker() {
     const entries = []
     for (const p of agent.providers) {
-      entries.push({ type: "header", text: p.name, note: `${p.baseURL}${p.apiKey ? "" : "（未配 key）"}  加载中...` })
+      entries.push({ type: "header", text: p.name, note: `${p.baseURL}${p.apiKey ? "" : " (no key)"}  loading...` })
       entries.push({ type: "item", text: p.model, provider: p.name, model: p.model })
     }
     const onSelect = (e) => selectModel(e).catch((err) => pushLine(`[error] ${err.message}`, C.error))
-    openPicker({ title: "选择模型", entries, onSelect })
-    // 默认选中当前在用的模型
+    openPicker({ title: "Select Model", entries, onSelect })
+    // 默认选中current在用的模型
     const current = pickerItems().findIndex(
       (e) => e.provider === agent.activeProvider && e.model === agent.provider.model,
     )
@@ -1806,7 +1875,7 @@ export async function startTUI(agent, opts = {}) {
     await Promise.all(
       agent.providers.map(async (p) => {
         const header = entries.find((e) => e.type === "header" && e.provider === undefined && e.text === p.name)
-        const noteBase = `${p.baseURL}${p.apiKey ? "" : "（未配 key）"}`
+        const noteBase = `${p.baseURL}${p.apiKey ? "" : " (no key)"}`
         try {
           const envKey = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }[p.name]
           let apiKey = p.apiKey
@@ -1824,65 +1893,65 @@ export async function startTUI(agent, opts = {}) {
           )
           if (header) header.note = noteBase
         } catch (error) {
-          if (header) header.note = `${noteBase}  （拉取失败: ${sliceByWidth(error.message, 60)}）`
+          if (header) header.note = `${noteBase}   (fetch failed: ${sliceByWidth(error.message, 60)}）`
         }
         if (state.picker?.entries === entries) renderPickerLines()
       }),
     )
   }
 
-  /** 给指定 provider 写 key（内存 + 配置文件）；若它是当前激活的，同步运行时 */
+  /** 给指定 provider 写 key (内存 + Config文件）；若它是current激活的，同步运行时 */
   async function setProviderKey(name, key) {
     const target = agent.providers.find((p) => p.name === name)
     if (!target) {
-      pushLine(`未找到 provider "${name}"`, C.error)
+      pushLine(`Provider "${name}"`, C.error)
       return
     }
     target.apiKey = key
     if (name === agent.activeProvider) agent.provider.apiKey = key
     await persistRaw((raw) => { raw.providers = agent.providers })
     pushLabel(`❯ Provider`, ansi.bold + C.tool)
-    pushLine(`apiKey 已保存到 ${name}`, C.tool)
+    pushLine(`API key saved to ${name}`, C.tool)
   }
 
-  // ---------------------------------------------------------- 初始配置向导（首次启动）
+  // ---------------------------------------------------------- 初始Config向导 (首次启动）
 
-  /** 菜单步的候选项：已有 provider（未配 key 的标注）+ 未添加的预设 + 自定义 */
+  /** 菜单步的候选项：已有 provider (no key 的标注）+ 未添加的预设 + 自定义 */
   function wizardProviderItems() {
     const items = []
     for (const p of agent.providers) {
-      items.push({ kind: "existing", name: p.name, baseURL: p.baseURL, model: p.model, label: `${p.name}（已添加${p.apiKey ? "" : "，未配 key"}）` })
+      items.push({ kind: "existing", name: p.name, baseURL: p.baseURL, model: p.model, label: `${p.name} (added${p.apiKey ? "" : "，no key"}）` })
     }
     for (const [name, p] of Object.entries(PRESETS)) {
       if (!agent.providers.some((x) => x.name === name)) {
-        items.push({ kind: "preset", name, baseURL: p.baseURL, model: p.model, label: `${name}（${p.desc}）` })
+        items.push({ kind: "preset", name, baseURL: p.baseURL, model: p.model, label: `${name} (${p.desc}）` })
       }
     }
-    items.push({ kind: "custom", name: null, label: "自定义端点…" })
+    items.push({ kind: "custom", name: null, label: "Custom endpoint…" })
     return items
   }
 
-  /** 文本步骤定义：提示语 + 校验（通过返回 true，否则返回错误文案） */
+  /** 文本步骤定义：提示语 + 校验 (通过返回 true，否则返回错误文案） */
   const WIZARD_STEPS = {
     name: {
-      prompt: "给这个 provider 起个名字（字母/数字/-/_，如 my-openai）",
+      prompt: "给这个 provider 起个名字 (字母/数字/-/_，如 my-openai）",
       validate: (v) =>
-        (/^[\w-]+$/.test(v) && !agent.providers.some((p) => p.name === v)) || "名字需为字母/数字/-/_，且不与已有 provider 重名",
+        (/^[\w-]+$/.test(v) && !agent.providers.some((p) => p.name === v)) || "Name must be alphanumeric/-/_ and unique",
     },
     baseURL: {
-      prompt: "输入 baseURL（如 https://api.openai.com/v1）",
-      validate: (v) => /^https?:\/\/.+/.test(v) || "baseURL 应以 http(s):// 开头",
+      prompt: "输入 baseURL (如 https://api.openai.com/v1）",
+      validate: (v) => /^https?:\/\/.+/.test(v) || "baseURL must start with http(s)://",
     },
     model: {
-      prompt: "输入模型名（如 gpt-4o）",
-      validate: (v) => v.length > 0 || "模型名不能为空",
+      prompt: "输入模型名 (如 gpt-4o）",
+      validate: (v) => v.length > 0 || "Model name required",
     },
     key: {
       prompt: "输入 API key",
       validate: (v) => v.length > 0 || "key 不能为空",
     },
     embedkey: {
-      prompt: "可选：embedding API key（SiliconFlow，记忆向量检索用；直接回车跳过）",
+      prompt: "可选：embedding API key (SiliconFlow，记忆向量检索用；直接回车跳过）",
       validate: () => true, // 可跳过
     },
   }
@@ -1898,7 +1967,7 @@ export async function startTUI(agent, opts = {}) {
     if (!w) return
     const lines = []
     if (w.step === "provider") {
-      lines.push({ text: " 选择一个模型提供商：", color: C.text })
+      lines.push({ text: " Choose a model provider:", color: C.text })
       wizardProviderItems().forEach((it, i) => {
         if (i === w.index) w.selectedLine = lines.length
         lines.push({
@@ -1908,11 +1977,11 @@ export async function startTUI(agent, opts = {}) {
       })
     } else {
       const f = w.fields
-      if (f.name) lines.push({ text: ` 提供商:  ${f.name}`, color: C.dim })
+      if (f.name) lines.push({ text: ` Provider:  ${f.name}`, color: C.dim })
       if (f.baseURL) lines.push({ text: ` baseURL: ${f.baseURL}`, color: C.dim })
       if (f.model) lines.push({ text: ` 模型:    ${f.model}`, color: C.dim })
       lines.push({ text: ` ❯ ${WIZARD_STEPS[w.step].prompt}`, color: ansi.bold + C.text })
-      lines.push({ text: " （在下方输入框输入）", color: C.dim })
+      lines.push({ text: " (type in input box below)", color: C.dim })
       w.selectedLine = 0
     }
     if (w.error) lines.push({ text: ` ${w.error}`, color: C.error })
@@ -1955,11 +2024,11 @@ export async function startTUI(agent, opts = {}) {
 
   function cancelWizard() {
     state.wizard = null
-    pushLine("已跳过初始配置。之后随时可用 /provider add 添加提供商、/provider key 配 key。", C.dim)
+    pushLine("已跳过初始Config。之后随时可用 /provider add 添加Provider、/provider key 配 key。", C.dim)
     render()
   }
 
-  /** 向导完成：写入 provider（有则更新）、设为激活、持久化，然后接模型选择器 */
+  /** 向导完成：写入 provider (有则更新）、设为激活、持久化，然后接模型选择器 */
   async function finishWizard() {
     const f = state.wizard.fields
     state.wizard = null
@@ -1978,7 +2047,7 @@ export async function startTUI(agent, opts = {}) {
     })
     agent.config.activeProvider = f.name
     pushLabel(`❯ Setup`, ansi.bold + C.tool)
-    pushLine(`配置完成：${f.name} / ${f.model}（已写入配置文件）`, C.tool)
+    pushLine(`Setup complete: ${f.name} / ${f.model} (saved to config)`, C.tool)
     // embedding key：配了就启用向量检索，没配提示事后通道
     if (f.embedkey) {
       agent.config.embedding ??= {}
@@ -1988,11 +2057,11 @@ export async function startTUI(agent, opts = {}) {
         const { createEmbedder } = await import("./embedding.mjs")
         agent.memory.embedder = createEmbedder(agent.config.embedding)
       }
-      pushLine(`向量检索已启用（${agent.config.embedding.model ?? "BAAI/bge-m3"}）`, C.tool)
+      pushLine(`Vector search enabled (${agent.config.embedding.model ?? "BAAI/bge-m3"}）`, C.tool)
     } else {
-      pushLine(`向量检索未启用（记忆退化为纯文本检索）；之后可 /config embedkey <key> 开启`, C.dim)
+      pushLine(`向量检索未启用 (记忆退化为纯文本检索）；之后可 /config embedkey <key> On`, C.dim)
     }
-    pushLine(`选择要用的模型（Esc 保持 ${f.model}）`, C.dim)
+    pushLine(`Select model (Esc to keep ${f.model}）`, C.dim)
     openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error))
   }
 
@@ -2014,7 +2083,7 @@ export async function startTUI(agent, opts = {}) {
       const { resolveCompactThreshold } = await import("./config.mjs")
       const { value } = resolveCompactThreshold(null, item.model)
       agent.config.agent.compactThreshold = value
-      thresholdNote = `，压缩阈值随模型调整为 ${value}`
+      thresholdNote = `, compact threshold adjusted to ${value}`
     }
     await persistRaw((raw) => {
       raw.providers = agent.providers
@@ -2022,14 +2091,14 @@ export async function startTUI(agent, opts = {}) {
     })
     agent.config.activeProvider = item.provider
     pushLabel(`❯ Model`, ansi.bold + C.tool)
-    pushLine(`已切换到 ${item.provider} / ${item.model}${thresholdNote}（已持久化）`, C.tool)
-    if (!agent.provider.apiKey) pushLine(`该 provider 还没配 key: /config key <apikey>`, C.warn)
+    pushLine(`Switched to ${item.provider} / ${item.model}${thresholdNote} (persisted)`, C.tool)
+    if (!agent.provider.apiKey) pushLine(`Provider has no key: /provider → Set Key`, C.warn)
   }
 
-  /** /distill：从当前会话提取候选，逐条 y/n 确认后入库 */
+  /** /distill：从current会话提取候选，逐条 y/n 确认后入库 */
   async function runDistill() {
     if (agent.history.length === 0) {
-      pushLine("[distill] 当前会话为空，没有可提取的内容", C.dim)
+      pushLine("[distill] current会话为空，没有可提取的内容", C.dim)
       return
     }
     state.processing = true
@@ -2037,17 +2106,17 @@ export async function startTUI(agent, opts = {}) {
     render()
     try {
       const { extractCandidates, historyToTranscript, saveCandidate } = await import("./distill.mjs")
-      pushLine("[distill] 正在分析会话...", C.tool)
+      pushLine("[distill] Analyzing session...", C.tool)
       const candidates = await extractCandidates(agent.provider, historyToTranscript(agent.history))
       if (candidates.length === 0) {
-        pushLine("[distill] 本次会话没有值得沉淀的知识", C.dim)
+        pushLine("[distill] No knowledge worth saving from this session", C.dim)
         return
       }
       let saved = 0
       for (const c of candidates) {
-        pushLine(`── 候选 [${c.type}] ${c.title} (scope: ${c.scope ?? "personal"})`, C.warn)
+        pushLine(`── Candidate [${c.type}] ${c.title} (scope: ${c.scope ?? "personal"})`, C.warn)
         for (const line of c.content.split("\n").slice(0, 6)) pushLine(`   ${line}`, C.dim)
-        if (c.type === "rule") pushLine("   (rule 类建议手动撰写；确认提取请按 y)", C.warn)
+        if (c.type === "rule") pushLine("   (rule  type — consider writing manually; press y to extract)", C.warn)
         const accept = await askPermission("distill-save", { title: c.title })
         if (!accept) {
           pushLine("   skipped", C.dim)
@@ -2057,7 +2126,7 @@ export async function startTUI(agent, opts = {}) {
         pushLine(`   saved -> ${where}`, C.tool)
         saved++
       }
-      pushLine(`[distill] 完成：入库 ${saved}/${candidates.length} 条`, C.tool)
+      pushLine(`[distill] Done: saved ${saved}/${candidates.length} 条`, C.tool)
     } catch (error) {
       pushLine(`[distill] error: ${error.message}`, C.error)
     } finally {
@@ -2071,7 +2140,7 @@ export async function startTUI(agent, opts = {}) {
 
   // keypress 挂在过滤后的 keyStream 上：鼠标序列已在上游滤网中处理并剥除
   keyStream.on("keypress", (str, key = {}) => {
-    // 权限确认态：y 批准 / n 拒绝 / a 批准并开启 AUTO（后续不再询问）
+    // 权限确认态：y 批准 / n 拒绝 / a 批准并On AUTO (后续不再询问）
     if (state.permission) {
       const answer = (str || "").toLowerCase()
       const isContinue = state.permission.name === "continue"
@@ -2085,10 +2154,10 @@ export async function startTUI(agent, opts = {}) {
           agent.autoApprove = true
           agent._pendingReminders = agent._pendingReminders ?? []
           agent._pendingReminders.push("[System reminder: AUTO mode is now ON. All tool calls are automatically approved. Use /auto to disable.]")
-          pushLine(`  [auto] AUTO 已开启：后续工具调用不再询问（/auto 关闭）`, C.warn)
+          pushLine(`  [auto] AUTO 已On：后续工具调用不再询问 (/auto Off）`, C.warn)
         }
         const approved = answer === "y" || (answer === "a" && !isContinue)
-        // 决定落痕：对话区留下批准/拒绝记录（continue 询问有自己的输出，不重复记）
+        // 决定落痕：对话区留下批准/拒绝记录 (continue 询问有自己的输出，不重复记）
         if (!isContinue) {
           pushLine(`  [${approved ? "approved" : "denied"}] ${name}`, approved ? C.dim : C.error)
         }
@@ -2150,7 +2219,7 @@ export async function startTUI(agent, opts = {}) {
     if (key.ctrl && key.name === "c") {
       if (state.processing && state.controller) {
         state.controller.abort()
-        pushLine("[中止中…]", C.warn)
+        pushLine("[Aborting…]", C.warn)
         render()
         return
       }
@@ -2177,7 +2246,7 @@ export async function startTUI(agent, opts = {}) {
       return
     }
 
-    // 初始配置向导：菜单步 ↑↓/Enter/Esc；文本步 Enter 提交、Esc 取消，编辑键落到正常输入
+    // 初始Config向导：菜单步 ↑↓/Enter/Esc；文本步 Enter 提交、Esc 取消，编辑键落到正常输入
     if (state.wizard) {
       const w = state.wizard
       if (key.name === "escape") {
@@ -2219,7 +2288,7 @@ export async function startTUI(agent, opts = {}) {
 
     if (state.processing) return // 处理中锁定输入
 
-    // Tab：斜杠命令补全（循环候选）；其余输入忽略（\t 会顶破输入框，永不直接插入）
+    // Tab：斜杠Commands补全 (循环候选）；其余输入忽略 (\t 会顶破输入框，永不直接插入）
     if (key.name === "tab") {
       handleTab()
       return
@@ -2293,7 +2362,14 @@ export async function startTUI(agent, opts = {}) {
       return
     }
 
-    // 可打印字符 / 粘贴（str 可能一次多个字符）；Tab 一律转成两个空格（\t 显示宽度不定，会顶破输入框）
+    // Ctrl+V (Unix) / Alt+V (Windows)：粘贴剪贴板图片 → 存临时文件 → 输入框插入 read_image
+    const isPasteImage = (key.name === "v" && (key.ctrl || key.meta)) || (key.name === "v" && key.alt)
+    if (isPasteImage) {
+      pasteClipboardImage(agent).catch((e) => pushLine(`[error] ${e.message}`, C.error))
+      return
+    }
+
+    // 可打印字符 / 粘贴 (str 可能一次多个字符）；Tab 一律转成两个空格 (\t 显示宽度不定，会顶破输入框）
     // \r\n 在 Windows raw mode 下可能漏进来冲乱页面
     if (str && !key.ctrl && !key.meta) {
       const chars = [...str.replace(/[\r\n]+/g, "").replace(/\t/g, "  ")]
@@ -2305,18 +2381,18 @@ export async function startTUI(agent, opts = {}) {
 
   // 启动画面
   if (!agent.provider.apiKey) {
-    pushLabel(`欢迎使用 ThinCoder！`, ansi.bold + C.tool)
-    pushLine("检测到还没配置 API key，进入初始配置（Esc 可随时跳过）", C.text)
+    pushLabel(`Welcome to ThinCoder!`, ansi.bold + C.tool)
+    pushLine("检测到还没Config API key，进入初始Config (Esc 可随时跳过）", C.text)
     startWizard()
   } else {
     pushLine(`Welcome to ThinCoder. Provider: ${agent.activeProvider} / ${agent.provider.model}`, C.dim)
   }
   pushLine(`Tools: ${agent.tools.map((t) => t.name).join(", ")}`, C.dim)
-  // 恢复上次会话：重建对话区显示（tool 结果行省略，保持清爽）
+  // 恢复上次会话：重建对话区显示 (tool 结果行省略，保持清爽）
   if (opts.restored?.display?.length) {
     // 用户视角的恢复：display 是退出前对话区的原样快照，所见即所得
     state.lines = [...opts.restored.display.map((l) => ({ text: l.text, color: l.color })), ...state.lines]
-    pushLabel(`── 已恢复上次会话（退出前原样回放）；/new 开始新会话 ──`, C.warn)
+    pushLabel(`── Restored previous session; /new for a fresh session ──`, C.warn)
   } else if (opts.restored?.history?.length) {
     // 重建对话区：user/assistant 消息逐条展示，tool 结果行只保留首行摘要
     for (let i = 0; i < opts.restored.history.length; i++) {
@@ -2338,15 +2414,15 @@ export async function startTUI(agent, opts = {}) {
       }
       // tool 消息本身不单独渲染——已在 assistant 的 tool_calls 后以摘要形式展示
     }
-    pushLabel(`── 已恢复上次会话（${opts.restored.history.length} 条消息）；/new 开始新会话 ──`, C.warn)
+    pushLabel(`── Restored previous session (${opts.restored.history.length}  messages); /new for a fresh session ──`, C.warn)
   }
   // 有归档槽位时给个提示
   if (listSlots(agent.cwd).length > 0) {
-    pushLine("提示：存在归档会话，/session 可查看/切换", C.dim)
+    pushLine("Tip: archived sessions available — /session to view/switch", C.dim)
   }
   render()
 
-  // 后台索引（进界面后再跑，不阻塞启动）；进度走底部状态栏，不往对话区塞行
+  // 后台索引 (进界面后再跑，不阻塞启动）；进度走底部状态栏，不往对话区塞行
   ;(async () => {
     const { codeSync, docSync } = await import("./memory.mjs")
     const cwd = agent.cwd

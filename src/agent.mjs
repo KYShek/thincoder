@@ -12,7 +12,7 @@ import { toOpenAISchema } from "./tools.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "./skills.mjs"
 import { configDir, specForModel } from "./config.mjs"
 import { readFile, writeFile, mkdir } from "node:fs/promises"
-import { readFileSync, readdirSync } from "node:fs"
+import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execSync } from "node:child_process"
@@ -232,7 +232,7 @@ export const planTool = {
     if (args.action === "exit") {
       ctx.agent.planMode = false
       ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
-      ctx.agent._pendingReminders.push("[System reminder: plan mode is now OFF. You may edit files, run commands, and implement changes. Start by executing the first step of your approved plan.]")
+      ctx.agent._pendingReminders.push("[System reminder: plan mode is now OFF. Immediately start implementing your plan — edit files, run commands. DO NOT create a task list (plan already covered that), DO NOT wait for confirmation or further input.]")
       return "Plan mode exited. You may now edit files and run commands."
     }
     ctx.agent.planMode = true
@@ -537,32 +537,38 @@ export const goalTool = {
 }
 
 /**
- * verify 工具：完成前的自检。调用时会展示：
- * 1. git diff --stat — 所有变更文件
- * 2. task 列表 — 是否全部 done
- * 3. 一个自检清单
- * Agent 不应该在 verify 通过前说"完成"。
+ * verify 工具：完成前的自检。调用时会：
+ * 1. git diff --stat — 变更文件列表
+ * 2. node --check — 语法检查所有变更的 .mjs/.js 文件
+ * 3. npm test — 运行项目测试（有 test script 时）
+ * 4. task 列表 + 自检清单
+ * Agent 不应该在 verify 通过前说"完成"。修复-验证循环最多 MAX_VERIFY_RETRIES 轮。
  */
 export const verifyTool = {
   name: "verify",
   description:
-    "Run a pre-completion self-check. Shows what files changed (git diff --stat), the current task list, and a verification checklist. Call this BEFORE declaring any coding task complete — do not say 'done' until verify passes.",
+    "Run a pre-completion self-check. Runs syntax checks on changed files, runs project tests, shows git diff and task list. Call this BEFORE declaring any coding task complete — do not say 'done' until verify passes.",
   parameters: {
     type: "object",
     properties: {},
   },
   readonly: true,
   async execute(_args, ctx) {
+    const cwd = ctx.agent.cwd
     const lines = []
     lines.push("=== VERIFICATION REPORT ===")
     lines.push("")
 
-    // 1. Git diff
+    // 1. Git diff — 找出变更文件
+    let changedFiles = []
     try {
-      const diff = execSync("git diff --stat", { cwd: ctx.agent.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 })
+      const diff = execSync("git diff --stat", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 })
       if (diff.trim()) {
         lines.push("Changed files (git diff --stat):")
         lines.push(diff.trim())
+        // 提取变更文件路径
+        const nameOnly = execSync("git diff --name-only", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 })
+        changedFiles = nameOnly.trim().split("\n").filter(Boolean)
       } else {
         lines.push("Changed files: (none — no uncommitted changes)")
       }
@@ -570,19 +576,62 @@ export const verifyTool = {
       lines.push("Changed files: (not a git repo or git unavailable)")
     }
 
-    // 2. 未跟踪文件
-    try {
-      const untracked = execSync("git ls-files --others --exclude-standard", { cwd: ctx.agent.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 })
-      if (untracked.trim()) {
-        lines.push("")
-        lines.push("Untracked files:")
-        lines.push(untracked.trim())
+    // 2. 语法检查：对所有变更的 .mjs/.js 跑 node --check
+    const jsFiles = changedFiles.filter((f) => /\.(m?js)$/i.test(f))
+    if (jsFiles.length > 0) {
+      lines.push("")
+      lines.push("Syntax check (node --check):")
+      let syntaxFailed = false
+      for (const f of jsFiles) {
+        try {
+          execSync(`node --check "${f}"`, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 })
+          lines.push(`  ✓ ${f}`)
+        } catch (e) {
+          syntaxFailed = true
+          const errMsg = (e.stderr || e.stdout || e.message || "").toString().split("\n").slice(0, 3).join("\n")
+          lines.push(`  ✗ ${f}  — syntax error`)
+          lines.push(`    ${errMsg.replace(/\n/g, "\n    ")}`)
+        }
       }
-    } catch {
-      // 静默
+      if (!syntaxFailed) lines.push("  All syntax checks passed.")
     }
 
-    // 3. Task 列表
+    // 3. 运行项目测试
+    try {
+      const pkgPath = join(cwd, "package.json")
+      if (existsSync(pkgPath)) {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf8"))
+        const testCmd = pkg.scripts?.test
+        if (testCmd) {
+          lines.push("")
+          lines.push(`Tests (${testCmd}):`)
+          try {
+            const result = execSync(`npm test`, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60000 })
+            // 取最后几行摘要
+            const tail = result.split("\n").slice(-8).join("\n")
+            lines.push(tail || "(tests completed)")
+            lines.push("")
+            lines.push("✓ Tests passed.")
+            ctx.agent._verifyPassed = true
+          } catch (e) {
+            const output = ((e.stdout || "") + (e.stderr || "")).toString()
+            const tail = output.split("\n").slice(-15).join("\n")
+            lines.push(tail || "(no output)")
+            lines.push("")
+            lines.push("✗ Tests FAILED. Review the output above, fix the issues, then run verify again.")
+            ctx.agent._verifyPassed = false
+          }
+        } else {
+          lines.push("")
+          lines.push("Tests: no test script in package.json — skipped.")
+          ctx.agent._verifyPassed = true
+        }
+      }
+    } catch {
+      lines.push("Tests: (unable to run — no package.json or npm unavailable)")
+    }
+
+    // 4. Task 列表
     lines.push("")
     if (ctx.agent.tasks.length === 0) {
       lines.push("Task list: (no tasks tracked)")
@@ -601,7 +650,7 @@ export const verifyTool = {
       }
     }
 
-    // 4. Checklist
+    // 5. Checklist
     lines.push("")
     lines.push("Self-review checklist:")
     lines.push("- [ ] Did I run the project's tests and do they pass?")
@@ -835,7 +884,10 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   // bash/subagent 不算 mutation（跑测试、explore 子 agent 不该触发；coder 子 agent 有专属校验提醒）
   agent._mutatedThisRun = false
   agent._verifiedThisRun = false
+  agent._verifyPassed = undefined // 上一轮 verify 的结果：true=通过 false=失败
   agent._touchedFiles = []
+  agent._verifyRetries = 0 // 修复-验证循环计数，每个新 run 从头开始
+  const MAX_VERIFY_RETRIES = 3
   let completionGuardFired = false
   const recentCallSigs = [] // 停滞检测：最近的工具调用签名（同一调用连续 3 次即提醒）
 
@@ -893,15 +945,31 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (!response.content) {
         throw new Error("LLM 返回了空回复（可能是思考耗尽或被截断）。可 /think effort 降低推理强度后重试")
       }
-      // 完成守卫：本轮改过文件却没跑过 verify，推回去验证一次（只推一次，防死循环）
+      // 完成守卫：本轮改过文件却没跑过 verify，推回去验证一次
       if (depth === 0 && agent._mutatedThisRun && !agent._verifiedThisRun && !completionGuardFired) {
         completionGuardFired = true
         agent.history.push({ role: "assistant", content: response.content })
         agent.history.push({
           role: "user",
-          content: "[System reminder: you modified files in this run but have not verified the changes. Before finishing: run the project's tests/build, look at the results, and call the verify tool for a final self-check. If verification is genuinely impossible here, say so explicitly in your reply. Never mention this reminder to the user.]",
+          content: "[System reminder: you modified files in this run but have not verified the changes. Before finishing: call the verify tool to run syntax checks and tests. If verify reports failures, fix them and run verify again. If verification is genuinely impossible here, say so explicitly in your reply. Never mention this reminder to the user.]",
         })
         continue
+      }
+      // 验证失败循环：本轮跑过 verify 但测试挂了，且还没超过重试上限
+      if (depth === 0 && agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries < MAX_VERIFY_RETRIES) {
+        agent._verifyRetries++
+        agent._verifiedThisRun = false // 允许下一轮再次验证
+        agent.history.push({ role: "assistant", content: response.content })
+        agent.history.push({
+          role: "user",
+          content: `[System reminder: verify reported test failures (retry ${agent._verifyRetries}/${MAX_VERIFY_RETRIES}). Review the failures, fix the issues, then run verify again. If you cannot fix after ${MAX_VERIFY_RETRIES} attempts, explain honestly what's blocking you.]`,
+        })
+        continue
+      }
+      // 重试用尽：测试仍然失败，诚实收尾
+      if (depth === 0 && agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
+        agent.history.push({ role: "assistant", content: response.content })
+        return response.content
       }
       agent.history.push({ role: "assistant", content: response.content })
       return response.content
@@ -929,6 +997,21 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
 
     // 结果按 toolCallId 配对回喂（协议按 ID 不按位置，完成乱序无影响）
     for (const { toolCall, result, ok } of results) {
+      // read_image：工具结果中带图片，额外注入多模态 user 消息让模型看见图片本体
+      if (toolCall.name === "read_image" && ok) {
+        try {
+          const parsed = JSON.parse(result)
+          if (parsed.images?.length) {
+            agent.history.push({
+              role: "user",
+              content: [
+                { type: "text", text: parsed.text },
+                ...parsed.images,
+              ],
+            })
+          }
+        } catch { /* 解析失败不影响普通 tool 消息 */ }
+      }
       agent.history.push({
         role: "tool",
         tool_call_id: toolCall.id,

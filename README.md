@@ -14,7 +14,7 @@ ThinCoder 的 "Thin" 不是"功能单薄"，而是**思维锐利、直击要害*
 
 - **Agent 主循环**：LLM ↔ 工具调用循环，上限 100 轮防失控，完成守卫拦截未验证的改动
 - **代码库理解** ⭐0.5.0：`repo_outline`（依赖大纲，启动自动注入）、`code_search`（源码 FTS5 + 向量 + JSDoc 提取）、`doc_search`（文档按 ## 标题分块检索）——后台索引、写文件自动增量更新、三工具按"结构→意图→细节"引导
-- **模型适配** ⭐：5 家国产大模型内置预设（DeepSeek/Kimi/GLM/Qwen/MiniMax），自动匹配上下文窗口、截断续写协议（prefix/partial）、思考模式 API（thinking.type / reasoning_effort）、输出上限
+- **模型适配** ⭐：只跟顶流、只跟最新。内置 DeepSeek / Kimi / GLM / Qwen / MiniMax 五家国内顶流厂商的旗舰模型，不做老旧模型兼容、不做本地模型适配。自动匹配上下文窗口、截断续写协议（prefix/partial）、思考模式 API（thinking.type / reasoning_effort）、输出上限。
 - **工具集**：`read` / `write` / `edit` / `bash` / `glob`（支持 `**`） / `grep` / `websearch` / `ls` / `fetch` + 三个检索工具 + MCP，全部零依赖，文件工具目录隔离
 - **记忆系统**：三层（personal/project/team），FTS5 + 向量 RRF 混合检索，markdown 格式 git 友好
 - **两段式工具调度**：权限确认串行，只读工具并行，副作用工具串行
