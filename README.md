@@ -193,6 +193,11 @@ node scripts/verify-team.mjs      # 团队记忆 A->git->B 全链路验证（本
 
 ## 更新日志
 
+### 0.7.5（2026-07）
+- **提示词复合指令拆分**：SYSTEM_PROMPT / main-overlay / coder-overlay 共 8 处复合句拆为独立 bullet（每条指令一个注意力节点），提升 DeepSeek/GLM/Qwen 等模型的指令遵从度——尤其"改完代码补测试"这类兜底条款不再被漏读
+- **测试纪律强化**：SYSTEM_PROMPT Testing discipline 新增独立 hard rule（改行为/加代码必须补测试）；main-overlay 自检清单新增"现有测试是否覆盖变更"；coder-overlay 最终检查清单新增补测试项
+- **plan mode 工作流**：main-overlay 的 plan mode 指令从单条复合句拆为 3 步编号流程
+
 ### 0.7.4（2026-07）
 - **verify 分层自检**：默认 quick 模式（语法检查变更文件 + git diff + 自检清单，毫秒级），`full=true` 才跑全量 npm test——不再每改一行都等十几秒全量；quick 即满足完成守卫，收尾/改核心设施时再用 full
 - **提示词纪律强化**：SYSTEM_PROMPT 新增测试纪律（何时跑哪层验证）与调试策略（先诊断再治、一次只改一处）；coder/plan/main overlay 补自检清单（最简方案、匹配项目模式、不碰无关文件）
