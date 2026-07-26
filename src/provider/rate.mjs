@@ -23,7 +23,9 @@ export const _rateHooks = {
 const rateWindows = new Map() // key → { tokens: [{ts, n}], requests: [ts] }
 
 function rateKey(provider) {
-  return `${provider.baseURL}|${provider.apiKey ?? ""}`
+  // 归一化：/beta 和 /v1 视为同一账户的同一限流窗口（DeepSeek prefix continuation 改 /beta 端点）
+  const base = provider.baseURL.replace(/\/beta$/, "/v1")
+  return `${base}|${provider.apiKey ?? ""}`
 }
 
 /** 粗估文本 token 数 */
@@ -87,9 +89,15 @@ export async function rateGate(provider, estimated, onWait, signal) {
 /** 记账：响应回来后按实测 usage 记 */
 export function recordRate(provider, estimated, usage) {
   if (provider.tpm == null && provider.rpm == null) return
-  const w = rateWindows.get(rateKey(provider)) ?? { tokens: [], requests: [] }
-  rateWindows.set(rateKey(provider), w)
+  const key = rateKey(provider)
+  const w = rateWindows.get(key) ?? { tokens: [], requests: [] }
   const now = _rateHooks.now()
+  const cutoff = now - _rateHooks.windowMs
+  w.tokens = w.tokens.filter((e) => e.ts > cutoff)
+  w.requests = w.requests.filter((ts) => ts > cutoff)
   w.requests.push(now)
   w.tokens.push({ ts: now, n: usage ? (usage.prompt_tokens ?? estimated) + (usage.completion_tokens ?? 0) : estimated })
+  // 窗口已空则删条目，防长期跨 provider 配置时 Map 无界增长
+  if (w.tokens.length === 0 && w.requests.length === 0) rateWindows.delete(key)
+  else rateWindows.set(key, w)
 }

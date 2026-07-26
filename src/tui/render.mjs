@@ -146,20 +146,25 @@ export function layoutInput(chars, cursor, width) {
     col = 0
   }
   for (let i = 0; i <= chars.length; i++) {
-    if (i === cursor) {
-      cursorLine = lines.length
-      cursorCol = (firstLine ? 2 : 0) + col
-    }
     const ch = chars[i]
-    if (ch === undefined) break
-    if (ch === "\n") {
-      flush()
-      continue
+    // 先处理 flush：宽字符可能触发换行，cursorCol 必须在 flush 之后取，
+    // 否则光标会停在上一行的末尾而非下一行的起始
+    if (ch !== undefined && ch !== "\n") {
+      const w = charWidth(ch.codePointAt(0))
+      if (col + w > avail()) flush()
+      if (i === cursor) {
+        cursorLine = lines.length
+        cursorCol = (firstLine ? 2 : 0) + col
+      }
+      cur += ch
+      col += w
+    } else {
+      if (i === cursor) {
+        cursorLine = lines.length
+        cursorCol = (firstLine ? 2 : 0) + col
+      }
+      if (ch === "\n") flush()
     }
-    const w = charWidth(ch.codePointAt(0))
-    if (col + w > avail()) flush()
-    cur += ch
-    col += w
   }
   if (cur || lines.length === 0) flush()
   return { lines, cursorLine, cursorCol }

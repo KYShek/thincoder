@@ -28,7 +28,9 @@ export const readTool = {
   readonly: true,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
-    // 注意：整文件一次性读入内存，大文件会被完整缓冲（offset/limit 只影响返回切片）
+    // 大文件保护：先查大小，超 10MB 拒绝整文件读入（offset/limit 只影响返回切片，不影响缓冲）
+    const st = await stat(abs).catch(() => null)
+    if (st && st.size > 10_000_000) throw new Error(`File too large (${Math.round(st.size / 1_000_000)}MB > 10MB limit). Use bash with head/tail or grep for targeted extraction.`)
     const content = await readFile(abs, "utf8")
     const lines = content.split("\n")
     const offset = Math.max(1, args.offset ?? 1)
@@ -61,10 +63,11 @@ export const readImageTool = {
     const ext = abs.slice(abs.lastIndexOf(".") + 1).toLowerCase()
     const mime = IMAGE_EXTENSIONS[ext]
     if (!mime) throw new Error(`Unsupported image format: .${ext}. Supported: ${Object.keys(IMAGE_EXTENSIONS).join(", ")}`)
+    // 先查大小再读入——防超大图片撑爆内存（20MB base64 ≈ 15MB 原始）
+    const imgStat = await stat(abs).catch(() => null)
+    if (imgStat && imgStat.size > 15_000_000) throw new Error(`Image too large: ${Math.round(imgStat.size / 1_000_000)}MB (max 15MB)`)
     const buf = await readFile(abs) // raw buffer, no encoding
     const b64 = buf.toString("base64")
-    // 图片太大（>20MB base64）拒绝，避免撑爆上下文
-    if (b64.length > 20_000_000) throw new Error(`Image too large: ${(b64.length / 1_000_000).toFixed(1)}MB base64 (max 20MB)`)
     const bytes = buf.length
     const result = JSON.stringify({
       text: `[read_image: ${args.path} (${mime}, ${bytes} bytes)]`,
@@ -97,10 +100,10 @@ export const writeTool = {
     const abs = resolveInCwd(ctx, args.path)
     await mkdir(dirname(abs), { recursive: true })
     const st = await stat(abs).catch(() => null)
-    if (st?.isDirectory()) throw new Error(`Path is a directory: ${abs}`)
+    if (st?.isDirectory()) throw new Error(`Path is a directory: ${args.path}`)
     await writeFile(abs, args.content, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Wrote ${args.content.length} chars to ${abs}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
+    return `Wrote ${args.content.length} chars to ${args.path}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
   },
 }
 
@@ -131,13 +134,13 @@ export const editTool = {
       // 给出线索帮模型定位：首行预览 + 常见原因
       const preview = args.old_string.slice(0, 100).split("\n")[0]
       throw new Error(
-        `old_string not found in ${abs}\n` +
+        `old_string not found in ${args.path}\n` +
         `  searched: "${preview}${args.old_string.length > 100 ? "…" : ""}"\n` +
         `  hints: whitespace mismatch? file already changed? try reading the file first`
       )
     }
     if (occurrences > 1 && !args.replace_all) {
-      throw new Error(`old_string matches ${occurrences} times in ${abs}; provide more context or set replace_all`)
+      throw new Error(`old_string matches ${occurrences} times in ${args.path}; provide more context or set replace_all`)
     }
     const updated = args.replace_all
       ? content.split(args.old_string).join(args.new_string)
@@ -145,7 +148,7 @@ export const editTool = {
       : content.replace(args.old_string, () => args.new_string)
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Edited ${abs}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
+    return `Edited ${args.path}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
   },
 }
 
@@ -185,7 +188,7 @@ export const insertAfterTool = {
       for (let i = 0; i < lines.length; i++) {
         if (regex.test(lines[i])) matches.push(i + 1)
       }
-      if (matches.length === 0) throw new Error(`after_regex /${args.after_regex}/ matched no lines in ${abs}`)
+      if (matches.length === 0) throw new Error(`after_regex /${args.after_regex}/ matched no lines in ${args.path}`)
       if (matches.length > 1) throw new Error(`after_regex /${args.after_regex}/ matched ${matches.length} lines (${matches.slice(0, 5).join(", ")}${matches.length > 5 ? "…" : ""}); use a more specific pattern or after_line instead`)
       targetLine = matches[0]
     } else {
@@ -196,7 +199,7 @@ export const insertAfterTool = {
     const updated = lines.join("\n")
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Inserted after line ${targetLine} in ${abs}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
+    return `Inserted after line ${targetLine} in ${args.path}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
   },
 }
 

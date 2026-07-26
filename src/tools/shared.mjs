@@ -141,9 +141,32 @@ export function resolveInCwd(ctx, p) {
   return resolved
 }
 
-/** 破坏性预检用的粗切分 */
+/** 破坏性预检用的粗切分（也切 > >> <，使段内破坏性检测在重定向时仍生效） */
 export function shellSegments(command) {
-  return command.split(/&&|\|\||[;|\n]|\$\(|`|[(]/)
+  return command.split(/&&|\|\||>>|\$\(|[;|\n<>]|`|[(]/)
+}
+
+/** 检测 shell 输出/输入重定向（> >> < 后跟文件名）——引号内未排除，保守拦截 */
+export function hasFileRedirection(command) {
+  return /(^|[\s;&|])>{1,2}\s*\S/.test(command) || /(^|[\s;&|])<\s*\S/.test(command)
+}
+
+/** 单命令段是否为破坏性非 git 命令（保守：宁可误拦） */
+export function isDestructiveCommand(seg) {
+  const s = seg
+  // rm 同时带递归(-r/-R)与强制(-f)标志：-rf / -fr / -r -f / -Rf 等
+  if (/\brm\b/.test(s) && /\s-\S*r/i.test(s) && /\s-\S*f/i.test(s)) return true
+  if (/\brmdir\b/i.test(s)) return true
+  if (/\bdel\b/i.test(s) && /\/f\b/i.test(s)) return true
+  if (/\brd\b/i.test(s) && /\/s\b/i.test(s)) return true
+  // format 作为命令调用（排除 --format= 之类的选项误报）
+  if (/\bformat\b\s+\S/i.test(s) && !/--format\b/i.test(s)) return true
+  if (/\bshred\b/i.test(s)) return true
+  if (/\bdd\b/.test(s) && /\bof=/i.test(s)) return true
+  if (/\bDROP\s+TABLE\b/i.test(s)) return true
+  if (/\bDELETE\s+FROM\b/i.test(s)) return true
+  if (/\bTRUNCATE\b/i.test(s)) return true
+  return false
 }
 
 /** 单命令段是否销毁未提交改动 */

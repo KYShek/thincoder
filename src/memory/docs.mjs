@@ -102,8 +102,9 @@ export async function docSearch(memory, query, { limit = 5 } = {}) {
 
   if (!memory.embedder) return ftsList.slice(0, limit)
 
-  await ensureDocEmbeddings(memory)
-  const [qvec] = await embed(memory.embedder, [query])
+  try { await ensureDocEmbeddings(memory) } catch { return ftsList.slice(0, limit) }
+  let qvec
+  try { [qvec] = await embed(memory.embedder, [query]) } catch { return ftsList.slice(0, limit) }
   const rows = memory.db.prepare(`SELECT rowid, embedding FROM doc_chunks WHERE embedding IS NOT NULL ${vecOriginFilter}`).all(...originParams)
   const vecList = rows
     .map((r) => ({ rowid: r.rowid, score: cosine(qvec, fromBlob(r.embedding)) }))

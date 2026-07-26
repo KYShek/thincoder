@@ -48,8 +48,9 @@ export async function embed(embedder, texts, { signal } = {}) {
 
 /** 余弦相似度（输入均已归一化，点积即余弦） */
 export function cosine(a, b) {
+  if (a.length !== b.length) return 0
   let sum = 0
-  const n = Math.min(a.length, b.length)
+  const n = a.length
   for (let i = 0; i < n; i++) sum += a[i] * b[i]
   return sum
 }
@@ -63,6 +64,7 @@ export function toBlob(vec) {
 export function fromBlob(buf) {
   // BLOB 可能来自 Buffer 池，byteOffset 不保证 4 对齐，直接建视图会 RangeError——先复制对齐
   if (buf.byteOffset % 4 !== 0) buf = new Uint8Array(buf)
+  if (buf.byteLength % 4 !== 0) return new Float32Array(0)
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
 }
 

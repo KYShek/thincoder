@@ -38,8 +38,9 @@ export async function search(memory, query, { limit = 5 } = {}) {
   if (!memory.embedder) return ftsList.slice(0, limit)
 
   // ---- 向量通道 ----
-  await ensureEmbeddings(memory)
-  const [qvec] = await embed(memory.embedder, [query])
+  try { await ensureEmbeddings(memory) } catch { return ftsList.slice(0, limit) }
+  let qvec
+  try { [qvec] = await embed(memory.embedder, [query]) } catch { return ftsList.slice(0, limit) }
   const vecFilter = memory.projectOrigin ? `AND (layer = 'team' OR origin = ?)` : ""
   const vecParams = memory.projectOrigin ? [memory.projectOrigin] : []
   const rows = memory.db.prepare(`
@@ -89,13 +90,19 @@ export function ftsSearch(memory, ftsQuery, limit) {
   return [...personal, ...files].sort((a, b) => a.rank - b.rank).slice(0, limit)
 }
 
-/** 按统一 id 取完整条目（personal:<n> / project:<path> / team:<path>） */
+/** 按统一 id 取完整条目（personal:<n> / project:<path> / team:<path>）
+ *  注意：v9 起 files 表 PK 为 (layer, origin, path)，同一 layer+path 可能跨多个 origin。
+ *  project 层优先返回 projectOrigin 命中的行，team 层取任意一行（跨团队仓库同名时取首条）。 */
 export function fetchEntry(memory, uid) {
   const [layer, ...rest] = uid.split(":")
   const key = rest.join(":")
   if (layer === "personal") {
     const r = memory.db.prepare(`SELECT id, type, title, content, tags FROM entries WHERE id = ?`).get(Number(key))
     return r ? { ...r, layer, id: uid } : null
+  }
+  if (layer === "project" && memory.projectOrigin) {
+    const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND origin = ? AND path = ?`).get(layer, memory.projectOrigin, key)
+    if (r) return { ...r, layer, id: uid }
   }
   const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND path = ?`).get(layer, key)
   return r ? { ...r, layer, id: uid } : null
@@ -166,7 +173,7 @@ export async function syncDir(memory, { layer, dir }) {
   }
 
   const indexed = new Map(
-    memory.db.prepare(`SELECT path, mtime_ms FROM files WHERE layer = ?`).all(layer).map((r) => [r.path, r.mtime_ms]),
+    memory.db.prepare(`SELECT path, mtime_ms FROM files WHERE layer = ? AND origin = ?`).all(layer, dir).map((r) => [r.path, r.mtime_ms]),
   )
 
   let added = 0, updated = 0, skipped = 0
@@ -189,7 +196,7 @@ export async function syncDir(memory, { layer, dir }) {
 
   let removed = 0
   for (const stale of indexed.keys()) {
-    memory.db.prepare(`DELETE FROM files WHERE layer = ? AND path = ?`).run(layer, stale)
+    memory.db.prepare(`DELETE FROM files WHERE layer = ? AND origin = ? AND path = ?`).run(layer, dir, stale)
     removed++
   }
   return { added, updated, removed, skipped }
@@ -202,15 +209,15 @@ export async function indexMarkdownFile(memory, { layer, dir, filename, mtimeMs 
   const { meta, content } = parseEntry(await readFile(abs, "utf8"))
   const tags = meta.tags.join(" ")
   memory.db.prepare(`
-    INSERT INTO files (layer, path, type, title, content, tags, author, mtime_ms, origin, seg_title, seg_content, seg_tags, updated_at)
+    INSERT INTO files (layer, origin, path, type, title, content, tags, author, mtime_ms, seg_title, seg_content, seg_tags, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (layer, path) DO UPDATE SET
+    ON CONFLICT(layer, origin, path) DO UPDATE SET
       type=excluded.type, title=excluded.title, content=excluded.content, tags=excluded.tags,
       author=excluded.author, mtime_ms=excluded.mtime_ms, origin=excluded.origin,
       seg_title=excluded.seg_title, seg_content=excluded.seg_content, seg_tags=excluded.seg_tags,
       updated_at=excluded.updated_at
   `).run(
-    layer, filename, meta.type, meta.title, content, tags, meta.author, mtime, dir,
+    layer, dir, filename, meta.type, meta.title, content, tags, meta.author, mtime,
     segmentCJK(meta.title), segmentCJK(content), segmentCJK(tags), Date.now(),
   )
 }
@@ -235,15 +242,17 @@ export async function remove(memory, id) {
 }
 
 /**
- * 构造 FTS5 查询：先对查询做同样的 CJK 分字，再按空白/标点切词，
- * 每个词加引号，OR 连接（AND 太严格：自然语言查询一词不中全灭）。
+ * 构造 FTS5 查询：先按空白/标点切词，再对每个词做 CJK 分字。
+ * 这样 CJK 多字词保持为 FTS5 短语（"分号" → "分 号" → 短语查询，精确匹配相邻字），
+ * 而不同词之间用 OR 连接（"命名 规范" → "命 名" OR "规 范"，两个短语各需相邻匹配）。
  */
 export function buildFtsQuery(query) {
-  const terms = segmentCJK(query)
+  const terms = query
     .split(/[\s,，。、;；!！?？()（）"`]+/)
     .map((t) => t.trim())
     .filter(Boolean)
     .slice(0, 16)
+    .map((t) => segmentCJK(t))
   if (terms.length === 0) return ""
   return terms.map((t) => `"${t.replaceAll('"', '""')}"`).join(" OR ")
 }

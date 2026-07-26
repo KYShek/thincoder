@@ -15,7 +15,7 @@ import { detectLanguage, _upsertCodeFile, _upsertDocFile, yieldTick } from "./co
  * 返回 { updated, removed, skipped } 或 null（git 不可用）。
  */
 export async function gitSync(memory, dir, { onProgress } = {}) {
-  const { execSync } = await import("node:child_process")
+  const { execSync, execFileSync } = await import("node:child_process")
   const opts = { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }
 
   let head
@@ -26,7 +26,7 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
 
   let diffOut
   try {
-    const committed = execSync(`git diff --name-only --diff-filter=ACMRTD ${stored} HEAD`, opts).trim()
+    const committed = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRTD", stored, "HEAD"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }).trim()
     const dirty = execSync(`git diff --name-only --diff-filter=ACMRTD`, opts).trim()
     const lines = [...new Set([...committed.split("\n").filter(Boolean), ...dirty.split("\n").filter(Boolean)])]
     diffOut = lines
@@ -34,7 +34,13 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
     return null
   }
 
-  if (diffOut.length > 200) return null
+  if (diffOut.length > 200) {
+    // diff 太大，增量没意义——回退全量同步并更新锚点
+    await codeSync(memory, dir, { onProgress })
+    const { docSync } = await import("./docs.mjs")
+    await docSync(memory, dir, { onProgress })
+    return { updated: -1, removed: 0, skipped: 0, failed: 0, errors: [], fallback: true }
+  }
 
   let updated = 0, removed = 0, skipped = 0, failed = 0
   const errors = []
@@ -190,8 +196,9 @@ export async function codeSearch(memory, query, { limit = 5 } = {}) {
 
   if (!memory.embedder) return ftsList.slice(0, limit)
 
-  await ensureEmbeddings(memory)
-  const [qvec] = await embed(memory.embedder, [query])
+  try { await ensureEmbeddings(memory) } catch { return ftsList.slice(0, limit) }
+  let qvec
+  try { [qvec] = await embed(memory.embedder, [query]) } catch { return ftsList.slice(0, limit) }
   const rows = memory.db.prepare(`SELECT rowid, embedding FROM code_chunks WHERE embedding IS NOT NULL ${vecOriginFilter}`).all(...originParams)
   const vecList = rows
     .map((r) => ({ rowid: r.rowid, score: cosine(qvec, fromBlob(r.embedding)) }))

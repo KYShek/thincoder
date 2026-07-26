@@ -67,7 +67,7 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
         onQuestion: callbacks.onQuestion,
         onPermissionRequest: callbacks.onPermissionRequest,
       }))
-      const result = await offloadToolResult(raw, item.toolCall.id)
+      const result = item.toolCall.name === "read_image" ? raw : await offloadToolResult(raw, item.toolCall.id)
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result, ok: true }
     } catch (error) {

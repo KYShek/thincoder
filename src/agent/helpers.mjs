@@ -22,7 +22,7 @@ export const OUTLINE_INJECT_PREFIX = "[System reminder: project dependency outli
 export const FILE_MUTATORS = new Set(["write", "edit", "insert_after", "apply_patch", "delete"])
 
 export function escapeXml(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;")
 }
 
 export function tryCanonicalize(name, args) {

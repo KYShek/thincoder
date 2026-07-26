@@ -129,9 +129,14 @@ export const applyPatchTool = {
         planned.push({ abs, path: f.path, content: lines.join("\n"), isNew: false })
       }
     }
+    // 多文件原子写：先全部写 .tmp，全部成功后再 rename——任一写失败不影响已落盘的文件
+    const { rename } = await import("node:fs/promises")
     for (const p of planned) {
       await mkdir(dirname(p.abs), { recursive: true })
-      await writeFile(p.abs, p.content, "utf8")
+      await writeFile(p.abs + ".thincoder-tmp", p.content, "utf8")
+    }
+    for (const p of planned) {
+      await rename(p.abs + ".thincoder-tmp", p.abs)
     }
     const summary = planned.map((p) => `  ${p.isNew ? "created " : "modified"} ${p.path}`).join("\n")
     const syntaxResults = planned.map((p) => {
@@ -158,17 +163,17 @@ export const syntaxCheckTool = {
   execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     if (!/\.(?:[mc]?js)$/.test(abs)) {
-      return `syntax_check only supports .js/.mjs/.cjs files; ${abs} skipped.`
+      return `syntax_check only supports .js/.mjs/.cjs files; ${args.path} skipped.`
     }
     try {
       execFileSync(process.execPath, ["--check", abs], {
         cwd: ctx.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       })
-      return `Syntax OK: ${abs}`
+      return `Syntax OK: ${args.path}`
     } catch (e) {
       // node --check 把错误写到 stderr
       const msg = (e.stderr || e.stdout || e.message || "").trim()
-      return `Syntax error in ${abs}:\n${msg || "(unknown)"}`
+      return `Syntax error in ${args.path}:\n${msg || "(unknown)"}`
     }
   },
 }
@@ -189,7 +194,7 @@ export const deleteTool = {
   readonly: false,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
-    if (!existsSync(abs)) throw new Error(`File not found: ${abs}`)
+    if (!existsSync(abs)) throw new Error(`File not found: ${args.path}`)
     const s = await stat(abs)
     if (s.isDirectory()) throw new Error(`"${args.path}" is a directory — use bash to remove directories`)
     // git 跟踪文件拒绝直接删除（安全网）；未跟踪的放行
@@ -204,7 +209,7 @@ export const deleteTool = {
     }
     if (tracked && !args.force) throw new Error(`"${args.path}" is git-tracked. Set force=true to delete anyway.`)
     await unlink(abs)
-    return `Deleted ${abs}`
+    return `Deleted ${args.path}`
   },
 }
 

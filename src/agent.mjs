@@ -141,7 +141,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         })
         continue
       }
-      if (depth === 0 && agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
+      if (depth === 0 && agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
         if (honestReminderInjected) {
           agent.history.push({ role: "assistant", content: response.content })
           return response.content
@@ -172,6 +172,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
 
     const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks, depth, signal)
 
+    // 模型在执行工具调用 → 在做实际工作，重置完成守卫推回计数
+    guardPushbacks = 0
+
     for (const { toolCall, result, ok } of results) {
       if (toolCall.name === "read_image" && ok) {
         try {
@@ -181,6 +184,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
               role: "user",
               content: [{ type: "text", text: parsed.text }, ...parsed.images],
             })
+            // tool 消息只放短文本描述，不放完整 base64（已在上方多模态消息中注入）
+            agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: parsed.text })
+            continue
           }
         } catch { /* 解析失败不影响普通 tool 消息 */ }
       }
@@ -221,6 +227,8 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     for (const { toolCall } of results) {
       recentCallSigs.push(tryCanonicalize(toolCall.name, toolCall.arguments))
     }
+    // 保留最近 5 条即可——只检查尾部连续重复
+    if (recentCallSigs.length > 5) recentCallSigs.splice(0, recentCallSigs.length - 5)
     if (recentCallSigs.length >= 3) {
       const last3 = recentCallSigs.slice(-3)
       if (last3[0] === last3[1] && last3[1] === last3[2]) {

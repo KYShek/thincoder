@@ -60,6 +60,31 @@ export const websearchTool = {
 
 // ---------------------------------------------------------------- ls
 
+/** SSRF 防护：拒绝内网私有段/metadata 端点（localhost 放行——用户本机，测试也依赖） */
+function isPrivateUrl(urlStr) {
+  let u
+  try { u = new URL(urlStr) } catch { return true }
+  const host = u.hostname.toLowerCase()
+  // localhost / 127.x 放行（用户本机开发服务器、测试 mock server）
+  if (host === "localhost" || host === "0.0.0.0" || host.endsWith(".localhost")) return false
+  if (host === "127.0.0.1" || host.startsWith("127.")) return false
+  // 云 metadata 端点
+  if (host === "169.254.169.254" || host === "metadata.google.internal") return true
+  // IPv4 私有段
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])]
+    if (a === 10) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+    if (a === 169 && b === 254) return true
+    if (a === 0) return true
+  }
+  // IPv6 环回 / 链路本地 / 唯一本地地址
+  if (host === "::1" || host === "fe80::1" || host.startsWith("fc") || host.startsWith("fd")) return true
+  return false
+}
+
 export const fetchTool = {
   name: "fetch",
   description: DESC("fetch"),
@@ -73,6 +98,7 @@ export const fetchTool = {
   readonly: true,
   async execute(args, ctx) {
     if (!/^https?:\/\//.test(args.url)) throw new Error("url must start with http:// or https://")
+    if (isPrivateUrl(args.url)) throw new Error("fetch blocked: internal/private/metadata addresses are not allowed")
     let response
     try {
       response = await fetch(args.url, {

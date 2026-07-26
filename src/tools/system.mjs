@@ -8,6 +8,8 @@ import {
   resolveInCwd,
   shellSegments,
   isDestructiveGitSegment,
+  isDestructiveCommand,
+  hasFileRedirection,
   insideGitRepo,
   globToRegex
 } from "./shared.mjs";
@@ -15,8 +17,18 @@ import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
-import { stat } from "node:fs/promises";
+import { stat, lstat } from "node:fs/promises";
 import { join } from "node:path";
+
+/** 子进程环境变量白名单：只透传安全变量，隔离 API key 等敏感信息 */
+const SAFE_ENV_KEYS = new Set([
+  "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+  "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL",
+  "ComSpec", "PATHEXT", "SystemRoot", "windir",
+  "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+  "PYTHONIOENCODING", "GIT_EDITOR", "EDITOR", "VISUAL",
+  "GIT_PAGER", "PAGER", "TERM",
+])
 
 export const bashTool = {
   name: "bash",
@@ -31,6 +43,14 @@ export const bashTool = {
   },
   readonly: false,
   async execute(args, ctx) {
+    // 安全预检：禁止 shell 重定向（> >> <）——应改用 write/edit/insert_after 工具
+    if (hasFileRedirection(args.command)) {
+      throw new Error("File redirection via bash is not allowed — use the write/edit/insert_after tools instead")
+    }
+    // 安全预检：破坏性非 git 命令（rm -rf / DROP TABLE 等）直接拒绝
+    if (shellSegments(args.command).some(isDestructiveCommand)) {
+      throw new Error("Destructive command blocked — use specific tools or confirm with the user first")
+    }
     // 安全预检：销毁性 git 操作先检查未提交改动，有则拒绝——防一键清掉几小时工作
     if (shellSegments(args.command).some(isDestructiveGitSegment)) {
       if (!insideGitRepo(ctx.cwd)) {
@@ -70,7 +90,9 @@ export const bashTool = {
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
         env: {
-          ...process.env,
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(([k]) => SAFE_ENV_KEYS.has(k))
+          ),
           GIT_EDITOR: "true",
           EDITOR: "true",
           VISUAL: "true",
@@ -209,6 +231,9 @@ export const grepTool = {
     async function search(file) {
       let content
       try {
+        // 大文件保护：超 10MB 跳过，防 OOM
+        const fst = await stat(file)
+        if (fst.size > 10_000_000) return
         content = await readFile(file, "utf8")
       } catch {
         return // 不可读文件跳过；二进制会被按 utf8 读入并照常搜索（可能产生乱码匹配）
@@ -225,7 +250,9 @@ export const grepTool = {
 
     async function walk(target) {
       if (hits.length >= 200) return
-      const s = await stat(target)
+      // 用 lstat 不跟随符号链接——防 ./evil → /etc 时 grep 读遍 /etc
+      let s
+      try { s = await lstat(target) } catch { return }
       if (!s.isDirectory()) {
         if (!fileFilter || fileFilter.test(target.split(/[\\/]/).pop())) await search(target)
         return

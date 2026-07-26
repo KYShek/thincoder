@@ -11,7 +11,7 @@ import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
 export const VALID_TYPES = new Set(["rule", "knowledge", "decision", "pattern"])
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 // 代码索引：源码文件扩展名
 export const CODE_EXTS = new Set([".mjs", ".js", ".ts", ".tsx", ".jsx", ".py", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".swift", ".kt", ".sh", ".bash", ".sql", ".yaml", ".yml", ".toml", ".json", ".css", ".html", ".vue", ".svelte"])
@@ -362,6 +362,61 @@ export function migrate(db) {
       END;
     `)
     db.exec(`PRAGMA user_version = 8`)
+  }
+
+  if (version < 9) {
+    // v9: files 表 PK 加 origin，防跨项目 project 层记忆覆盖
+    // SQLite 不能 ALTER 主键 → 删表重建（下次 syncDir 自动重索引）
+    db.exec(`
+      DROP TRIGGER IF EXISTS files_ai;
+      DROP TRIGGER IF EXISTS files_ad;
+      DROP TRIGGER IF EXISTS files_au;
+      DROP TABLE IF EXISTS files_fts;
+      DROP TABLE IF EXISTS files;
+    `)
+    db.exec(`
+      CREATE TABLE files (
+        layer TEXT NOT NULL CHECK(layer IN ('project','team')),
+        origin TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('rule','knowledge','decision','pattern')),
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        tags TEXT NOT NULL DEFAULT '',
+        author TEXT NOT NULL DEFAULT '',
+        embedding BLOB,
+        mtime_ms INTEGER NOT NULL DEFAULT 0,
+        seg_title TEXT NOT NULL DEFAULT '',
+        seg_content TEXT NOT NULL DEFAULT '',
+        seg_tags TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (layer, origin, path)
+      )
+    `)
+    db.exec(`
+      CREATE VIRTUAL TABLE files_fts USING fts5(
+        seg_title, seg_content, seg_tags,
+        content='files', content_rowid='rowid',
+        tokenize='unicode61'
+      )
+    `)
+    db.exec(`
+      CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN
+        INSERT INTO files_fts(rowid, seg_title, seg_content, seg_tags)
+        VALUES (new.rowid, new.seg_title, new.seg_content, new.seg_tags);
+      END;
+      CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, seg_title, seg_content, seg_tags)
+        VALUES ('delete', old.rowid, old.seg_title, old.seg_content, old.seg_tags);
+      END;
+      CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, seg_title, seg_content, seg_tags)
+        VALUES ('delete', old.rowid, old.seg_title, old.seg_content, old.seg_tags);
+        INSERT INTO files_fts(rowid, seg_title, seg_content, seg_tags)
+        VALUES (new.rowid, new.seg_title, new.seg_content, new.seg_tags);
+      END;
+    `)
+    db.exec(`PRAGMA user_version = 9`)
   }
   db.exec("COMMIT")
   } catch (err) {
