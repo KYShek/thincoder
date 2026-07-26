@@ -193,6 +193,10 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.7.8 (2026-07)
+- **Provider config flow streamlined**: adding a provider now immediately prompts for API key (no more "go back to /provider → Set Key"). Switching to a keyless provider via `/model` also prompts for key inline. Empty input gives clear "skipped" feedback
+- **bash tool: file writing forbidden**: models must use write/edit/insert_after/apply_patch instead of `echo`/`sed`/`printf > file`. Fixes GBK encoding corruption on Chinese Windows (cmd.exe writes redirected files in ANSI code page, not UTF-8). `PYTHONIOENCODING=utf-8` set for Python subprocesses on Windows
+
 ### 0.7.7 (2026-07)
 - **Code review fixes (4 critical bugs)**:
   - `gitSync` anchor never set after full `codeSync` fallback → fast path was dead in production; now `codeSync`/`docSync` write the anchor on success

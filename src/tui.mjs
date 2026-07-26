@@ -1661,7 +1661,15 @@ export async function startTUI(agent, opts = {}) {
                 await persistRaw((raw) => { raw.providers = agent.providers })
                 pushLabel(`❯ Provider`, ansi.bold + C.tool)
                 pushLine(`Added ${name} (${baseURL} / ${model}）`, C.tool)
-                pushLine(`Next: /provider → Set Key`, C.dim)
+                // 直接接 key 输入，不让用户再绕一圈
+                askQuestion(`Enter API key for ${name} (留空跳过，之后 /provider → Set Key):`).then(async (key) => {
+                  if (key) {
+                    await setProviderKey(name, key)
+                    pushLine(`Key saved for ${name}`, C.tool)
+                  } else {
+                    pushLine(`跳过 key。之后 /provider → Set API Key 配置`, C.dim)
+                  }
+                })
               })
               return
             }
@@ -1680,7 +1688,10 @@ export async function startTUI(agent, opts = {}) {
                 entries: keyEntries,
                 onSelect: (se) => {
                   askQuestion(`Enter API key for ${se.name}:`).then(async (key) => {
-                    if (!key) return
+                    if (!key) {
+                      pushLine(`跳过 key 输入`, C.dim)
+                      return
+                    }
                     await setProviderKey(se.name, key)
                   })
                 },
@@ -2142,7 +2153,16 @@ export async function startTUI(agent, opts = {}) {
     agent.config.activeProvider = item.provider
     pushLabel(`❯ Model`, ansi.bold + C.tool)
     pushLine(`Switched to ${item.provider} / ${item.model}${thresholdNote} (persisted)`, C.tool)
-    if (!agent.provider.apiKey) pushLine(`Provider has no key: /provider → Set Key`, C.warn)
+    if (!agent.provider.apiKey) {
+      pushLine(`Provider has no key`, C.warn)
+      askQuestion(`Enter API key for ${item.provider} (留空跳过):`).then(async (key) => {
+        if (key) {
+          await setProviderKey(item.provider, key)
+        } else {
+          pushLine(`跳过。之后 /provider → Set API Key 配置`, C.dim)
+        }
+      })
+    }
   }
 
   /** /distill：从current会话提取候选，逐条 y/n 确认后入库 */
