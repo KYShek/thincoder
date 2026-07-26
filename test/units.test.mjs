@@ -2847,6 +2847,64 @@ test("reindexFile: write 后单文件增量索引", async () => {
   }
 })
 
+test("gitSync: git diff 驱动增量索引，二次调用无变更", async () => {
+  const { codeSync, codeSearch, gitSync } = await import("../src/memory.mjs")
+  const { writeFile } = await import("node:fs/promises")
+  const { execSync } = await import("node:child_process")
+  const m = freshMemory()
+
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-gitsync-"))
+  const git = (...a) => execSync(`git ${a.join(" ")}`, { cwd: dir, stdio: "ignore" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+
+    // 初始文件 + 首次全量索引
+    await writeFile(join(dir, "app.mjs"), "export function hello() { return 'hi' }")
+    git("add", "app.mjs")
+    git("commit", "-m", "init")
+    await codeSync(m, dir)
+    // 首次 codeSync 后手动写入锚点（模拟正常启动流程）
+    const head1 = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim()
+    m.db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('last_indexed_commit', ?)`).run(head1)
+
+    // 二次提交：修改 + 新增
+    await writeFile(join(dir, "app.mjs"), "export function hello() { return 'hello' }\nexport function bye() { return 'bye' }")
+    await writeFile(join(dir, "util.mjs"), "export const V = 1")
+    git("add", ".")
+    git("commit", "-m", "update")
+
+    // gitSync 应只更新变更的文件
+    const res = await gitSync(m, dir)
+    assert.ok(res !== null, "gitSync 不应返回 null")
+    assert.ok(res.updated >= 1, `至少应更新 1 个文件，实际 ${res.updated}`)
+
+    // 新符号可检索
+    const r1 = await codeSearch(m, "bye")
+    assert.ok(r1.length > 0, "新符号 'bye' 应可检索到")
+
+    // 二次调用应无变更
+    const head2 = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim()
+    const stored2 = m.db.prepare(`SELECT value FROM meta WHERE key = 'last_indexed_commit'`).get()?.value
+    assert.equal(stored2, head2, "锚点应更新到最新 commit")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("gitSync: 非 git 仓库返回 null", async () => {
+  const { gitSync } = await import("../src/memory.mjs")
+  const m = freshMemory()
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-nogit-"))
+  try {
+    const res = await gitSync(m, dir)
+    assert.equal(res, null, "非 git 仓库应返回 null")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("doc_search 工具注册与执行", async () => {
   const { docSync, docSearchTool } = await import("../src/memory.mjs")
   const { writeFile, mkdir } = await import("node:fs/promises")

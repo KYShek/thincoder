@@ -1117,25 +1117,25 @@ export async function startTUI(agent, opts = {}) {
           total += s.added
           pushLine(`  team: +${s.added} ~${s.updated} -${s.removed}`, C.dim)
         }
-        // 重建代码索引
-        pushLine(`  [code] Rebuilding code index...`, C.tool)
-        const cr = await codeSync(agent.memory, agent.cwd, {
-          onProgress: (p) => {
-            if (p.phase === "index" && p.current % 20 === 0) {
-              pushLine(`    Indexing... ${p.current}/${p.total}`, C.dim)
+        // 重建代码索引和文档索引并行（读写不同表，WAL 支持）
+        pushLine(`  [code+doc] Rebuilding indexes...`, C.tool)
+        const [cr, dr] = await Promise.all([
+          codeSync(agent.memory, agent.cwd, {
+            onProgress: (p) => {
+              if (p.phase === "index" && p.current % 20 === 0) {
+                pushLine(`    code: ${p.current}/${p.total}`, C.dim)
+              }
             }
-          }
-        })
+          }),
+          docSync(agent.memory, agent.cwd, {
+            onProgress: (p) => {
+              if (p.phase === "index" && p.current % 5 === 0) {
+                pushLine(`    doc: ${p.current}/${p.total}`, C.dim)
+              }
+            }
+          }),
+        ])
         pushLine(`  code: ${cr.total} files, +${cr.updated} ~${cr.skipped} -${cr.removed}`, C.dim)
-        // 重建文档索引
-        pushLine(`  [doc] Rebuilding doc index...`, C.tool)
-        const dr = await docSync(agent.memory, agent.cwd, {
-          onProgress: (p) => {
-            if (p.phase === "index" && p.current % 5 === 0) {
-              pushLine(`    Indexing... ${p.current}/${p.total}`, C.dim)
-            }
-          }
-        })
         pushLine(`  doc: ${dr.total} files, +${dr.updated} ~${dr.skipped} -${dr.removed}`, C.dim)
         pushLine(`[reindex] Done, ${total} entries total. Vectors will be lazily generated on next search.`, C.tool)
         return
@@ -2423,36 +2423,56 @@ export async function startTUI(agent, opts = {}) {
   render()
 
   // 后台索引 (进界面后再跑，不阻塞启动）；进度走底部状态栏，不往对话区塞行
+  // 优先用 git diff 增量（快），git 不可用或首次运行时退到全量扫描
   ;(async () => {
-    const { codeSync, docSync } = await import("./memory.mjs")
+    const { codeSync, docSync, gitSync } = await import("./memory.mjs")
     const cwd = agent.cwd
     let codeFiles = 0, docFiles = 0
-    try {
-      state.status = "Indexing code..."
-      render()
-      await codeSync(agent.memory, cwd, {
-        onProgress: (p) => {
-          if (p.phase === "index" && p.current % 30 === 0) {
-            state.status = `Indexing code... ${p.current}/${p.total}`
-            render()
-          }
+
+    state.status = "Indexing..."
+    render()
+
+    const gitRes = await gitSync(agent.memory, cwd, {
+      onProgress: (p) => {
+        if (p.phase === "index" && p.current % 5 === 0) {
+          state.status = `Indexing... ${p.current}/${p.total}`
+          render()
         }
-      })
+      }
+    })
+
+    if (gitRes !== null) {
+      // git 增量成功，直接统计
       codeFiles = agent.memory.db.prepare(`SELECT COUNT(DISTINCT path) AS n FROM code_chunks`).get()?.n ?? 0
-    } catch { /* 不阻塞 */ }
-    try {
-      state.status = "Indexing docs..."
-      render()
-      await docSync(agent.memory, cwd, {
-        onProgress: (p) => {
-          if (p.phase === "index" && p.current % 10 === 0) {
-            state.status = `Indexing docs... ${p.current}/${p.total}`
-            render()
-          }
-        }
-      })
       docFiles = agent.memory.db.prepare(`SELECT COUNT(DISTINCT path) AS n FROM doc_chunks`).get()?.n ?? 0
-    } catch { /* 不阻塞 */ }
+    } else {
+      // 退到全量扫描（codeSync 和 docSync 并行——读写不同表，SQLite WAL 天然支持）
+      const [codeRes, docRes] = await Promise.allSettled([
+        codeSync(agent.memory, cwd, {
+          onProgress: (p) => {
+            if (p.phase === "index" && p.current % 30 === 0) {
+              state.status = `Indexing code... ${p.current}/${p.total}`
+              render()
+            }
+          }
+        }),
+        docSync(agent.memory, cwd, {
+          onProgress: (p) => {
+            if (p.phase === "index" && p.current % 10 === 0) {
+              state.status = `Indexing docs... ${p.current}/${p.total}`
+              render()
+            }
+          }
+        }),
+      ])
+      if (codeRes.status === "fulfilled") {
+        codeFiles = agent.memory.db.prepare(`SELECT COUNT(DISTINCT path) AS n FROM code_chunks`).get()?.n ?? 0
+      }
+      if (docRes.status === "fulfilled") {
+        docFiles = agent.memory.db.prepare(`SELECT COUNT(DISTINCT path) AS n FROM doc_chunks`).get()?.n ?? 0
+      }
+    }
+
     state.status = codeFiles || docFiles
       ? `Ready — idx code ${codeFiles} doc ${docFiles}`
       : "Ready"

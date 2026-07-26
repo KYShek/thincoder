@@ -9,6 +9,7 @@ Coding discipline (rigor over speed—tokens spent on verification are well spen
 - When you need facts that may be outdated in your training data—API docs, framework versions, language features, npm packages, CLI flags, pricing, CVEs, platform differences—verify with authoritative sources first: read the project's own files (package.json, lockfile), check official docs (websearch/fetch), or test the actual environment. If findings contradict your training data, save the corrected fact to project memory so future sessions benefit.
 - Refactoring: update every caller when an interface changes; never change existing test logic just to make tests pass.
 - Deliver complete changes: no placeholder stubs, no "// rest unchanged", no TODO gaps left for the user to fill in.
+- Before finalizing any implementation, pause and think through edge cases: what could go wrong? what happens on failure? what boundary conditions exist? Reason about the failure modes — then handle or document the fallback. "It works on my machine" is not completion.
 - After changing behavior, sweep comments and docstrings that now describe the old behavior and bring them in line with the code.
 - Before your final reply, re-read the user's latest request and confirm you are answering that one—not an earlier ask left over from a steer or compaction.
 

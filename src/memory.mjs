@@ -820,6 +820,84 @@ function _upsertDocFile(memory, origin, rel, lines, mtimeMs) {
 }
 
 /**
+ * git 驱动增量索引：用 git diff 找出上次索引以来的变更文件，
+ * 只重建这些文件的 FTS5 块（不碰向量）。比全量 mtime 扫描快一个数量级。
+ * 返回 { updated, removed, skipped } 或 null（git 不可用时，调用方退到 codeSync）。
+ */
+export async function gitSync(memory, dir, { onProgress } = {}) {
+  const { execSync } = await import("node:child_process")
+  const opts = { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }
+
+  let head
+  try { head = execSync("git rev-parse HEAD", opts).trim() } catch { return null }
+
+  const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'last_indexed_commit'`).get()?.value
+  if (!stored) return null // 首次运行，走全量 codeSync
+
+  // 取两个 diff 的并集：已提交的变更（pull/merge）+ 工作区脏文件（用户在外部编辑器改的）
+  let diffOut
+  try {
+    // --diff-filter 只取增/改/重命名，不取删（删文件由 reindexFile 自己检测）
+    const committed = execSync(`git diff --name-only --diff-filter=ACMRT ${stored} HEAD`, opts).trim()
+    const dirty = execSync(`git diff --name-only --diff-filter=ACMRT`, opts).trim()
+    const lines = [...new Set([...committed.split("\n").filter(Boolean), ...dirty.split("\n").filter(Boolean)])]
+    diffOut = lines
+  } catch {
+    // rebase / shallow clone 导致旧 commit 不可达 → 退到全量
+    return null
+  }
+
+  if (diffOut.length > 200) {
+    // 大范围变更（分支切换等）→ 退到 codeSync，它有更好的进度反馈
+    return null
+  }
+
+  let updated = 0, removed = 0, skipped = 0
+  for (let i = 0; i < diffOut.length; i++) {
+    const rel = diffOut[i].replaceAll("\\", "/")
+    const abs = join(dir, rel)
+    const ext = rel.slice(rel.lastIndexOf(".")).toLowerCase()
+
+    // 跳过隐藏目录和 SKIP_DIRS 里的文件
+    const pathDirs = rel.split("/")
+    if (pathDirs.some((d) => SKIP_DIRS.has(d) || d.startsWith("."))) continue
+
+    if (!CODE_EXTS.has(ext) && !DOC_EXTS.has(ext)) { skipped++; continue }
+
+    try {
+      const text = await readFile(abs, "utf8")
+      const lines = text.split("\n")
+      if (CODE_EXTS.has(ext)) {
+        const lang = detectLanguage(abs)
+        let mtimeMs = 0
+        try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { /* 新文件 */ }
+        _upsertCodeFile(memory, dir, rel, lines, lang, mtimeMs)
+      } else {
+        let mtimeMs = 0
+        try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { /* 新文件 */ }
+        _upsertDocFile(memory, dir, rel, lines, mtimeMs)
+      }
+      updated++
+    } catch (e) {
+      // 文件已被删 → 清理索引
+      if (CODE_EXTS.has(ext)) memory.db.prepare(`DELETE FROM code_chunks WHERE origin = ? AND path = ?`).run(dir, rel)
+      else memory.db.prepare(`DELETE FROM doc_chunks WHERE origin = ? AND path = ?`).run(dir, rel)
+      removed++
+    }
+    if (onProgress && i % 5 === 0) {
+      onProgress({ phase: "index", current: i + 1, total: diffOut.length, updated, removed, skipped })
+    }
+  }
+
+  // 更新锚点
+  memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_indexed_commit', ?)
+    ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(head)
+
+  onProgress?.({ phase: "done", total: diffOut.length, updated, removed, skipped })
+  return { updated, removed, skipped }
+}
+
+/**
  * 同步代码索引：扫描 dir 下所有源文件 → 分块 → upsert 到 code_chunks。
  * 按 mtime 增量——只重建变更过的文件块。
  * onProgress({ phase, current, total }) 可选回调，用于 UI 进度展示。

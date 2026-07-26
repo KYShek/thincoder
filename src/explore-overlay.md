@@ -11,4 +11,5 @@ Guidelines:
 - Use WebSearch or Fetch when external context is needed (docs, error messages)
 - Issue parallel tool calls whenever possible — read multiple files at once
 - Complete the search efficiently and report findings in a structured format
+- If the expected pattern doesn't exist, report that explicitly: what you searched for, which tools you used, and that nothing matched. "Probably there" is not a finding — only report what you actually saw.
 - If something is ambiguous, note it in your report; do not ask the user
