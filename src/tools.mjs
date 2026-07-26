@@ -600,6 +600,11 @@ const bashTool = {
           try { child.kill("SIGKILL") } catch {} // 组杀失败时兜底杀本体
         }
       }
+      // Windows 中文系统默认代码页是 GBK (CP936)，cmd.exe 重定向写文件时用 ANSI 代码页，
+      // chcp 65001 也改不了重定向的编码。bash 工具写含 CJK 的文件会产生 GBK——
+      // 提示词层已禁止用 bash 写文件（用 write/edit 工具替代），这里设 PYTHONIOENCODING
+      // 覆盖 Python 脚本的 stdout 编码（Python 是唯一可能正确响应环境变量的子进程）
+      const winCmd = process.platform === "win32"
       const child = spawn(args.command, {
         cwd: ctx.cwd,
         shell: true,
@@ -614,6 +619,7 @@ const bashTool = {
           GIT_PAGER: "cat",
           PAGER: "cat",
           TERM: "dumb",
+          ...(winCmd ? { PYTHONIOENCODING: "utf-8" } : {}),
         },
       })
       // stdout / stderr 各自独立解码（同进程通常同编码，但分开收集更干净，
