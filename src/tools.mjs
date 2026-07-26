@@ -8,7 +8,7 @@
 import { spawn, execFileSync } from "node:child_process"
 import { mkdir, readFile, readdir, stat, writeFile, unlink } from "node:fs/promises"
 import { readFileSync, existsSync } from "node:fs"
-import { dirname, join, resolve, relative } from "node:path"
+import { dirname, join, resolve, relative, isAbsolute, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -19,6 +19,7 @@ const MAX_READ_LINES = 2000
 // 这里截断必须远高于落盘阈值，否则被截掉的内容在落盘前就永远丢了
 const MAX_OUTPUT_CHARS = 200_000
 const BASH_TIMEOUT_MS = 120_000
+const MAX_RESPONSE_BODY_BYTES = 5_000_000
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage"])
 
 /** 每个工具：{ name, description, parameters, readonly, execute(args, ctx) }（定义见文件末尾导出） */
@@ -46,6 +47,31 @@ function sanitizeOutput(s) {
 function truncate(text, max = MAX_OUTPUT_CHARS) {
   if (text.length <= max) return text
   return text.slice(0, max) + `\n[... truncated: ${text.length - max} chars omitted — redirect to a file if you need the full output]`
+}
+
+/** 限量读取响应体：超 limit 字节即取消流，防超大页面把整个 body 缓冲进内存 */
+async function readBodyText(response, limit = MAX_RESPONSE_BODY_BYTES) {
+  if (!response.body) return ""
+  const reader = response.body.getReader()
+  const chunks = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        chunks.push(value)
+        total += value.length
+      }
+      if (total >= limit) {
+        await reader.cancel()
+        break
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return new TextDecoder("utf-8").decode(Buffer.concat(chunks))
 }
 
 /** 创建独立的流解码器（编码嗅探：ASCII → UTF-8 → GBK 回退） */
@@ -93,7 +119,11 @@ function gitDiffOne(cwd, abs) {
 
 function resolveInCwd(ctx, p) {
   const resolved = resolve(ctx.cwd, p)
-  if (relative(ctx.cwd, resolved).startsWith("..")) throw new Error(`Access denied outside working directory: ${p}`)
+  const rel = relative(ctx.cwd, resolved)
+  // 跨盘符时 relative 返回绝对路径（Windows）；startsWith("..") 会误伤 cwd 内的 "..foo"，故精确判断
+  if (isAbsolute(rel) || rel === ".." || rel.startsWith(".." + sep)) {
+    throw new Error(`Access denied outside working directory: ${p}`)
+  }
   return resolved
 }
 
@@ -114,6 +144,7 @@ const readTool = {
   readonly: true,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
+    // 注意：整文件一次性读入内存，大文件会被完整缓冲（offset/limit 只影响返回切片）
     const content = await readFile(abs, "utf8")
     const lines = content.split("\n")
     const offset = Math.max(1, args.offset ?? 1)
@@ -184,7 +215,8 @@ const editTool = {
     }
     const updated = args.replace_all
       ? content.split(args.old_string).join(args.new_string)
-      : content.replace(args.old_string, args.new_string)
+      // 函数式替换：避免 new_string 里的 $ 替换模式（匹配串/前后文引用）被展开
+      : content.replace(args.old_string, () => args.new_string)
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
     return `Edited ${abs}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}`
@@ -215,7 +247,7 @@ const insertAfterTool = {
     let targetLine
     if (args.after_line != null) {
       targetLine = args.after_line
-      if (targetLine < 0 || targetLine > lines.length) {
+      if (targetLine < 1 || targetLine > lines.length) {
         throw new Error(`after_line ${targetLine} out of range (file has ${lines.length} lines)`)
       }
     } else if (args.after_regex) {
@@ -332,7 +364,8 @@ const bashTool = {
         }
       }
       const onStderr = (d) => {
-        errBuf += sanitizeOutput(errDecoder(d))
+        const s = sanitizeOutput(errDecoder(d)) // 始终解码，防 pending 无限累积
+        if (errBuf.length < 2_000_000) errBuf += s
       }
 
       child.stdout.on("data", onStdout)
@@ -416,7 +449,7 @@ function globToRegex(pattern) {
   const DS = "\u0001" // **/ 的占位符（零或多级目录）
   const DP = "\u0002" // ** 的占位符
   const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/[.+^${}()|\\]/g, "\\$&") // [ ] 不转义，保留为 glob 字符组语法
     .replace(/\*\*\//g, DS)
     .replace(/\*\*/g, DP)
     .replace(/\*/g, "[^/]*")
@@ -458,7 +491,7 @@ const grepTool = {
       try {
         content = await readFile(file, "utf8")
       } catch {
-        return // 二进制/不可读文件跳过
+        return // 不可读文件跳过；二进制会被按 utf8 读入并照常搜索（可能产生乱码匹配）
       }
       const lines = content.split("\n")
       if (wantCtx) fileLines.set(file, lines)
@@ -545,7 +578,7 @@ const websearchTool = {
           : AbortSignal.timeout(15_000),
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      html = await response.text()
+      html = await readBodyText(response)
     } catch (error) {
       throw new Error(`websearch request failed: ${error.cause?.code ?? error.message}`)
     }
@@ -577,10 +610,10 @@ function stripTags(html) {
     .replace(/&#0*(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&ensp;/g, " ")
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&") // &amp; 必须最后解码，否则 &amp;lt; 会被二次解码成 <
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -649,7 +682,7 @@ const fetchTool = {
     if (!response.ok) throw new Error(`fetch failed: HTTP ${response.status}`)
 
     const contentType = response.headers.get("content-type") ?? ""
-    const body = await response.text()
+    const body = await readBodyText(response)
     if (!contentType.includes("text/html")) return truncate(body)
     return truncate(htmlToText(body))
   },
@@ -668,10 +701,10 @@ function htmlToText(html) {
     .replace(/&#0*(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&nbsp;|&ensp;/g, " ")
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&") // &amp; 必须最后解码，否则 &amp;lt; 会被二次解码成 <
     .replace(/[ \t]+/g, " ")
     .replace(/\n\s*\n\s*\n+/g, "\n\n")
     .trim()
@@ -730,6 +763,8 @@ const gitDiffTool = {
   readonly: true,
   execute(args, ctx) {
     const ref = args.ref ?? "HEAD"
+    // ref 由模型提供且位于 "--" 之前：校验字符集，防 "--output=..." 之类被 git 当成选项
+    if (!/^[A-Za-z0-9._\/~^][A-Za-z0-9._\/~^-]*$/.test(ref)) throw new Error(`Invalid git ref: ${ref}`)
     const flags = args.staged ? ["--staged"] : []
     const paths = args.path ? [args.path] : []
     const out = runGit(ctx.cwd, ["diff", ...flags, ref, "--", ...paths])
@@ -763,7 +798,9 @@ const gitStatusTool = {
       // 尝试匹配 "XY path" 或 "XY  path"（可变间距）
       const m = clean.match(/^(..?)\s+(.+)$/)
       if (!m) continue
-      const [, status, file] = m
+      const [, status, rawFile] = m
+      // 重命名条目 porcelain 输出为 "R  old -> new"，拆开明确展示而非当成一个字面文件名
+      const file = status.includes("R") && rawFile.includes(" -> ") ? rawFile.replace(" -> ", " → ") : rawFile
       const idx = status[0] ?? " "
       const wt = status[1] ?? " "
       if (idx === "U" || wt === "U" || (idx === "A" && wt === "A")) {

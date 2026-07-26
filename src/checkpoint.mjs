@@ -38,7 +38,8 @@ export function isGitRepo(cwd) {
 export async function createCheckpoint(cwd) {
   if (!isGitRepo(cwd)) return null
 
-  const id = Date.now().toString(36)
+  // 随机后缀：同一毫秒内两次快照的 id 不互撞（排序仍按时间戳前缀有序）
+  const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6)
   const dir = join(checkpointRoot(cwd), id)
   await mkdir(join(dir, "untracked"), { recursive: true })
 
@@ -90,8 +91,10 @@ export async function rewind(cwd, id) {
   // 回滚也可逆：先给当前状态打快照
   await createCheckpoint(cwd)
 
-  // 1. 跟踪文件 → HEAD，再应用快照补丁 → 快照时状态
-  git(cwd, ["checkout", "--", "."])
+  // 1. 工作区+暂存区 → HEAD，再应用快照补丁 → 快照时状态
+  // 必须连暂存区一起重置：checkout -- . 只从 index 恢复工作区，
+  // 有 staged 改动时工作区留下的是 staged 版本，补丁（diff HEAD，含 staged 内容）会 apply 失败
+  git(cwd, ["restore", "--source=HEAD", "--staged", "--worktree", "."])
   const patch = await readFile(join(dir, "patch.diff"), "utf8")
   if (patch.trim()) {
     const patchFile = join(dir, "patch.diff")

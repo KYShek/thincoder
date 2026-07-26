@@ -5,7 +5,7 @@
  * API key 可用环境变量兜底（未在 providers 中配置时）。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -99,7 +99,7 @@ const COMPACT_RATIO = 0.8
 export function specForModel(model) {
   const m = (model ?? "").toLowerCase()
   for (const [prefix, spec] of [...MODEL_SPECS].sort((a,b) => b[0].length - a[0].length)) {
-    if (m.startsWith(prefix)) return spec
+    if (m.startsWith(prefix.toLowerCase())) return spec
   }
   return DEFAULT_SPEC
 }
@@ -115,12 +115,16 @@ export function resolveCompactThreshold(explicit, model) {
 }
 
 /**
- * 从 providers[] 中按 name 查找，找不到返回第一个
+ * 从 providers[] 中按 name 查找。
+ * name 非空但找不到时抛错——activeProvider 打错字静默落到第一个 provider，会拿错 key 打错端点。
+ * name 为空时返回第一个。
  */
 export function findProvider(providers, name) {
   if (name) {
     const found = providers.find((p) => p.name === name)
     if (found) return found
+    const available = providers.map((p) => p.name).join(", ") || "(空)"
+    throw new Error(`activeProvider "${name}" 不在 providers 列表中（可用: ${available}），请检查配置是否打错字: ${configPath}`)
   }
   return providers[0] ?? { name: "default", baseURL: "", model: "" }
 }
@@ -206,5 +210,7 @@ export function loadConfig() {
  */
 export function saveConfig(config) {
   mkdirSync(configDir, { recursive: true })
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
+  // 0600：config.json 含 API key，不能世界可读（POSIX；Windows 下 chmod 尽力而为）
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 })
+  try { chmodSync(configPath, 0o600) } catch { /* Windows 上可能失败，忽略 */ }
 }

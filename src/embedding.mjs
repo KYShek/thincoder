@@ -31,8 +31,15 @@ export async function embed(embedder, texts, { signal } = {}) {
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE)
     const data = await requestWithRetry(embedder, batch, signal)
-    // API 按 data[].embedding 返回，顺序与输入一致
-    for (const item of data.data) {
+    // 数量不符直接报错——静默接受会让向量与文本错位，污染整个索引
+    if (!Array.isArray(data.data) || data.data.length !== batch.length) {
+      throw new Error(`Embedding API returned ${data.data?.length ?? 0} vectors for ${batch.length} inputs`)
+    }
+    // 规范上 data[] 顺序与输入一致，但以 index 字段为准排序（有的话），不赌服务端实现
+    const items = data.data.every((d) => typeof d.index === "number")
+      ? [...data.data].sort((a, b) => a.index - b.index)
+      : data.data
+    for (const item of items) {
       vectors.push(normalize(Float32Array.from(item.embedding)))
     }
   }
@@ -54,6 +61,8 @@ export function toBlob(vec) {
 
 /** sqlite BLOB → Float32Array */
 export function fromBlob(buf) {
+  // BLOB 可能来自 Buffer 池，byteOffset 不保证 4 对齐，直接建视图会 RangeError——先复制对齐
+  if (buf.byteOffset % 4 !== 0) buf = new Uint8Array(buf)
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
 }
 

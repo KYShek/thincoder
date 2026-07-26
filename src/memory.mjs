@@ -19,7 +19,7 @@ import { embed, cosine, toBlob, fromBlob } from "./embedding.mjs"
 import { commitAndPush } from "./gitmem.mjs"
 
 const VALID_TYPES = new Set(["rule", "knowledge", "decision", "pattern"])
-const SCHEMA_VERSION = 7
+const SCHEMA_VERSION = 8
 
 // 代码索引：源码文件扩展名
 const CODE_EXTS = new Set([".mjs", ".js", ".ts", ".tsx", ".jsx", ".py", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".swift", ".kt", ".sh", ".bash", ".sql", ".yaml", ".yml", ".toml", ".json", ".css", ".html", ".vue", ".svelte"])
@@ -260,6 +260,102 @@ function migrate(db) {
     `)
     db.exec(`PRAGMA user_version = 7`)
   }
+
+  if (version < 8) {
+    // v8：code_chunks/doc_chunks 加 origin 列（项目根目录绝对路径），主键改为 (origin, path, line_start)。
+    // 旧主键不含 origin，多项目共用一个记忆库时同相对路径互相覆盖、codeSync(B) 会把 A 的块当 stale 清掉。
+    // SQLite 不能 ALTER 主键，且索引是易失品 → 直接删表重建（下次 codeSync/docSync 自动重索引）。
+    db.exec(`
+      DROP TRIGGER IF EXISTS code_chunks_ai;
+      DROP TRIGGER IF EXISTS code_chunks_ad;
+      DROP TRIGGER IF EXISTS code_chunks_au;
+      DROP TABLE IF EXISTS code_chunks_fts;
+      DROP TABLE IF EXISTS code_chunks;
+      DROP TRIGGER IF EXISTS doc_chunks_ai;
+      DROP TRIGGER IF EXISTS doc_chunks_ad;
+      DROP TRIGGER IF EXISTS doc_chunks_au;
+      DROP TABLE IF EXISTS doc_chunks_fts;
+      DROP TABLE IF EXISTS doc_chunks;
+    `)
+    db.exec(`
+      CREATE TABLE code_chunks (
+        origin TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL,
+        language TEXT NOT NULL,
+        chunk_type TEXT NOT NULL CHECK(chunk_type IN ('file','symbol')),
+        symbol_name TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        line_start INTEGER NOT NULL DEFAULT 0,
+        line_end INTEGER NOT NULL DEFAULT 0,
+        mtime_ms INTEGER NOT NULL DEFAULT 0,
+        embedding BLOB,
+        seg_content TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (origin, path, line_start)
+      )
+    `)
+    db.exec(`
+      CREATE VIRTUAL TABLE code_chunks_fts USING fts5(
+        path, symbol_name, seg_content,
+        content='code_chunks', content_rowid='rowid',
+        tokenize='unicode61'
+      )
+    `)
+    db.exec(`
+      CREATE TRIGGER code_chunks_ai AFTER INSERT ON code_chunks BEGIN
+        INSERT INTO code_chunks_fts(rowid, path, symbol_name, seg_content)
+        VALUES (new.rowid, new.path, new.symbol_name, new.seg_content);
+      END;
+      CREATE TRIGGER code_chunks_ad AFTER DELETE ON code_chunks BEGIN
+        INSERT INTO code_chunks_fts(code_chunks_fts, rowid, path, symbol_name, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.symbol_name, old.seg_content);
+      END;
+      CREATE TRIGGER code_chunks_au AFTER UPDATE ON code_chunks BEGIN
+        INSERT INTO code_chunks_fts(code_chunks_fts, rowid, path, symbol_name, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.symbol_name, old.seg_content);
+        INSERT INTO code_chunks_fts(rowid, path, symbol_name, seg_content)
+        VALUES (new.rowid, new.path, new.symbol_name, new.seg_content);
+      END;
+    `)
+    db.exec(`
+      CREATE TABLE doc_chunks (
+        origin TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL,
+        language TEXT NOT NULL DEFAULT 'markdown',
+        heading TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        line_start INTEGER NOT NULL DEFAULT 0,
+        line_end INTEGER NOT NULL DEFAULT 0,
+        mtime_ms INTEGER NOT NULL DEFAULT 0,
+        embedding BLOB,
+        seg_content TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (origin, path, line_start)
+      )
+    `)
+    db.exec(`
+      CREATE VIRTUAL TABLE doc_chunks_fts USING fts5(
+        path, heading, seg_content,
+        content='doc_chunks', content_rowid='rowid',
+        tokenize='unicode61'
+      )
+    `)
+    db.exec(`
+      CREATE TRIGGER doc_chunks_ai AFTER INSERT ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(rowid, path, heading, seg_content)
+        VALUES (new.rowid, new.path, new.heading, new.seg_content);
+      END;
+      CREATE TRIGGER doc_chunks_ad AFTER DELETE ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, path, heading, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.heading, old.seg_content);
+      END;
+      CREATE TRIGGER doc_chunks_au AFTER UPDATE ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, path, heading, seg_content)
+        VALUES ('delete', old.rowid, old.path, old.heading, old.seg_content);
+        INSERT INTO doc_chunks_fts(rowid, path, heading, seg_content)
+        VALUES (new.rowid, new.path, new.heading, new.seg_content);
+      END;
+    `)
+    db.exec(`PRAGMA user_version = 8`)
+  }
 }
 
 /**
@@ -326,7 +422,10 @@ export async function search(memory, query, { limit = 5 } = {}) {
   return [...scores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map(([id, score]) => ({ ...fetchEntry(memory, id), rrf: score }))
+    .map(([id, score]) => {
+      const entry = fetchEntry(memory, id)
+      return entry ? { ...entry, rrf: score } : null // fetchEntry 为 null 时不能展开（会漏出 { rrf } 空壳）
+    })
     .filter(Boolean)
 }
 
@@ -670,18 +769,18 @@ function yieldTick() {
   return new Promise((r) => setTimeout(r, 0))
 }
 
-function _upsertCodeFile(memory, rel, lines, lang, mtimeMs) {
+function _upsertCodeFile(memory, origin, rel, lines, lang, mtimeMs) {
   const chunks = chunkCode(lines, rel)
   memory.db.exec("BEGIN")
   try {
-    memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
+    memory.db.prepare(`DELETE FROM code_chunks WHERE origin = ? AND path = ?`).run(origin, rel)
     const insert = memory.db.prepare(`
-      INSERT INTO code_chunks (path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO code_chunks (origin, path, language, chunk_type, symbol_name, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const c of chunks) {
       const isFile = c.name === rel
-      insert.run(rel, lang, isFile ? "file" : "symbol", isFile ? "" : c.name.slice(rel.length + 1), c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+      insert.run(origin, rel, lang, isFile ? "file" : "symbol", isFile ? "" : c.name.slice(rel.length + 1), c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
     }
     memory.db.exec("COMMIT")
   } catch (e) {
@@ -690,18 +789,18 @@ function _upsertCodeFile(memory, rel, lines, lang, mtimeMs) {
   }
 }
 
-function _upsertDocFile(memory, rel, lines, mtimeMs) {
+function _upsertDocFile(memory, origin, rel, lines, mtimeMs) {
   const chunks = chunkMarkdown(lines, rel)
   const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"
   memory.db.exec("BEGIN")
   try {
-    memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+    memory.db.prepare(`DELETE FROM doc_chunks WHERE origin = ? AND path = ?`).run(origin, rel)
     const insert = memory.db.prepare(`
-      INSERT INTO doc_chunks (path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO doc_chunks (origin, path, language, heading, content, line_start, line_end, mtime_ms, seg_content)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const c of chunks) {
-      insert.run(rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
+      insert.run(origin, rel, lang, c.heading, c.content, c.line_start, c.line_end, mtimeMs, segmentCJK(c.content))
     }
     memory.db.exec("COMMIT")
   } catch (e) {
@@ -733,9 +832,9 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
   }
   await walk(dir)
 
-  // 取已索引文件的 mtime 快照
+  // 取已索引文件的 mtime 快照（只看本 origin，别的项目的块不归这里管）
   const indexed = new Map(
-    memory.db.prepare(`SELECT path, mtime_ms FROM code_chunks`).all().map((r) => [r.path, r.mtime_ms])
+    memory.db.prepare(`SELECT path, mtime_ms FROM code_chunks WHERE origin = ?`).all(dir).map((r) => [r.path, r.mtime_ms])
   )
   const seen = new Set()
 
@@ -759,7 +858,7 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
     try { text = await readFile(abs, "utf8") } catch { continue }
     const lines = text.split("\n")
     const lang = detectLanguage(abs)
-    _upsertCodeFile(memory, rel, lines, lang, mtimeMs)
+    _upsertCodeFile(memory, dir, rel, lines, lang, mtimeMs)
     updated++
     await yieldTick()
 
@@ -768,10 +867,10 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
     }
   }
 
-  // 清理磁盘上已消失的文件块
+  // 清理磁盘上已消失的文件块（仅本 origin）
   for (const stale of indexed.keys()) {
     if (!seen.has(stale)) {
-      memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(stale)
+      memory.db.prepare(`DELETE FROM code_chunks WHERE origin = ? AND path = ?`).run(dir, stale)
       removed++
     }
   }
@@ -782,44 +881,49 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
 
 /**
  * 代码检索：FTS5(BM25) + 可选向量余弦，RRF 合并。
- * 无 embedder 时退化为纯 FTS。
- * 返回 [{ path, language, symbol_name, content, line_start, line_end, rank }]
+ * 无 embedder 时退化为纯 FTS；ftsQuery 为空（纯标点查询）且有 embedder 时退化为纯向量。
+ * 返回 [{ path, language, symbol_name, content, line_start, line_end }]
  */
 export async function codeSearch(memory, query, { limit = 5 } = {}) {
   const ftsQuery = buildFtsQuery(query)
-  if (!ftsQuery) return []
+  if (!ftsQuery && !memory.embedder) return []
 
-  const ftsList = memory.db.prepare(`
-    SELECT c.path, c.language, c.symbol_name, c.content, c.line_start, c.line_end, bm25(code_chunks_fts) AS rank
+  // codeOrigin 设置时只检索本项目（与 files 表的 projectOrigin 过滤同模式）；未设置时不过滤
+  const ftsOriginFilter = memory.codeOrigin ? `AND c.origin = ?` : ""
+  const vecOriginFilter = memory.codeOrigin ? `AND origin = ?` : ""
+  const originParams = memory.codeOrigin ? [memory.codeOrigin] : []
+
+  const ftsList = ftsQuery ? memory.db.prepare(`
+    SELECT c.rowid, c.path, c.language, c.symbol_name, c.content, c.line_start, c.line_end, bm25(code_chunks_fts) AS rank
     FROM code_chunks_fts JOIN code_chunks c ON c.rowid = code_chunks_fts.rowid
-    WHERE code_chunks_fts MATCH ?
+    WHERE code_chunks_fts MATCH ? ${ftsOriginFilter}
     ORDER BY rank LIMIT ?
-  `).all(ftsQuery, Math.max(limit * 4, 20))
+  `).all(ftsQuery, ...originParams, Math.max(limit * 4, 20)) : []
 
   if (!memory.embedder) return ftsList.slice(0, limit)
 
   // 向量通道
   await ensureEmbeddings(memory)
   const [qvec] = await embed(memory.embedder, [query])
-  const rows = memory.db.prepare(`SELECT path, line_start, embedding FROM code_chunks WHERE embedding IS NOT NULL`).all()
+  const rows = memory.db.prepare(`SELECT rowid, embedding FROM code_chunks WHERE embedding IS NOT NULL ${vecOriginFilter}`).all(...originParams)
   const vecList = rows
-    .map((r) => ({ key: `${r.path}:${r.line_start}`, score: cosine(qvec, fromBlob(r.embedding)) }))
+    .map((r) => ({ rowid: r.rowid, score: cosine(qvec, fromBlob(r.embedding)) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(limit * 4, 20))
 
-  // RRF 合并
+  // RRF 合并（按 rowid 对齐两个通道；解析结果回表取，纯向量命中的块也能浮现）
   const K = 60
   const scores = new Map()
-  ftsList.forEach((r, i) => scores.set(`${r.path}:${r.line_start}`, (scores.get(`${r.path}:${r.line_start}`) ?? 0) + 1 / (K + i + 1)))
-  vecList.forEach((r, i) => scores.set(r.key, (scores.get(r.key) ?? 0) + 1 / (K + i + 1)))
+  ftsList.forEach((r, i) => scores.set(r.rowid, (scores.get(r.rowid) ?? 0) + 1 / (K + i + 1)))
+  vecList.forEach((r, i) => scores.set(r.rowid, (scores.get(r.rowid) ?? 0) + 1 / (K + i + 1)))
 
+  const fetchChunk = memory.db.prepare(`
+    SELECT path, language, symbol_name, content, line_start, line_end FROM code_chunks WHERE rowid = ?
+  `)
   return [...scores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map(([key]) => {
-      const [path, lineStr] = key.split(/:(?=\d+$)/)
-      return ftsList.find((r) => r.path === path && String(r.line_start) === lineStr)
-    })
+    .map(([rowid]) => fetchChunk.get(rowid))
     .filter(Boolean)
 }
 
@@ -883,8 +987,8 @@ export async function reindexFile(memory, cwd, absPath) {
   let text
   try { text = await readFile(absPath, "utf8") } catch {
     // 文件已删：清理索引
-    if (CODE_EXTS.has(ext)) memory.db.prepare(`DELETE FROM code_chunks WHERE path = ?`).run(rel)
-    else if (DOC_EXTS.has(ext)) memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(rel)
+    if (CODE_EXTS.has(ext)) memory.db.prepare(`DELETE FROM code_chunks WHERE origin = ? AND path = ?`).run(cwd, rel)
+    else if (DOC_EXTS.has(ext)) memory.db.prepare(`DELETE FROM doc_chunks WHERE origin = ? AND path = ?`).run(cwd, rel)
     return
   }
   const lines = text.split("\n")
@@ -893,11 +997,11 @@ export async function reindexFile(memory, cwd, absPath) {
     const lang = detectLanguage(absPath)
     let mtimeMs = 0
     try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
-    _upsertCodeFile(memory, rel, lines, lang, mtimeMs)
+    _upsertCodeFile(memory, cwd, rel, lines, lang, mtimeMs)
   } else if (DOC_EXTS.has(ext)) {
     let mtimeMs = 0
     try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
-    _upsertDocFile(memory, rel, lines, mtimeMs)
+    _upsertDocFile(memory, cwd, rel, lines, mtimeMs)
   }
 }
 
@@ -951,7 +1055,7 @@ export async function docSync(memory, dir, { onProgress } = {}) {
   await walk(dir)
 
   const indexed = new Map(
-    memory.db.prepare(`SELECT path, mtime_ms FROM doc_chunks`).all().map((r) => [r.path, r.mtime_ms])
+    memory.db.prepare(`SELECT path, mtime_ms FROM doc_chunks WHERE origin = ?`).all(dir).map((r) => [r.path, r.mtime_ms])
   )
   const seen = new Set()
 
@@ -973,7 +1077,7 @@ export async function docSync(memory, dir, { onProgress } = {}) {
     let text
     try { text = await readFile(abs, "utf8") } catch { continue }
     const lines = text.split("\n")
-    _upsertDocFile(memory, rel, lines, mtimeMs)
+    _upsertDocFile(memory, dir, rel, lines, mtimeMs)
     updated++
     await yieldTick()
 
@@ -982,10 +1086,10 @@ export async function docSync(memory, dir, { onProgress } = {}) {
     }
   }
 
-  // 清理磁盘上消失的文件
+  // 清理磁盘上消失的文件（仅本 origin）
   for (const stale of indexed.keys()) {
     if (!seen.has(stale)) {
-      memory.db.prepare(`DELETE FROM doc_chunks WHERE path = ?`).run(stale)
+      memory.db.prepare(`DELETE FROM doc_chunks WHERE origin = ? AND path = ?`).run(dir, stale)
       removed++
     }
   }
@@ -996,39 +1100,49 @@ export async function docSync(memory, dir, { onProgress } = {}) {
 
 /**
  * 文档检索：FTS5(BM25) + 可选向量余弦，RRF 合并。
+ * 无 embedder 时退化为纯 FTS；ftsQuery 为空（纯标点查询）且有 embedder 时退化为纯向量。
+ * 返回 [{ path, language, heading, content, line_start, line_end }]
  */
 export async function docSearch(memory, query, { limit = 5 } = {}) {
   const ftsQuery = buildFtsQuery(query)
-  if (!ftsQuery) return []
+  if (!ftsQuery && !memory.embedder) return []
 
-  const ftsList = memory.db.prepare(`
-    SELECT d.path, d.language, d.heading, d.content, d.line_start, d.line_end, bm25(doc_chunks_fts) AS rank
+  // codeOrigin 设置时只检索本项目（与 codeSearch 同模式）；未设置时不过滤
+  const ftsOriginFilter = memory.codeOrigin ? `AND d.origin = ?` : ""
+  const vecOriginFilter = memory.codeOrigin ? `AND origin = ?` : ""
+  const originParams = memory.codeOrigin ? [memory.codeOrigin] : []
+
+  const ftsList = ftsQuery ? memory.db.prepare(`
+    SELECT d.rowid, d.path, d.language, d.heading, d.content, d.line_start, d.line_end, bm25(doc_chunks_fts) AS rank
     FROM doc_chunks_fts JOIN doc_chunks d ON d.rowid = doc_chunks_fts.rowid
-    WHERE doc_chunks_fts MATCH ?
+    WHERE doc_chunks_fts MATCH ? ${ftsOriginFilter}
     ORDER BY rank LIMIT ?
-  `).all(ftsQuery, Math.max(limit * 4, 20))
+  `).all(ftsQuery, ...originParams, Math.max(limit * 4, 20)) : []
 
   if (!memory.embedder) return ftsList.slice(0, limit)
 
+  // 向量通道
+  await ensureDocEmbeddings(memory)
   const [qvec] = await embed(memory.embedder, [query])
-  const rows = memory.db.prepare(`SELECT path, line_start, embedding FROM doc_chunks WHERE embedding IS NOT NULL`).all()
+  const rows = memory.db.prepare(`SELECT rowid, embedding FROM doc_chunks WHERE embedding IS NOT NULL ${vecOriginFilter}`).all(...originParams)
   const vecList = rows
-    .map((r) => ({ key: `${r.path}:${r.line_start}`, score: cosine(qvec, fromBlob(r.embedding)) }))
+    .map((r) => ({ rowid: r.rowid, score: cosine(qvec, fromBlob(r.embedding)) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(limit * 4, 20))
 
+  // RRF 合并（按 rowid 对齐两个通道；解析结果回表取，纯向量命中的块也能浮现）
   const K = 60
   const scores = new Map()
-  ftsList.forEach((r, i) => scores.set(`${r.path}:${r.line_start}`, (scores.get(`${r.path}:${r.line_start}`) ?? 0) + 1 / (K + i + 1)))
-  vecList.forEach((r, i) => scores.set(r.key, (scores.get(r.key) ?? 0) + 1 / (K + i + 1)))
+  ftsList.forEach((r, i) => scores.set(r.rowid, (scores.get(r.rowid) ?? 0) + 1 / (K + i + 1)))
+  vecList.forEach((r, i) => scores.set(r.rowid, (scores.get(r.rowid) ?? 0) + 1 / (K + i + 1)))
 
+  const fetchChunk = memory.db.prepare(`
+    SELECT path, language, heading, content, line_start, line_end FROM doc_chunks WHERE rowid = ?
+  `)
   return [...scores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map(([key]) => {
-      const [path, lineStr] = key.split(/:(?=\d+$)/)
-      return ftsList.find((r) => r.path === path && String(r.line_start) === lineStr)
-    })
+    .map(([rowid]) => fetchChunk.get(rowid))
     .filter(Boolean)
 }
 

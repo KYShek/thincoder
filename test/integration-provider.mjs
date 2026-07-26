@@ -64,9 +64,8 @@ describe("multi-provider 集成", () => {
     assert.equal(found.name, "b")
     assert.equal(found.baseURL, "https://b.com")
 
-    // 找不到时返回第一个
-    const fallback = findProvider(providers, "nonexistent")
-    assert.equal(fallback.name, "a")
+    // name 非空但找不到时抛错（防打错字静默落到第一个 provider，拿错 key 打错端点）
+    assert.throws(() => findProvider(providers, "nonexistent"), /不在 providers 列表中/)
 
     // name 为空时返回第一个
     const first = findProvider(providers, "")

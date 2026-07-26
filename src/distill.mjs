@@ -67,7 +67,7 @@ export function historyToTranscript(history, { maxChars = 30_000 } = {}) {
     if (m.role === "tool") {
       lines.push(`[工具结果] ${(m.content ?? "").slice(0, 500)}`)
     } else if (m.tool_calls?.length) {
-      const calls = m.tool_calls.map((tc) => `${tc.function.name}(${tc.function.arguments?.slice(0, 200) ?? ""})`).join(", ")
+      const calls = m.tool_calls.map((tc) => `${tc.function?.name ?? "?"}(${tc.function?.arguments?.slice(0, 200) ?? ""})`).join(", ")
       lines.push(`[assistant] ${m.content ?? ""}\n[调用工具] ${calls}`)
     } else {
       lines.push(`[${m.role}] ${m.content ?? ""}`)
@@ -88,7 +88,11 @@ export function historyToTranscript(history, { maxChars = 30_000 } = {}) {
  */
 export async function saveCandidate(memory, candidate, opts = {}) {
   const scope = candidate.scope ?? "personal"
-  const tags = Array.isArray(candidate.tags) ? candidate.tags : (candidate.tags ?? "").split(/\s+/).filter(Boolean)
+  // tags 来自 LLM 输出（不可信）：非数组时先 String 化再按逗号/空白切分——
+  // 直接对非字符串调 .split 会崩，模型也常给 "a, b" 这种逗号串
+  const tags = Array.isArray(candidate.tags)
+    ? candidate.tags.map((t) => String(t)).filter(Boolean)
+    : String(candidate.tags ?? "").split(/[\s,]+/).filter(Boolean)
 
   if (scope === "personal") {
     const id = await put(memory, { type: candidate.type, title: candidate.title, content: candidate.content, tags: tags.join(" ") })

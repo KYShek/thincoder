@@ -76,6 +76,8 @@ async function makeAgent() {
     memory.embedder = createEmbedder(config.embedding)
   }
   const cwd = process.cwd()
+  // code/doc 索引按 origin（项目根目录）隔离：检索只查本项目
+  memory.codeOrigin = cwd
   // Project 层：启动时同步 .thincoder/memory/ 目录到索引（有就同步，没有就跳过）
   if (config.memory.projectDir) {
     memory.projectOrigin = join(cwd, config.memory.projectDir)

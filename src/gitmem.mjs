@@ -80,7 +80,9 @@ export async function commitAndPush(dir, filename, message) {
 async function hasConflict(dir) {
   try {
     const out = await git(dir, ["status", "--porcelain"])
-    return out.split("\n").some((l) => l.startsWith("UU") || l.startsWith("AA") || l.startsWith("DD"))
+    // 未合并状态共 7 种：DD AU UD UA DU AA UU——只看 UU/AA/DD 会漏掉带 U 的四种，
+    // 漏判就不 abort，仓库留在冲突中间态（与"保持仓库干净"的承诺相悖）
+    return out.split("\n").some((l) => l[0] === "U" || l[1] === "U" || l.startsWith("AA") || l.startsWith("DD"))
   } catch {
     return false
   }

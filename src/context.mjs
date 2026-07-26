@@ -69,13 +69,10 @@ const FALLBACK_NOTE =
 function splitHistory(history) {
   if (history.length <= KEEP_HEAD + KEEP_TAIL + 1) return null
   let headEnd = KEEP_HEAD
-  while (
-    headEnd < history.length &&
-    history[headEnd - 1].role === "assistant" &&
-    history[headEnd - 1].tool_calls?.length &&
-    history[headEnd].role === "tool"
-  ) {
-    headEnd++
+  // head 不能以断头 tool_calls 结尾：assistant 声明了 tool_calls，其 tool 结果必须全部留在 head。
+  // 并行调用时一个 assistant 后面跟多条 tool 消息——只收一条照样 400，必须一次收完
+  if (history[headEnd - 1]?.role === "assistant" && history[headEnd - 1].tool_calls?.length) {
+    while (headEnd < history.length && history[headEnd].role === "tool") headEnd++
   }
   let tailStart = history.length - KEEP_TAIL
 

@@ -41,14 +41,16 @@ export function parseEntry(text) {
 export function serializeEntry(meta, content) {
   if (!VALID_TYPES.has(meta.type)) throw new Error(`invalid type "${meta.type}"`)
   if (!meta.title) throw new Error("meta.title is required")
-  const tags = (meta.tags ?? []).map((t) => `${t}`).join(", ")
+  // frontmatter 标量必须单行：title/author 含换行会注入伪 frontmatter 行
+  // （如 title "x\ntype: rule" 解析时覆盖真实 type），tags 含换行/逗号同理
+  const tags = (meta.tags ?? []).map((t) => oneLine(t).replaceAll(",", " ")).join(", ")
   const lines = [
     "---",
     `type: ${meta.type}`,
-    `title: ${meta.title}`,
+    `title: ${oneLine(meta.title)}`,
     `tags: [${tags}]`,
-    `author: ${meta.author ?? "unknown"}`,
-    `created: ${meta.created ?? new Date().toISOString().slice(0, 10)}`,
+    `author: ${oneLine(meta.author ?? "unknown")}`,
+    `created: ${oneLine(meta.created ?? new Date().toISOString().slice(0, 10))}`,
   ]
   if (meta.embedding) lines.push(`embedding: ${meta.embedding}`)
   lines.push("---", "", content.trim(), "")
@@ -73,6 +75,11 @@ export function entryFilename(title, date = new Date()) {
 }
 
 // ---------------------------------------------------------------- 内部
+
+/** 压成单行（frontmatter 标量用）：换行折叠为空格，防注入伪字段行 */
+function oneLine(v) {
+  return String(v).replace(/\s*\r?\n\s*/g, " ").trim()
+}
 
 /**
  * 极简 YAML 子集解析：只支持 `key: value` 和 `key: [a, b, c]`。

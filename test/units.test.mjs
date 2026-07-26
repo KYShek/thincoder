@@ -13,6 +13,7 @@ import { createMemory, put, search, list, remove, putMarkdown, syncDir } from ".
 import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
 import { builtinTools } from "../src/tools.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "../src/skills.mjs"
+import { historyToTranscript, saveCandidate } from "../src/distill.mjs"
 import { planTool, goalTool, verifyTool } from "../src/agent.mjs"
 
 // ---------------------------------------------------------------- tui 纯函数
@@ -718,13 +719,16 @@ test("skills: load / list / read", async () => {
     mkdirSync(skillDir, { recursive: true })
     writeFileSync(join(skillDir, "deploy.md"), "# Deploy\nPush to production.")
     writeFileSync(join(skillDir, "review.md"), "# Review\nCheck the diff.\n## Steps\n- read diff\n- run tests")
+    writeFileSync(join(skillDir, "lint.md"), "---\nname: lint\n---\n# Lint\nRun the linter.")
     writeFileSync(join(skillDir, "not-a-skill.txt"), "ignore me")
 
     const skills = await loadSkills(dir)
-    assert.equal(skills.length, 2)
+    assert.equal(skills.length, 3)
     assert.equal(skills[0].name, "deploy")
     assert.equal(skills[0].description, "Push to production.")
-    assert.equal(skills[1].name, "review")
+    assert.equal(skills[1].name, "lint")
+    assert.equal(skills[1].description, "Run the linter.") // frontmatter 字段行不误当描述
+    assert.equal(skills[2].name, "review")
 
     const listing = formatSkillListing(skills)
     assert.ok(listing.includes("deploy"))
@@ -747,6 +751,27 @@ test("skills: empty dir returns empty", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------- distill
+
+test("distill: saveCandidate tags 归一化（LLM 输出不可信）", async () => {
+  const m = freshMemory()
+  // 字符串 tags 按逗号/空白切分
+  const r1 = await saveCandidate(m, { type: "knowledge", title: "t1", content: "c1", tags: "a, b c" })
+  assert.ok(r1.startsWith("personal#"))
+  // 非字符串非数组 tags 不崩
+  const r2 = await saveCandidate(m, { type: "knowledge", title: "t2", content: "c2", tags: 42 })
+  assert.ok(r2.startsWith("personal#"))
+})
+
+test("distill: historyToTranscript 容忍缺失 function 的 tool_call", () => {
+  const text = historyToTranscript([
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "", tool_calls: [{ function: { name: "read", arguments: "{}" } }, { id: "broken" }] },
+  ])
+  assert.ok(text.includes("read("))
+  assert.ok(text.includes("?(")) // 缺失 function 的占位不抛 TypeError
 })
 
 // ---------------------------------------------------------------- 内建工具

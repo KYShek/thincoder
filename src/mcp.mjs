@@ -8,6 +8,8 @@ import { spawn } from "node:child_process"
 
 const INIT_TIMEOUT_MS = 30_000
 const CALL_TIMEOUT_MS = 120_000
+// 等 legacy SSE 首个 endpoint 事件的上限：legacy server 连接后立即发，实际几毫秒内到达
+const ENDPOINT_WAIT_MS = 5_000
 
 // ---- JSON-RPC helpers ----
 
@@ -32,6 +34,7 @@ function stdioTransport(command, args) {
       : spawn(command, args ?? [], spawnOptions)
 
   const pending = new Map()
+  const decoder = new TextDecoder() // 单一实例：跨 chunk 保留多字节 UTF-8 的中间状态
   let buffer = ""
   let stderrTail = "" // 诊断用：server 起不来时给用户一点线索
   let spawnError = null
@@ -43,7 +46,8 @@ function stdioTransport(command, args) {
   }
 
   child.stdout.on("data", (chunk) => {
-    buffer += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
+    // stream:true：多字节字符跨 chunk 拆分时暂存残片，等下一个 chunk 拼完整
+    buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true })
     const lines = buffer.split("\n")
     buffer = lines.pop() ?? ""
     for (const line of lines) {
@@ -65,6 +69,9 @@ function stdioTransport(command, args) {
     stderrTail = (stderrTail + chunk.toString()).slice(-2000)
   })
 
+  // stdin 写错误（EPIPE 等）：没有这个监听，error 事件会崩掉整个进程；close 事件统一兜底
+  child.stdin.on("error", () => {})
+
   // spawn 失败（命令不存在/EINVAL）：没有这个监听，error 事件会崩掉整个进程
   child.on("error", (error) => {
     spawnError = error
@@ -83,13 +90,21 @@ function stdioTransport(command, args) {
     if (closed) return Promise.reject(new Error("MCP connection closed"))
     const id = rpcId()
     const promise = new Promise((resolve) => pending.set(id, resolve))
-    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n")
+    try {
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n")
+    } catch (error) {
+      pending.delete(id)
+      return Promise.resolve({ id: null, error: { code: -32000, message: `stdin write failed: ${error.message}` } })
+    }
     return withTimeout(promise, CALL_TIMEOUT_MS).finally(() => pending.delete(id))
   }
 
   // notification：无 id，不期待响应（协议要求）
   const notify = (method, params) => {
-    if (!closed) child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n")
+    if (closed) return
+    try {
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n")
+    } catch { /* 忽略：close 事件会兜底 */ }
   }
 
   return { send, notify, close: () => { if (!closed) child.kill() } }
@@ -103,6 +118,12 @@ function httpTransport(baseURL, extraHeaders = {}) {
   let closed = false
   let eventSource = null
   let abortController = null
+  // legacy SSE (2024-11-05)：POST 地址由 server 的 endpoint 事件告知；
+  // Streamable HTTP (2025-03-26)：POST 到配置的 URL 本身
+  let postUrl = url
+  // 收到 endpoint 事件才置真：legacy SSE (2024-11-05) 模式，POST 只回 202，响应经 SSE 流推回；
+  // 否则按 Streamable HTTP (2025-03-26)：响应就在 POST 自身（即使 server 同时支持 GET 推送）
+  let legacySSE = false
 
   const headers = () => {
     const h = { "Content-Type": "application/json", Accept: "text/event-stream, application/json", ...extraHeaders }
@@ -112,7 +133,7 @@ function httpTransport(baseURL, extraHeaders = {}) {
 
   const pending = new Map()
 
-  // SSE 解析器：从 response body 逐行读，处理 data: / event: / id: / 空行(dispatch)
+  // SSE 解析器：从 response body 逐行读，处理 data: / event: / 空行(dispatch)
   async function* parseSSE(response) {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
@@ -144,24 +165,34 @@ function httpTransport(baseURL, extraHeaders = {}) {
     }
   }
 
-  // 打开 SSE 长连接（用于接收服务端推送）
+  // 打开 SSE 长连接（legacy SSE transport，用于接收服务端推送）
+  // 按 2024-11-05 规范：GET 配置的 URL 本身，server 的第一个 endpoint 事件告知 POST 地址
   async function openSSE() {
     if (closed) return
     abortController?.abort()
     abortController = new AbortController()
-    const resp = await fetch(url + "/sse", {
+    const resp = await fetch(url, {
       method: "GET",
-      headers: { Accept: "text/event-stream" },
+      headers: { Accept: "text/event-stream", ...extraHeaders },
       signal: abortController.signal,
     })
     if (!resp.ok) throw new Error(`SSE connect failed: HTTP ${resp.status}`)
     eventSource = parseSSE(resp)
+    let endpointReady
+    const gotEndpoint = new Promise((resolve) => { endpointReady = resolve })
 
     // 后台消费 SSE 事件并分发到 pending
     ;(async () => {
       try {
-        for await (const { data } of eventSource) {
+        for await (const { event, data } of eventSource) {
           if (closed) break
+          if (event === "endpoint") {
+            // data 是相对/绝对 URI，拼到配置的 URL 上作为 POST 地址
+            postUrl = new URL(data.trim(), url).href
+            legacySSE = true
+            endpointReady()
+            continue
+          }
           try {
             const msg = JSON.parse(data)
             const resolver = pending.get(msg.id)
@@ -175,9 +206,18 @@ function httpTransport(baseURL, extraHeaders = {}) {
       } catch (error) {
         if (!closed) {
           for (const [, resolve] of pending) resolve({ id: null, error: { code: -32000, message: `SSE error: ${error.message}` } })
+          pending.clear()
         }
       }
     })()
+
+    // 等 endpoint 事件再发请求（2024-11-05 要求拿到 POST 地址后才能 POST）；
+    // 超时说明不是 legacy server——Streamable HTTP 的 GET 流只推服务端消息，响应走 POST 自身
+    const wait = new Promise((resolve) => {
+      const t = setTimeout(resolve, ENDPOINT_WAIT_MS)
+      t.unref?.()
+    })
+    await Promise.race([gotEndpoint, wait])
   }
 
   // POST JSON-RPC 请求，同时监听响应
@@ -185,20 +225,28 @@ function httpTransport(baseURL, extraHeaders = {}) {
     const id = rpcId()
     const body = JSON.stringify({ jsonrpc: "2.0", id, method, params })
 
-    // 如果有活跃的 SSE 连接，服务器会通过 SSE 推回响应
-    if (eventSource) {
+    // legacy SSE：POST 只回 202，服务器经 SSE 流推回响应
+    if (legacySSE) {
       return new Promise((resolve) => {
         pending.set(id, resolve)
-        fetch(url + "/messages", { method: "POST", headers: headers(), body, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) })
+        fetch(postUrl, { method: "POST", headers: headers(), body, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) })
+          .then((resp) => {
+            // 2024-11-05：POST 期望 202 Accepted；其他错误码说明请求没送达
+            if (!resp.ok) {
+              pending.delete(id)
+              resolve({ id, error: { code: -32000, message: `POST failed: HTTP ${resp.status}` } })
+            }
+          })
           .catch((e) => {
             pending.delete(id)
             resolve({ id, error: { code: -32000, message: `POST failed: ${e.message}` } })
           })
-      })
+        // 兜底清理：响应超时（send 外层 withTimeout 先赢）时 pending 不留尸
+      }).finally(() => pending.delete(id))
     }
 
-    // 没有 SSE：纯 HTTP POST，响应就是 JSON-RPC
-    const resp = await fetch(url + "/messages", {
+    // Streamable HTTP（无 SSE，或 GET 流只推服务端消息）：响应就在 POST 自身
+    const resp = await fetch(postUrl, {
       method: "POST",
       headers: headers(),
       body,
@@ -231,7 +279,7 @@ function httpTransport(baseURL, extraHeaders = {}) {
 
   // notification：无 id，不期待响应（协议要求）
   const notify = (method, params) => {
-    fetch(url + "/messages", {
+    fetch(postUrl, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({ jsonrpc: "2.0", method, params }),
@@ -242,6 +290,15 @@ function httpTransport(baseURL, extraHeaders = {}) {
   const close = () => {
     closed = true
     abortController?.abort()
+    // Streamable HTTP 规范：有 session 时发 DELETE 让 server 释放会话（尽力而为）
+    if (sessionId) {
+      fetch(postUrl, {
+        method: "DELETE",
+        headers: { "Mcp-Session-Id": sessionId, ...extraHeaders },
+        signal: AbortSignal.timeout(5_000),
+      }).catch(() => {})
+      sessionId = null
+    }
     for (const [, resolve] of pending) resolve({ id: null, error: { code: -32000, message: "Connection closed" } })
     pending.clear()
   }
@@ -263,10 +320,9 @@ function wsTransport(wsUrl, extraHeaders = {}) {
 
   const connect = () => {
     if (closed) throw new Error("MCP WebSocket connection closed")
-    // WebSocket API 不支持自定义 header，如需 auth 走 query param 或子协议
-    ws = extraHeaders.Authorization
-      ? new WebSocket(wsUrl, extraHeaders.Authorization)
-      : new WebSocket(wsUrl)
+    // WebSocket API 不支持自定义 header，token 走 query param
+    // （不能把 "Bearer ..." 当子协议传——含空格，违反 Sec-WebSocket-Protocol token 规则会抛 SyntaxError）
+    ws = new WebSocket(withAuthToken(wsUrl, extraHeaders.Authorization))
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -287,7 +343,7 @@ function wsTransport(wsUrl, extraHeaders = {}) {
             pending.delete(msg.id)
             resolver(msg)
           }
-          // 没有 resoler 的是通知，忽略
+          // 没有 resolver 的是通知，忽略
         } catch { /* 非 JSON，忽略 */ }
       })
 
@@ -314,7 +370,13 @@ function wsTransport(wsUrl, extraHeaders = {}) {
     if (closed) return Promise.reject(new Error("MCP WebSocket connection closed"))
     const id = rpcId()
     const promise = new Promise((resolve) => pending.set(id, resolve))
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+    try {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+    } catch (error) {
+      // 非 OPEN 状态 send 会同步抛；close 事件随后统一兜底
+      pending.delete(id)
+      return Promise.resolve({ id: null, error: { code: -32000, message: `ws send failed: ${error.message}` } })
+    }
     return withTimeout(promise, CALL_TIMEOUT_MS).finally(() => pending.delete(id))
   }
 
@@ -338,7 +400,8 @@ function wsTransport(wsUrl, extraHeaders = {}) {
 function buildTools(mcpTools, transport, config) {
   const prefix = config.name ? `${config.name}_` : "mcp_"
   return mcpTools.map((t) => ({
-    name: prefix + sanitizeToolName(t.name),
+    // 组合名整体 sanitize + 截断：prefix 也要计入 64 字符上限
+    name: sanitizeToolName(prefix + t.name),
     description: t.description ?? `MCP tool: ${t.name}`,
     parameters: t.inputSchema ?? { type: "object", properties: {} },
     readonly: false,
@@ -380,9 +443,14 @@ async function doInitialize(transport, name) {
 export async function connectMcpServer(config) {
   if (config.wsUrl) {
     const transport = wsTransport(config.wsUrl, config.headers ?? {})
-    await transport.connect()
-    const mcpTools = await doInitialize(transport, config.name ?? config.wsUrl)
-    return buildTools(mcpTools, transport, config)
+    try {
+      await transport.connect()
+      const mcpTools = await doInitialize(transport, config.name ?? config.wsUrl)
+      return buildTools(mcpTools, transport, config)
+    } catch (error) {
+      transport.close()
+      throw error
+    }
   }
 
   if (config.url) {
@@ -390,10 +458,15 @@ export async function connectMcpServer(config) {
     try {
       await transport.openSSE()
     } catch {
-      // 不支持 GET /sse 的 server（纯 Streamable HTTP POST）：降级为无 SSE 模式
+      // 不支持 GET 的 server（纯 Streamable HTTP POST）：降级为无 SSE 模式
     }
-    const mcpTools = await doInitialize(transport, config.name ?? config.url)
-    return buildTools(mcpTools, transport, config)
+    try {
+      const mcpTools = await doInitialize(transport, config.name ?? config.url)
+      return buildTools(mcpTools, transport, config)
+    } catch (error) {
+      transport.close()
+      throw error
+    }
   }
 
   if (config.command) {
@@ -429,6 +502,15 @@ export function removeMcpTools(agent, serverName) {
 }
 
 // ---- helpers ----
+
+/** 把 Authorization header 转成 ?token= query param（WebSocket 无法自定义 header） */
+function withAuthToken(wsUrl, authorization) {
+  if (!authorization) return wsUrl
+  const token = authorization.replace(/^Bearer\s+/i, "")
+  const u = new URL(wsUrl)
+  u.searchParams.set("token", token)
+  return u.href
+}
 
 function sanitizeToolName(name) {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64)

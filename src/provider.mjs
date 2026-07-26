@@ -106,20 +106,24 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
     result.content += continued.content
     result.reasoning += continued.reasoning ?? ""
     for (const tc of continued.toolCalls ?? []) {
-    if (tc.index == null) { result.toolCalls = continued.toolCalls; break }
-    const s = result.toolCalls[tc.index] ??= { id: "", name: "", arguments: "" }
-    if (tc.id) s.id = tc.id
-    s.name += tc.name ?? ""
-    s.arguments += tc.arguments ?? ""
-  }
+      if (tc.index == null) { result.toolCalls = continued.toolCalls; break }
+      const s = result.toolCalls[tc.index] ??= { id: "", name: "", arguments: "" }
+      if (tc.id) s.id = tc.id
+      s.name += tc.name ?? ""
+      s.arguments += tc.arguments ?? ""
+    }
     result.finishReason = continued.finishReason
     if (continued.usage) {
-    result.usage = {
-      prompt_tokens: (result.usage?.prompt_tokens??0) + (continued.usage.prompt_tokens??0),
-      completion_tokens: (result.usage?.completion_tokens??0) + (continued.usage.completion_tokens??0),
-      total_tokens: (result.usage?.total_tokens??0) + (continued.usage.total_tokens??0),
+      const sum = (k) => (result.usage?.[k] ?? 0) + (continued.usage[k] ?? 0)
+      result.usage = {
+        prompt_tokens: sum("prompt_tokens"),
+        completion_tokens: sum("completion_tokens"),
+        total_tokens: sum("total_tokens"),
+        // 缓存命中/未命中也要累计（DeepSeek 计费与状态栏展示依赖这两个字段）
+        prompt_cache_hit_tokens: sum("prompt_cache_hit_tokens"),
+        prompt_cache_miss_tokens: sum("prompt_cache_miss_tokens"),
+      }
     }
-  }
   }
   return result
 }

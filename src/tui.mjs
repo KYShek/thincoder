@@ -206,7 +206,6 @@ export function layoutInput(chars, cursor, width) {
   return { lines, cursorLine, cursorCol }
 }
 
-/** 文本按宽度折行（保留 \n），返回行数组 */
 /**
  * 显示净化：控制字符会破坏终端网格数学（\r 回车覆盖、\t 宽度误判致整帧错位、ANSI/响铃冲屏）。
  * 只动显示层——模型看到的工具结果原文不变；session 里已存的脏 display 回放时也经此净化。
@@ -222,6 +221,7 @@ export function sanitizeDisplay(s) {
     .replace(/\n+$/, "")
 }
 
+/** 文本按宽度折行（保留 \n），返回行数组 */
 export function wrapText(text, width) {
   const lines = []
   for (const rawLine of text.split("\n")) {
@@ -406,9 +406,17 @@ export async function startTUI(agent, opts = {}) {
     let boxLines = inputLines
     if (state.question) {
       const q = state.question
-      boxLines = q.options.length > 0
-        ? q.options.map((opt, i) => (i === (q.selected ?? 0) ? "▸ " : "  ") + opt)
-        : ["▸ " + (q.answer ?? "")]
+      if (q.options.length > 0) {
+        // 选项窗口：只显示选中项 ±2，选项过多时防输入框无限增高撑破锚定布局
+        const sel = q.selected ?? 0
+        const QWIN = 5
+        const start = Math.max(0, Math.min(sel - 2, q.options.length - QWIN))
+        boxLines = q.options
+          .slice(start, start + QWIN)
+          .map((opt, i) => (start + i === sel ? "▸ " : "  ") + opt)
+      } else {
+        boxLines = ["▸ " + (q.answer ?? "")]
+      }
     }
     const inputBoxH = boxLines.length + 2
 
@@ -434,8 +442,18 @@ export async function startTUI(agent, opts = {}) {
     const taskPanelH = visibleTasks.length
     // 子 agent 流式输出占位（显示时占最多 2 行）
     const subOutLen = (state.subOutput && state.processing) ? wrapText(state.subOutput, W - 8).slice(-2).length : 0
-    // 权限预览占位
-    const permPreviewLen = state.permission ? 1 + state.permissionPreview.reduce((s, l) => s + wrapText(`  ${l}`, W - 1).length, 0) : 0
+    // 权限预览占位：字符数之外再封顶显示行数（rows-8），多行短行也能把帧撑过终端高度，破坏锚定布局
+    let permPreviewLines = []
+    if (state.permission) {
+      const maxLines = Math.max(1, rows - 8)
+      outer: for (const l of state.permissionPreview) {
+        for (const wrapped of wrapText(`  ${l}`, W - 1)) {
+          if (permPreviewLines.length >= maxLines) break outer
+          permPreviewLines.push(wrapped)
+        }
+      }
+    }
+    const permPreviewLen = state.permission ? 1 + permPreviewLines.length : 0
     const convH = Math.max(1, rows - headerH - inputBoxH - statusH - pickerH - taskPanelH - subOutLen - permPreviewLen)
 
     // 对话区内容行（含流式缓冲）；markdown 表格先按显示宽度重排
@@ -519,13 +537,11 @@ export async function startTUI(agent, opts = {}) {
       }
     }
 
-    // 权限审批内容预览（黄色，紧挨输入框上方）
+    // 权限审批内容预览（黄色，紧挨输入框上方）；用上方已封顶的 permPreviewLines，渲染行数与占位一致
     if (state.permission) {
       out.push(`${ansi.bold}${C.warn}❯ 权限请求${ansi.reset}${ansi.clearLine}`)
-      for (const line of state.permissionPreview) {
-        for (const wrapped of wrapText(`  ${line}`, W - 1)) {
-          out.push(`${C.warn}${wrapped}${ansi.reset}${ansi.clearLine}`)
-        }
+      for (const wrapped of permPreviewLines) {
+        out.push(`${C.warn}${wrapped}${ansi.reset}${ansi.clearLine}`)
       }
     }
 
@@ -697,8 +713,8 @@ export async function startTUI(agent, opts = {}) {
 
     const callbacks = {
       onToken: (t) => {
-        // 子 agent 流式输出：前缀匹配 explore/coder/plan 的 token 进 subOutput
-        const subMatch = t.match(/^(explore|coder|plan)\//)
+        // 子 agent 流式输出：前缀匹配 explore/coder/plan/sub（无角色子 agent 用 sub/）的 token 进 subOutput
+        const subMatch = t.match(/^(explore|coder|plan|sub)\//)
         if (subMatch) {
           state.currentSub = subMatch[1]
           state.subOutput = (state.subOutput + t.slice(subMatch[0].length)).slice(-300)
@@ -722,8 +738,8 @@ export async function startTUI(agent, opts = {}) {
       },
       onToolResult: (name, result) => {
         state.currentTool = null
-        // 子 agent 结束：清空流式缓冲，报告进对话区
-        const isSubagent = name.startsWith("explore/") || name.startsWith("coder/") || name.startsWith("plan/")
+        // 子 agent 结束：清空流式缓冲，报告进对话区（sub/ 是无角色子 agent 的前缀）
+        const isSubagent = /^(explore|coder|plan|sub)\//.test(name)
         if (isSubagent) {
           state.subOutput = ""
           state.currentSub = null

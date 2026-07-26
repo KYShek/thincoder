@@ -45,8 +45,8 @@ function saveManifest(cwd, m) {
   writeSessionFile(manifestPath(cwd), m)
 }
 
-/** 归档当前会话到空闲槽位——满了踢最老 */
-export function archiveCurrent(cwd) {
+/** 归档当前会话到空闲槽位——满了踢最老；exclude 指定一个不许被踢的槽位（switchToSlot 的目标槽） */
+export function archiveCurrent(cwd, { exclude } = {}) {
   const src = sessionPath(cwd)
   if (!existsSync(src)) return
   const m = loadManifest(cwd)
@@ -57,11 +57,13 @@ export function archiveCurrent(cwd) {
     slot = 1
     while (m.slots[slot]) slot++
   } else {
-    slot = Number(entries.sort((a, b) => a[1] - b[1])[0][0])
+    const candidates = entries.filter(([n]) => Number(n) !== exclude)
+    slot = Number((candidates.length ? candidates : entries).sort((a, b) => a[1] - b[1])[0][0])
   }
 
   const dst = slotPath(cwd, slot)
-  writeFileSync(dst, readFileSync(src, "utf8"), "utf8") // 复制（rename 会丢当前）
+  // 复制（rename 会丢当前）；走原子写，防中途崩溃留下截断的 JSON 丢归档
+  writeSessionFile(dst, JSON.parse(readFileSync(src, "utf8")))
   m.slots[slot] = Date.now()
   delete m.slots._currentName
   saveManifest(cwd, m)
@@ -82,7 +84,8 @@ export function switchToSlot(cwd, slot) {
   if (!m.slots[slot]) return null
 
   // 归档当前（内部写 manifest；之后我们的 m 已过期，需重读）
-  archiveCurrent(cwd)
+  // 满槽时排除目标槽：否则最老槽=目标槽，归档会把目标覆盖掉再复制回来，目标会话永久丢失
+  archiveCurrent(cwd, { exclude: slot })
 
   // 槽位文件 → 当前（copy+unlink，不用 rename：Windows rename 目标已存在会抛 EPERM）
   const src = slotPath(cwd, slot)

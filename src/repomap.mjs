@@ -74,17 +74,15 @@ function parsePyOutline(lines) {
   for (const line of lines) {
     const fromRe = line.match(/^from\s+(\S+)\s+import\s+(.+)/)
     if (fromRe) {
-      const mod = fromRe[1]
-      if (!mod.startsWith(".")) continue // 只本地
-      imports.push(normalizeExt(mod.replace(/^\.+/, "")))
+      const rel = pyRelPath(fromRe[1])
+      if (rel) imports.push(rel)
       continue
     }
     const impRe = line.match(/^import\s+(.+)/)
     if (impRe) {
       for (const mod of impRe[1].split(",")) {
-        const m = mod.trim().split(/\s+/)[0]
-        if (!m.startsWith(".")) continue
-        imports.push(normalizeExt(m.replace(/^\.+/, "")))
+        const rel = pyRelPath(mod.trim().split(/\s+/)[0])
+        if (rel) imports.push(rel)
       }
       continue
     }
@@ -92,6 +90,19 @@ function parsePyOutline(lines) {
     if (defRe) symbols.push(defRe[1])
   }
   return { imports: [...new Set(imports)], symbols: [...new Set(symbols)] }
+}
+
+/**
+ * Python 相对导入 → 相对文件路径：
+ * 前导 n 个点表示上溯 n-1 层（"."=当前包），模块点号转路径分隔符。
+ * 非相对导入（不以 . 开头）或纯包导入（"from . import x"）返回 null。
+ */
+function pyRelPath(mod) {
+  if (!mod?.startsWith(".")) return null
+  const dots = mod.match(/^\.+/)[0].length
+  const rest = mod.slice(dots).replaceAll(".", "/")
+  if (!rest) return null
+  return normalizeExt("../".repeat(dots - 1) + rest)
 }
 
 function normalizeExt(p) {

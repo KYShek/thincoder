@@ -28,13 +28,17 @@ export async function loadSkills(cwd) {
     try {
       const s = await stat(p)
       if (!s.isFile()) continue
-      // 提取描述（前 400 字符里第一段非空、非标题行）
+      // 提取描述（前 400 字符里第一段非空、非标题行）；文件带 frontmatter 时整块跳过，
+      // 否则会把 frontmatter 字段行（如 "name: x"）误当描述
       const head = await readFile(p, "utf8")
       const body = head.slice(0, 400).split("\n")
       let desc = ""
+      let inFrontmatter = false
       for (const line of body) {
         const t = line.trim()
-        if (t && !t.startsWith("#") && !t.startsWith("---")) {
+        if (t === "---") { inFrontmatter = !inFrontmatter; continue }
+        if (inFrontmatter) continue
+        if (t && !t.startsWith("#")) {
           desc = t.slice(0, 120)
           break
         }
