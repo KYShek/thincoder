@@ -4,7 +4,7 @@
  */
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
@@ -111,6 +111,77 @@ test("tools: write / read / edit / glob / grep", async () => {
 
     const grepOut = await byName.grep.execute({ pattern: "mjs" }, ctx)
     assert.match(grepOut, /a\.txt:2:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tools: apply_patch 多文件原子应用 / 新建文件 / 失败不落盘", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-patch-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    writeFileSync(join(dir, "a.txt"), "one\ntwo\nthree\n")
+    writeFileSync(join(dir, "b.txt"), "alpha\nbeta\ngamma\n")
+
+    // 一个补丁改两个文件 + 建一个新文件
+    const patch = [
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,3 +1,3 @@",
+      " one",
+      "-two",
+      "+TWO",
+      " three",
+      "--- a/b.txt",
+      "+++ b/b.txt",
+      "@@ -1,3 +1,4 @@",
+      " alpha",
+      "+inserted",
+      " beta",
+      " gamma",
+      "--- /dev/null",
+      "+++ b/sub/new.txt",
+      "@@ -0,0 +1,2 @@",
+      "+hello",
+      "+world",
+      "",
+    ].join("\n")
+    const out = await byName.apply_patch.execute({ patch }, ctx)
+    assert.match(out, /3 file/)
+    assert.strictEqual(readFileSync(join(dir, "a.txt"), "utf8"), "one\nTWO\nthree\n")
+    assert.strictEqual(readFileSync(join(dir, "b.txt"), "utf8"), "alpha\ninserted\nbeta\ngamma\n")
+    assert.strictEqual(readFileSync(join(dir, "sub", "new.txt"), "utf8"), "hello\nworld\n")
+
+    // touchedPaths 供 agent 层追踪
+    assert.deepStrictEqual(byName.apply_patch.touchedPaths({ patch }), ["a.txt", "b.txt", "sub/new.txt"])
+
+    // 原子性：第二个文件 hunk 不上，第一个文件也不能落盘
+    const before = readFileSync(join(dir, "a.txt"), "utf8")
+    const bad = [
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,1 +1,1 @@",
+      "-one",
+      "+ONE",
+      "--- a/b.txt",
+      "+++ b/b.txt",
+      "@@ -1,1 +1,1 @@",
+      "-no-such-line",
+      "+x",
+      "",
+    ].join("\n")
+    await assert.rejects(() => byName.apply_patch.execute({ patch: bad }, ctx), /does not apply/)
+    assert.strictEqual(readFileSync(join(dir, "a.txt"), "utf8"), before)
+
+    // 上下文多处匹配 → 拒绝，要求更多上下文
+    writeFileSync(join(dir, "dup.txt"), "x\ny\nx\ny\n")
+    const ambiguous = ["--- a/dup.txt", "+++ b/dup.txt", "@@ -1,2 +1,2 @@", " x", "-y", "+z", ""].join("\n")
+    await assert.rejects(() => byName.apply_patch.execute({ patch: ambiguous }, ctx), /matches \d+ locations/)
+
+    // 路径越界拒绝
+    const escape = ["--- a/../evil.txt", "+++ b/../evil.txt", "@@ -1,1 +1,1 @@", "-a", "+b", ""].join("\n")
+    await assert.rejects(() => byName.apply_patch.execute({ patch: escape }, ctx), /Access denied/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -705,6 +776,82 @@ test("checkpoint: 快照 → 改坏 → 回滚完全恢复", async () => {
 
     const cps2 = await listCheckpoints(dir)
     assert.ok(cps2.length >= 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cptool-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  const ctx = { cwd: dir }
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // create → list 能查到
+    const created = await byName.checkpoint.execute({ action: "create" }, ctx)
+    const id = created.match(/Checkpoint (\S+) created/)[1]
+    const listed = await byName.checkpoint.execute({ action: "list" }, ctx)
+    assert.ok(listed.includes(id))
+
+    // 改坏 → rewind 恢复
+    writeFileSync(join(dir, "app.js"), "const v = 999\n")
+    await byName.checkpoint.execute({ action: "rewind", id }, ctx)
+    assert.equal(readFileSync(join(dir, "app.js"), "utf8").replace(/\r\n/g, "\n"), "const v = 1\n")
+
+    // rewind 缺 id 报错；非 git 仓库报错
+    await assert.rejects(() => byName.checkpoint.execute({ action: "rewind" }, ctx), /id is required/)
+    const plain = mkdtempSync(join(tmpdir(), "thincoder-cptool-plain-"))
+    await assert.rejects(() => byName.checkpoint.execute({ action: "list" }, { cwd: plain }), /Not a git repository/)
+    rmSync(plain, { recursive: true, force: true })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("bash 护栏：checkout ./restore/clean -f/链式写法拦截，安全写法放行", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-guard-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  const ctx = { cwd: dir }
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    writeFileSync(join(dir, "app.js"), "const v = 2\n") // 未提交改动 → 护栏生效条件
+
+    // 这些都必须被拒（昨天的事故就是这类命令漏过去的）
+    for (const cmd of [
+      "git checkout .",
+      "git checkout -- app.js",
+      "git reset --hard",
+      "git restore app.js",
+      "git restore .",
+      "git clean -fd",
+      "echo ok && git checkout .",   // 链式绕过
+      "cd . ; git reset --hard HEAD", // 分号链式
+    ]) {
+      await assert.rejects(() => byName.bash.execute({ command: cmd }, ctx), /Refusing destructive/, cmd)
+    }
+    // 拒绝时未提交改动原样保留
+    assert.equal(readFileSync(join(dir, "app.js"), "utf8"), "const v = 2\n")
+
+    // 安全写法不误伤：切分支（无路径）、restore --staged、clean -n dry-run
+    for (const cmd of ["git checkout -b feature-x", "git restore --staged app.js", "git clean -nd"]) {
+      await byName.bash.execute({ command: cmd }, ctx)
+    }
+    git("checkout", "-q", "-") // 回到原分支，清理
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -1752,6 +1899,39 @@ test("runAgent: 子 agent 报告达标时不打回", async () => {
   }
 })
 
+test("runAgent: 子 agent 内部工具调用不 relay 到父回调（只 relay token，防 TUI 刷屏）", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "做个小改动", role: "coder" }) } },
+    { toolCall: { name: "mutate", arguments: "{}" } },   // 子 agent 内部工具调用
+    { content: "已完成实现。".repeat(40) },               // 子 agent 报告（token 应 relay）
+    { content: "完成" },
+  ]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-relay-test-"))
+    const agent = createAgent({ provider, tools: [makeMutationTool()], config: {}, cwd })
+    const toolCalls = []
+    const toolResults = []
+    let tokens = ""
+    await runAgent(agent, "派活", {
+      onPermissionRequest: async () => true,
+      onToolCall: (name) => toolCalls.push(name),
+      onToolResult: (name) => toolResults.push(name),
+      onToken: (t) => { tokens += t },
+    })
+    // 父回调只见 subagent 本身；子 agent 的 mutate 不透传（透传会在 TUI 每个内部调用刷一行）
+    assert.deepStrictEqual(toolCalls, ["subagent"])
+    assert.deepStrictEqual(toolResults, ["subagent"])
+    // 正文 token 带 coder/ 前缀 relay（TUI 滚动 2 行显示靠这个）
+    assert.ok(tokens.includes("coder/"))
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
 test("runAgent: explore 子 agent 注入 git 上下文", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const { execSync } = await import("node:child_process")
@@ -2016,6 +2196,68 @@ test("context: 压缩序列化时 user 消息放宽到 8000（长需求不丢）
     assert.ok(summaryRequest.includes(longRequirement)) // 5000 字符全量进入摘要器视野
   } finally {
     server.close()
+  }
+})
+
+test("context: 历史太短切不出中间段时，巨型消息被确定性瘦身（压缩逃逸口）", async () => {
+  const { compressIfNeeded, estimateTokens } = await import("../src/context.mjs")
+  const huge = "开".repeat(60_000) // 一条 ≈6 万 token 的巨型消息（大段粘贴/超大注入）
+  const agent = {
+    provider: { baseURL: "http://127.0.0.1:1", apiKey: "x", model: "m" }, // 不会真正调用（无中间段可摘要）
+    history: [
+      { role: "user", content: "需求" },
+      { role: "user", content: huge },
+      { role: "assistant", content: "收到" },
+      { role: "tool", tool_call_id: "c1", content: "结果 " + "y".repeat(20_000) },
+      { role: "user", content: "继续" },
+    ],
+    tasks: [], planMode: false, _turnsSinceTaskUpdate: 0, _turnsInPlanMode: 0,
+  }
+  const before = estimateTokens(agent.history)
+  const done = await compressIfNeeded(agent, 1_000)
+  assert.equal(done, true)
+  // 巨消息截断换桩、首尾保留；tool 消息的 tool_call_id 不动（无协议 400 风险）
+  assert.ok(agent.history[1].content.length < 7_000)
+  assert.ok(agent.history[1].content.includes("truncated"))
+  assert.ok(agent.history[1].content.startsWith("开"))
+  assert.equal(agent.history[3].tool_call_id, "c1")
+  assert.ok(agent.history[3].content.length < 7_000)
+  assert.ok(estimateTokens(agent.history) < before / 5)
+  // 没有 oversized 消息时不再动作（等价于旧的 return false）
+  assert.equal(await compressIfNeeded(agent, 1_000), false)
+})
+
+test("runAgent: 依赖大纲注入截断到上限且每会话只注一次", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const { codeSync } = await import("../src/memory.mjs")
+  const { writeFile } = await import("node:fs/promises")
+  const m = freshMemory()
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-outline-inject-"))
+  try {
+    // 120 个互相 import 的文件：全量大纲必然超过 6000 字符的注入上限（实测约 71 字符/文件）
+    for (let i = 0; i < 120; i++) {
+      const prev = i > 0 ? `import { v${i - 1} } from "./f${i - 1}.mjs"\n` : ""
+      await writeFile(join(dir, `f${i}.mjs`), `${prev}export const v${i} = ${i}\nexport function fn${i}() { return v${i} }\n`)
+    }
+    await codeSync(m, dir)
+
+    const { server, port } = await mockLLM([{ content: "回答1" }, { content: "回答2" }])
+    try {
+      const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+      const agent = createAgent({ provider, tools: [], config: {}, cwd: dir, memory: m })
+      const OUTLINE_PREFIX = "[System reminder: project dependency outline:"
+      await runAgent(agent, "第一个问题")
+      const outlines = () => agent.history.filter((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_PREFIX))
+      assert.equal(outlines().length, 1)
+      assert.ok(outlines()[0].content.includes("outline truncated"), "超上限应截断并指引 repo_outline")
+      assert.ok(outlines()[0].content.length < 6_500, `注入应有硬上限，实际 ${outlines()[0].content.length} 字符`)
+      await runAgent(agent, "第二个问题")
+      assert.equal(outlines().length, 1, "每会话只注一次，不按轮数累积")
+    } finally {
+      server.close()
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

@@ -149,6 +149,7 @@ switch (command) {
     if (!prompt) {
       console.error('Usage: thincoder chat [--auto] "<prompt>"')
       exitSoon(1)
+      break
     }
 
     const agent = await makeAgent()
@@ -240,6 +241,7 @@ switch (command) {
       console.error("Team memory not configured. Set memory.team in ~/.thincoder/config.json:")
       console.error('  "team": { "name": "myteam", "repo": "git@github.com:org/team-memory.git" }')
       exitSoon(1)
+      break
     }
     const memory = createMemory({ dbPath: config.memory.dbPath })
     const { ensureClone, pullTeam } = await import("../src/gitmem.mjs")
@@ -268,6 +270,7 @@ switch (command) {
     if (!file) {
       console.error("Usage: thincoder distill <transcript-file> [--yes] [--scope=personal|project|team]")
       exitSoon(1)
+      break
     }
     const { readFile } = await import("node:fs/promises")
     const transcript = await readFile(file, "utf8")
@@ -401,8 +404,9 @@ switch (command) {
     } catch {
       console.error("[upgrade] 无法查询 npm registry，请确认网络和 npm 已安装")
       exitSoon(1)
+      break
     }
-    if (remote === local) {
+    if (compareVersions(local, remote) >= 0) {
       console.log(`ThinCoder ${local} 已是最新。`)
     } else {
       console.log(`升级: ${local} → ${remote}`)
@@ -455,6 +459,7 @@ async function memoryCommand(memory, args) {
       if (!query) {
         console.error("Usage: thincoder memory search <query>")
         exitSoon(1)
+        break
       }
       printEntries(await search(memory, query, { limit: 10 }))
       break
@@ -463,6 +468,7 @@ async function memoryCommand(memory, args) {
       if (!flags.type || !flags.title || !flags.content) {
         console.error("Usage: thincoder memory put --type=<rule|knowledge|decision|pattern> --title=<t> --content=<c> [--tags=<t>]")
         exitSoon(1)
+        break
       }
       const id = await put(memory, { type: flags.type, title: flags.title, content: flags.content, tags: flags.tags ?? "" })
       console.log(`Saved (id=${id})`)
@@ -473,6 +479,7 @@ async function memoryCommand(memory, args) {
       if (!id) {
         console.error("Usage: thincoder memory remove <id>")
         exitSoon(1)
+        break
       }
       console.log((await remove(memory, id)) ? `Removed #${id}` : `No entry #${id}`)
       break
@@ -499,6 +506,21 @@ function printEntries(entries) {
 function summarize(toolArgs) {
   const s = JSON.stringify(toolArgs)
   return s.length > 120 ? s.slice(0, 120) + "..." : s
+}
+
+/** 语义化版本比较：a<b 返回 -1，相等 0，a>b 返回 1；非数字段按字符串比 */
+function compareVersions(a, b) {
+  const pa = String(a).split("."), pb = String(b).split(".")
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const xa = pa[i] ?? "0", xb = pb[i] ?? "0"
+    const na = Number(xa), nb = Number(xb)
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) {
+      if (na !== nb) return na < nb ? -1 : 1
+    } else if (xa !== xb) {
+      return xa < xb ? -1 : 1
+    }
+  }
+  return 0
 }
 
 /** 权限请求的关键信息（按工具定制），与 TUI 的 formatPermission 对齐。name 可能带子 agent 前缀（"coder/bash"），取基名匹配 */

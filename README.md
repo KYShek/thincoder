@@ -143,7 +143,7 @@ bin/thincoder.mjs   命令入口（tui / chat / memory / sync / distill）
 src/
   provider.mjs      LLM 调用（fetch, SSE 流式, 重试）
   embedding.mjs     向量嵌入（OpenAI 兼容 /v1/embeddings）
-  tools.mjs         14 个内置工具 + MCP 包装 + readonly 调度标记
+  tools.mjs         16 个内置工具 + MCP 包装 + readonly 调度标记
   mcp.mjs           MCP 客户端（JSON-RPC + stdio transport，零依赖）
   agent.mjs         主循环 + 两段式工具执行 + plan/task/goal/skill/subagent/verify 工具
                     + 增量索引（write/edit/delete 后自动 reindexFile）

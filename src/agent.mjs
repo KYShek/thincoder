@@ -133,8 +133,12 @@ function escapeXml(s) {
 const TOOL_RESULT_OFFLOAD_LIMIT = 16_000 // 工具结果超过此长度即落盘（防单次输出灌爆上下文）
 const TOOL_RESULT_PREVIEW = 2_000
 
+/** 依赖大纲注入：前缀（历史查重去重用）与长度硬上限（多仓库父目录的全量大纲可达百万字符） */
+const OUTLINE_INJECT_PREFIX = "[System reminder: project dependency outline:"
+const OUTLINE_INJECT_MAX = 6_000
+
 /** 会改文件的写工具（文件触碰追踪 + 增量索引用） */
-const FILE_MUTATORS = new Set(["write", "edit", "insert_after", "delete"])
+const FILE_MUTATORS = new Set(["write", "edit", "insert_after", "apply_patch", "delete"])
 
 /** 参数 JSON 标准化（防空格差异使停滞检测漏报） */
 function tryCanonicalize(name, args) {
@@ -313,7 +317,9 @@ export const subagentTool = {
       if (gitCtx) input = `<untrusted_git_context>\n${escapeXml(gitCtx)}\n</untrusted_git_context>\n\n${input}`
     }
 
-    // 工具活动 relay 回父 agent 的 TUI 显示——子 agent 不再黑盒静默执行
+    // 只 relay 正文/思考 token（TUI 滚动 2 行显示子 agent 活动）；
+    // 不 relay 内部工具调用——子 agent 每次 read/grep 都往对话区刷一行就满屏了，
+    // 内部活动由流式 token 概括，最终报告经父 agent 的 subagent 工具结果回到对话区
     const relayPrefix = role ? `${role}/` : "sub/"
     const childOpts = {
       onPermissionRequest: childPermission,
@@ -322,12 +328,6 @@ export const subagentTool = {
         : null,
       onReasoning: ctx.callbacks?.onReasoning
         ? (t) => ctx.callbacks.onReasoning(`${relayPrefix}${t}`)
-        : null,
-      onToolCall: ctx.callbacks?.onToolCall
-        ? (name, args) => ctx.callbacks.onToolCall(`${relayPrefix}${name}`, args)
-        : null,
-      onToolResult: ctx.callbacks?.onToolResult
-        ? (name, result) => ctx.callbacks.onToolResult(`${relayPrefix}${name}`, result)
         : null,
     }
     const childRunOpts = { depth: (ctx.depth ?? 0) + 1, maxTurns: DEFAULT_SUBAGENT_TURNS }
@@ -739,13 +739,21 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (tree) {
         agent.history.push({ role: "user", content: `[System reminder: working directory snapshot:\n<untrusted_cwd_listing>\n${escapeXml(tree)}\n</untrusted_cwd_listing>]`, transient: true })
       }
-      // 依赖大纲：模型开局就能看见谁 import 谁，不用盲调 repo_outline
-      if (agent.memory) {
+      // 依赖大纲：模型开局就能看见谁 import 谁，不用盲调 repo_outline。
+      // 两道保险（多仓库父目录的全量大纲实测可达 140 万字符 ≈ 35 万 token，曾直接打爆上下文 + TPM）：
+      // 1) 硬截断到 OUTLINE_INJECT_MAX，超了让模型用 repo_outline 工具按需查聚焦视图；
+      // 2) 每会话只注一次（历史已有则跳过）——runAgent 每轮都跑，重复注入会让大纲按轮数累积
+      if (agent.memory && !agent.history.some((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_INJECT_PREFIX))) {
         try {
           const { buildOutline } = await import("./repomap.mjs")
-          const outline = buildOutline(agent.memory.db, agent.cwd, null)
+          let outline = buildOutline(agent.memory.db, agent.cwd, null)
           if (outline && !outline.startsWith("(no indexed")) {
-            agent.history.push({ role: "user", content: `[System reminder: project dependency outline:\n${outline}]`, transient: true })
+            if (outline.length > OUTLINE_INJECT_MAX) {
+              outline =
+                outline.slice(0, OUTLINE_INJECT_MAX).replace(/\n[^\n]*$/, "") +
+                "\n... (outline truncated — call repo_outline with a file path for a focused view)"
+            }
+            agent.history.push({ role: "user", content: `${OUTLINE_INJECT_PREFIX}\n${outline}]`, transient: true })
           }
         } catch { /* 索引未就绪不报错 */ }
       }
@@ -934,18 +942,22 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (tool && ok) {
         if (!tool.readonly && toolCall.name !== "bash" && toolCall.name !== "subagent") agent._mutatedThisRun = true
         if (toolCall.name === "verify") agent._verifiedThisRun = true
-        // 文件触碰追踪 + 增量索引：write/edit/insert_after/delete 后记录路径
+        // 文件触碰追踪 + 增量索引：write/edit/insert_after/apply_patch/delete 后记录路径
         if (FILE_MUTATORS.has(toolCall.name)) {
           try {
             const args = JSON.parse(toolCall.arguments)
-            const abs = join(agent.cwd, args.path)
-            agent._touchedFiles.push(abs)
-            if (agent.memory) {
-              if (!_reindexFile) {
-                const mod = await import("./memory.mjs")
-                _reindexFile = mod.reindexFile
+            // 多数写工具是单 path；apply_patch 这类多文件工具自带 touchedPaths
+            const paths = tool.touchedPaths ? tool.touchedPaths(args) : [args.path]
+            for (const p of paths) {
+              const abs = join(agent.cwd, p)
+              agent._touchedFiles.push(abs)
+              if (agent.memory) {
+                if (!_reindexFile) {
+                  const mod = await import("./memory.mjs")
+                  _reindexFile = mod.reindexFile
+                }
+                await _reindexFile(agent.memory, agent.cwd, abs)
               }
-              await _reindexFile(agent.memory, agent.cwd, abs)
             }
           } catch { /* 索引失败不阻塞 agent */ }
         }

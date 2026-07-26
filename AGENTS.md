@@ -31,7 +31,7 @@ src/agent.mjs       主循环 + 自律工具（task/plan/goal/verify/subagent/sk
 src/provider.mjs    LLM 调用（SSE、reasoning_content、usage、重试）
 src/context.mjs     上下文压缩（压缩后回注 task/plan 状态）
 src/tui.mjs         裸 ANSI TUI（对话区 / todo 面板 / 输入框 / 状态栏）
-src/tools.mjs       14 个文件/网络/git 工具；描述存 src/tools/*.md
+src/tools.mjs       16 个文件/网络/git 工具；描述存 src/tools/*.md
 src/memory.mjs      三层记忆 + 代码/文档索引（code_chunks + doc_chunks，FTS5 + 向量 RRF）
                     + JSDoc/docstring 提取 + 单文件增量索引
 src/repomap.mjs     仓库依赖大纲（import/export 解析，零依赖 regex）

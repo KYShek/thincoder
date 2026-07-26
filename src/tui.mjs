@@ -726,6 +726,14 @@ export async function startTUI(agent, opts = {}) {
         scheduleRender()
       },
       onReasoning: (t) => {
+        // 子 agent 的思考 token 同样带 role/ 前缀，进 subOutput 滚动区，不污染主思考流
+        const subMatch = t.match(/^(explore|coder|plan|sub)\//)
+        if (subMatch) {
+          state.currentSub = subMatch[1]
+          state.subOutput = (state.subOutput + t.slice(subMatch[0].length)).slice(-300)
+          scheduleRender()
+          return
+        }
         ensureAssistantLabel()
         state.reasoning += t
         scheduleRender()
@@ -738,8 +746,9 @@ export async function startTUI(agent, opts = {}) {
       },
       onToolResult: (name, result) => {
         state.currentTool = null
-        // 子 agent 结束：清空流式缓冲，报告进对话区（sub/ 是无角色子 agent 的前缀）
-        const isSubagent = /^(explore|coder|plan|sub)\//.test(name)
+        // 子 agent 结束（父 agent 侧的 subagent 工具结果带着最终报告）：清空流式缓冲，报告进对话区。
+        // 注意只能用精确匹配——子 agent 内部工具调用不 relay 到 TUI（刷了满屏的教训）
+        const isSubagent = name === "subagent"
         if (isSubagent) {
           state.subOutput = ""
           state.currentSub = null
@@ -892,6 +901,10 @@ export async function startTUI(agent, opts = {}) {
         "  ↓",
         ...cap(args.new_string ?? "", 500).split("\n").map((l) => `+ ${l}`),
       ]
+    }
+    if (base === "apply_patch") {
+      // 补丁本身就是可读的 diff，直接预览
+      return cap(args.patch ?? "", 1500).split("\n")
     }
     if (base === "delete") return [`${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`]
     if (base === "subagent") return cap(args.task ?? "", 500).split("\n")

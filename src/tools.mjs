@@ -1,13 +1,13 @@
 /**
  * tools.mjs — 内置工具集
- * read / write / edit / bash / glob / grep / websearch / ls / fetch / delete / git_diff / git_status / git_log / question，零依赖实现。
+ * read / write / edit / insert_after / apply_patch / bash / glob / grep / websearch / ls / fetch / delete / git_diff / git_status / git_log / question / checkpoint，零依赖实现。
  * 工具描述从 src/tools/*.md 加载（方便人读和修改）。
  * readonly 标记供 agent 调度：只读工具可并行，有副作用工具串行。
  */
 
 import { spawn, execFileSync } from "node:child_process"
 import { mkdir, readFile, readdir, stat, writeFile, unlink } from "node:fs/promises"
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, realpathSync } from "node:fs"
 import { dirname, join, resolve, relative, isAbsolute, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -117,14 +117,81 @@ function gitDiffOne(cwd, abs) {
   }
 }
 
-function resolveInCwd(ctx, p) {
-  const resolved = resolve(ctx.cwd, p)
-  const rel = relative(ctx.cwd, resolved)
+/** 目标可能不存在（write 新文件），逐级向上找真实存在的祖先做 realpath */
+function realpathNearest(abs) {
+  let cur = abs
+  const tail = []
+  while (!existsSync(cur)) {
+    const parent = dirname(cur)
+    if (parent === cur) return abs // 到根了，原样返回（不会发生）
+    tail.unshift(cur.slice(parent.length + 1))
+    cur = parent
+  }
+  try {
+    const real = realpathSync(cur)
+    return tail.length ? join(real, ...tail) : real
+  } catch {
+    return abs
+  }
+}
+
+// cwd 的 realpath 缓存：进程内 cwd 不变，只需解析一次
+const realCwdCache = new Map()
+function realCwd(cwd) {
+  if (!realCwdCache.has(cwd)) realCwdCache.set(cwd, realpathNearest(resolve(cwd)))
+  return realCwdCache.get(cwd)
+}
+
+function assertInside(cwd, resolved, p) {
+  const rel = relative(cwd, resolved)
   // 跨盘符时 relative 返回绝对路径（Windows）；startsWith("..") 会误伤 cwd 内的 "..foo"，故精确判断
   if (isAbsolute(rel) || rel === ".." || rel.startsWith(".." + sep)) {
     throw new Error(`Access denied outside working directory: ${p}`)
   }
+}
+
+function resolveInCwd(ctx, p) {
+  const cwd = realCwd(ctx.cwd)
+  const resolved = resolve(cwd, p)
+  assertInside(cwd, resolved, p)
+  // 防 symlink 逃逸：cwd 内若存在指向外部的符号链接，realpath 后会落到 cwd 外
+  const real = realpathNearest(resolved)
+  assertInside(cwd, real, p)
   return resolved
+}
+
+/**
+ * 破坏性预检用的粗切分：&& || ; | 换行 命令替换 子 shell 都视作命令边界。
+ * 宁多切不少切——防 "cd x && git checkout ."、"echo $(git checkout .)" 这类写法绕过行首锚定
+ */
+function shellSegments(command) {
+  return command.split(/&&|\|\||[;|\n]|\$\(|`|[(]/)
+}
+
+/**
+ * 单个命令段是否会销毁未提交改动：
+ * checkout -- / checkout . / reset --hard / clean -f* / restore（动工作区的）
+ * checkout <branch>、restore --staged、clean -n（dry-run）不算
+ */
+function isDestructiveGitSegment(seg) {
+  if (!/^\s*git\s/.test(seg)) return false
+  if (/\scheckout\s+(?:--|\.(?:\s|$))/.test(seg)) return true
+  if (/\sreset\s+--hard\b/.test(seg)) return true
+  if (/\sclean\s+-\S*f/.test(seg)) return true
+  if (/\srestore\s/.test(seg) && (/--worktree/.test(seg) || !/--staged/.test(seg))) return true
+  return false
+}
+
+/** cwd 是否在 git 仓库内（预检用，失败静默视为不在） */
+function insideGitRepo(cwd) {
+  try {
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
+      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    })
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ---------------------------------------------------------------- read
@@ -199,6 +266,9 @@ const editTool = {
   readonly: false,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
+    if (!args.old_string) {
+      throw new Error("old_string must not be empty (empty string matches everywhere and would corrupt the file)")
+    }
     const content = await readFile(abs, "utf8")
     const occurrences = content.split(args.old_string).length - 1
     if (occurrences === 0) {
@@ -247,6 +317,9 @@ const insertAfterTool = {
     let targetLine
     if (args.after_line != null) {
       targetLine = args.after_line
+      if (!Number.isInteger(targetLine)) {
+        throw new Error(`after_line must be an integer, got: ${args.after_line}`)
+      }
       if (targetLine < 1 || targetLine > lines.length) {
         throw new Error(`after_line ${targetLine} out of range (file has ${lines.length} lines)`)
       }
@@ -268,6 +341,134 @@ const insertAfterTool = {
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
     return `Inserted after line ${targetLine} in ${abs}${diff ? "\n" + diff : ""}`
+  },
+}
+
+// ---------------------------------------------------------------- apply_patch
+
+/**
+ * 解析统一 diff（unified diff）：返回 [{ path, isNew, hunks: [{ ops: [{type:" "|"-"|"+", text}] }] }]
+ * 按 @@ 头的行数计数消费 hunk 行——LLM 常把上下文空行剥成纯空行，靠计数而不是行首字符判断 hunk 边界
+ */
+function parsePatch(patch) {
+  // 补丁文本常来自 CRLF 终端/模型输出，行尾 \r 会混进 hunk 内容导致上下文对不上，统一剥掉
+  const lines = patch.replace(/\r(?=\n|$)/g, "").split("\n")
+  const files = []
+  let cur = null
+  let i = 0
+  const stripPrefix = (p) => p.replace(/^[ab]\//, "")
+  while (i < lines.length) {
+    const line = lines[i]
+    if (line.startsWith("--- ")) {
+      const oldPath = line.slice(4).trim()
+      const plus = lines[i + 1]
+      if (!plus?.startsWith("+++ ")) throw new Error(`Malformed patch: expected "+++" line after "${line}"`)
+      const newPath = plus.slice(4).trim()
+      if (newPath === "/dev/null") throw new Error("Deleting files via patch is not supported — use the delete tool")
+      cur = { path: stripPrefix(newPath), isNew: oldPath === "/dev/null", hunks: [] }
+      files.push(cur)
+      i += 2
+      continue
+    }
+    if (line.startsWith("@@")) {
+      if (!cur) throw new Error("Malformed patch: hunk header before any file header")
+      const m = line.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/)
+      if (!m) throw new Error(`Malformed patch: bad hunk header "${line}" (need @@ -old,count +new,count @@)`)
+      let oldNeed = m[1] == null ? 1 : Number(m[1])
+      let newNeed = m[2] == null ? 1 : Number(m[2])
+      const hunk = { ops: [] }
+      i++
+      while (oldNeed > 0 || newNeed > 0) {
+        if (i >= lines.length) throw new Error("Malformed patch: hunk truncated (line counts in @@ header not satisfied)")
+        const hl = lines[i]
+        if (hl.startsWith("\\")) { i++; continue } // "\ No newline at end of file"
+        const tag = hl === "" ? " " : hl[0] // 纯空行按上下文行宽容处理
+        const text = hl === "" ? "" : hl.slice(1)
+        if (tag === " ") { hunk.ops.push({ type: " ", text }); oldNeed--; newNeed-- }
+        else if (tag === "-") { hunk.ops.push({ type: "-", text }); oldNeed-- }
+        else if (tag === "+") { hunk.ops.push({ type: "+", text }); newNeed-- }
+        else throw new Error(`Malformed patch: unexpected line "${hl.slice(0, 60)}" inside hunk`)
+        i++
+      }
+      cur.hunks.push(hunk)
+      continue
+    }
+    i++ // diff --git / index / 空行等元信息跳过
+  }
+  if (files.length === 0) throw new Error("No file changes found in patch (need --- / +++ headers)")
+  return files
+}
+
+/** 在内存行数组上按序应用 hunks；任何一步失败抛错（调用方保证不落盘）。比较时忽略行尾 \r，上下文行保留原始字节 */
+function applyHunks(fileLines, hunks, eol, path) {
+  const cr = eol === "\r\n" ? "\r" : ""
+  for (let h = 0; h < hunks.length; h++) {
+    const oldSeq = hunks[h].ops.filter((o) => o.type !== "+").map((o) => o.text)
+    if (oldSeq.length === 0) throw new Error(`Hunk ${h + 1} in ${path} has no context/removed lines to locate`)
+    const matches = []
+    for (let pos = 0; pos + oldSeq.length <= fileLines.length; pos++) {
+      let ok = true
+      for (let j = 0; j < oldSeq.length; j++) {
+        if (fileLines[pos + j].replace(/\r$/, "") !== oldSeq[j]) { ok = false; break }
+      }
+      if (ok) matches.push(pos)
+    }
+    if (matches.length === 0) {
+      const preview = oldSeq.slice(0, 3).join(" ⏎ ")
+      throw new Error(`Hunk ${h + 1} in ${path} does not apply — context not found: "${preview}${oldSeq.length > 3 ? "…" : ""}". Read the file first and regenerate the patch from actual content.`)
+    }
+    if (matches.length > 1) throw new Error(`Hunk ${h + 1} in ${path} matches ${matches.length} locations — add more context lines to make it unique`)
+    const pos = matches[0]
+    const out = []
+    let src = pos
+    for (const op of hunks[h].ops) {
+      if (op.type === " ") out.push(fileLines[src++]) // 上下文保留原始行（行尾/空白原样）
+      else if (op.type === "-") src++
+      else out.push(op.text + cr)
+    }
+    fileLines.splice(pos, oldSeq.length, ...out)
+  }
+}
+
+const applyPatchTool = {
+  name: "apply_patch",
+  description: DESC("apply_patch"),
+  parameters: {
+    type: "object",
+    properties: {
+      patch: { type: "string", description: "Unified diff. May span multiple files; --- / +++ headers per file, @@ -old,count +new,count @@ hunks. Use --- /dev/null to create a file." },
+    },
+    required: ["patch"],
+  },
+  readonly: false,
+  /** 供 agent 层追踪触碰文件（多路径，替代单 path 参数） */
+  touchedPaths(args) {
+    try { return parsePatch(args.patch ?? "").map((f) => f.path) } catch { return [] }
+  },
+  async execute(args, ctx) {
+    const files = parsePatch(args.patch ?? "")
+    // 先全部读入内存试算：任何一个 hunk 不上就整体抛错，不写半个补丁（原子性）
+    const planned = []
+    for (const f of files) {
+      const abs = resolveInCwd(ctx, f.path)
+      if (f.isNew) {
+        if (existsSync(abs)) throw new Error(`Cannot create ${f.path}: file already exists`)
+        const content = f.hunks.flatMap((h) => h.ops.filter((o) => o.type === "+").map((o) => o.text)).join("\n") + "\n"
+        planned.push({ abs, path: f.path, content, isNew: true })
+      } else {
+        const original = await readFile(abs, "utf8").catch(() => { throw new Error(`File not found: ${f.path}`) })
+        const eol = original.includes("\r\n") ? "\r\n" : "\n"
+        const lines = original.split("\n")
+        applyHunks(lines, f.hunks, eol, f.path)
+        planned.push({ abs, path: f.path, content: lines.join("\n"), isNew: false })
+      }
+    }
+    for (const p of planned) {
+      await mkdir(dirname(p.abs), { recursive: true })
+      await writeFile(p.abs, p.content, "utf8")
+    }
+    const summary = planned.map((p) => `  ${p.isNew ? "created " : "modified"} ${p.path}`).join("\n")
+    return `Applied patch to ${planned.length} file(s):\n${summary}`
   },
 }
 
@@ -317,25 +518,38 @@ const bashTool = {
   },
   readonly: false,
   async execute(args, ctx) {
-    // 安全预检：销毁性 git 操作（checkout -- / reset --hard）先检查未提交改动，
-    // 有则拒绝——防一键清掉几小时工作（像今天 git checkout -- 六个文件那次）
-    const DESTRUCTIVE_GIT = /^git\s+(?:checkout\s+--?\s+|reset\s+--hard\b)/
-    if (DESTRUCTIVE_GIT.test(args.command)) {
+    // 安全预检：销毁性 git 操作先检查未提交改动，有则拒绝——防一键清掉几小时工作
+    if (shellSegments(args.command).some(isDestructiveGitSegment)) {
+      if (!insideGitRepo(ctx.cwd)) {
+        throw new Error(`Refusing destructive git command: not a git repository: ${ctx.cwd}`)
+      }
       const status = execFileSync("git", ["status", "--porcelain"], {
         cwd: ctx.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
       }).trim()
       if (status) {
         throw new Error(
-          `Refusing destructive git command: uncommitted changes exist. Commit or stash first.\n\n${status}`
+          `Refusing destructive git command: uncommitted changes exist. Commit or stash first.\n` +
+          `(If uncommitted work was already lost, the checkpoint tool can restore the auto-snapshot: action=list, then action=rewind.)\n\n${status}`
         )
       }
     }
 
     return new Promise((resolve) => {
+      // detached: 让子进程成为进程组组长，超时/中断时才能整树杀掉（POSIX 用负 pid 组杀，
+      // Windows 用 taskkill /T）——只 kill 壳进程会把孙进程（如 npm test）留在后台继续跑
+      const killTree = () => {
+        if (process.platform === "win32") {
+          try { execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }) } catch {}
+        } else {
+          try { process.kill(-child.pid, "SIGKILL") } catch {}
+          try { child.kill("SIGKILL") } catch {} // 组杀失败时兜底杀本体
+        }
+      }
       const child = spawn(args.command, {
         cwd: ctx.cwd,
         shell: true,
         windowsHide: true,
+        detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
@@ -371,9 +585,9 @@ const bashTool = {
       child.stdout.on("data", onStdout)
       child.stderr.on("data", onStderr)
 
-      const timer = setTimeout(() => child.kill(), args.timeout ?? BASH_TIMEOUT_MS)
+      const timer = setTimeout(killTree, args.timeout ?? BASH_TIMEOUT_MS)
       if (ctx.signal) {
-        ctx.signal.addEventListener("abort", () => child.kill(), { once: true })
+        ctx.signal.addEventListener("abort", killTree, { once: true })
       }
       child.on("error", (error) => {
         clearTimeout(timer)
@@ -710,7 +924,7 @@ function htmlToText(html) {
     .trim()
 }
 
-export const builtinTools = [readTool, writeTool, editTool, insertAfterTool, syntaxCheckTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]
+export const builtinTools = [readTool, writeTool, editTool, insertAfterTool, applyPatchTool, syntaxCheckTool, bashTool, globTool, grepTool, websearchTool, lsTool, fetchTool]
 
 // ---------------------------------------------------------------- delete
 
@@ -880,5 +1094,40 @@ function runGit(cwd, cmdArgs) {
   }
 }
 
-export { deleteTool, gitDiffTool, gitStatusTool, gitLogTool, questionTool }
-builtinTools.push(deleteTool, gitDiffTool, gitStatusTool, gitLogTool, questionTool)
+// ---------------------------------------------------------------- checkpoint
+
+const checkpointTool = {
+  name: "checkpoint",
+  description: DESC("checkpoint"),
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["list", "create", "rewind"], description: "list snapshots / create one now / restore a snapshot by id" },
+      id: { type: "string", description: "Snapshot id (required for rewind)" },
+    },
+    required: ["action"],
+  },
+  readonly: false,
+  async execute(args, ctx) {
+    const { createCheckpoint, listCheckpoints, rewind, isGitRepo } = await import("./checkpoint.mjs")
+    if (!isGitRepo(ctx.cwd)) throw new Error("Not a git repository — checkpoints unavailable")
+    if (args.action === "create") {
+      const cp = await createCheckpoint(ctx.cwd)
+      return `Checkpoint ${cp.id} created (${cp.files} file(s) captured)`
+    }
+    if (args.action === "rewind") {
+      if (!args.id) throw new Error("id is required for rewind — use action=list to see snapshot ids")
+      const s = await rewind(ctx.cwd, args.id)
+      return `Rewound to checkpoint ${args.id}: patch ${s.patchApplied ? "applied" : "(empty)"}, ${s.restored} untracked file(s) restored, ${s.deleted} file(s) deleted.\n(The pre-rewind state was snapshotted first — you can rewind again to go back.)`
+    }
+    if (args.action === "list") {
+      const cps = await listCheckpoints(ctx.cwd)
+      if (cps.length === 0) return "(no checkpoints yet — one is auto-created before each user task)"
+      return cps.map((c) => `${c.id}  ${new Date(c.time).toISOString()}  ${c.untracked} untracked file(s)`).join("\n")
+    }
+    throw new Error(`Unknown action: ${args.action}`)
+  },
+}
+
+export { deleteTool, gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool }
+builtinTools.push(deleteTool, gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool)

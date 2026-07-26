@@ -155,7 +155,11 @@ export async function compressIfNeeded(agent, threshold) {
   if (tokens <= threshold) return false
 
   const split = splitHistory(history)
-  if (!split) return false
+  if (!split) {
+    // 历史太短（≤13 条）切不出中间段，但 token 已超阈值——典型是一条巨型消息
+    // （大段粘贴/超大注入）。摘要无路可走时退化为确定性瘦身，保证上下文总能减下去
+    return shrinkOversized(agent)
+  }
 
   const middle = history.slice(split.headEnd, split.tailStart)
   const serialized = middle
@@ -185,4 +189,32 @@ export function compressFallback(agent) {
   if (!split) return false
   applyCompression(agent, split.headEnd, split.tailStart, FALLBACK_NOTE)
   return true
+}
+
+/** 单条消息正文的硬截断长度：超过且在压缩无法切分时截断换桩（防一条巨消息卡死压缩） */
+const OVERSIZE_CONTENT_LIMIT = 8_000
+
+/**
+ * 确定性瘦身：splitHistory 切不出中间段（历史太短）但已超阈值时的最后手段，无 LLM 调用。
+ * 把超过 OVERSIZE_CONTENT_LIMIT 的 user/tool 正文截断换桩（保留首尾）；
+ * 不动 reasoning_content（DeepSeek/Kimi 回传协议）与 tool_calls 配对结构，无协议 400 风险。
+ * 只在 compressIfNeeded 判定超阈值后调用。返回是否有消息被截断。
+ */
+export function shrinkOversized(agent) {
+  let shrunk = false
+  for (const m of agent.history) {
+    if ((m.role !== "user" && m.role !== "tool") || typeof m.content !== "string") continue
+    if (m.content.length <= OVERSIZE_CONTENT_LIMIT) continue
+    m.content =
+      m.content.slice(0, 4_000) +
+      `\n[... ${m.content.length - 6_000} chars truncated — single message too large for context window ...]\n` +
+      m.content.slice(-2_000)
+    shrunk = true
+  }
+  if (shrunk) {
+    // 与压缩同理：实测 token 基准随被改动的历史失效，退回估算直到下次响应
+    agent._lastPromptTokens = null
+    agent._usageAtLen = null
+  }
+  return shrunk
 }

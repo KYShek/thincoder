@@ -67,7 +67,9 @@ export async function pullTeam(dir) {
  */
 export async function commitAndPush(dir, filename, message) {
   await git(dir, ["add", filename])
-  await git(dir, ["commit", "-m", message])
+  // 内容没变化时 commit 会以 exit 1 报 "nothing to commit"——这是正常的幂等结果，不是错误
+  const dirty = await git(dir, ["status", "--porcelain", "--", filename])
+  if (dirty) await git(dir, ["commit", "-m", message])
   try {
     await git(dir, ["push"])
   } catch {

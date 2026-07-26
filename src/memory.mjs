@@ -37,6 +37,9 @@ const BIG_FILE_LINES = 2000
 export function createMemory({ dbPath }) {
   mkdirSync(dirname(dbPath), { recursive: true })
   const db = new DatabaseSync(dbPath)
+  // WAL 读写不互锁（TUI 检索和后台索引可并发）；busy_timeout 防多进程同库直接 SQLITE_BUSY
+  db.exec(`PRAGMA journal_mode = WAL`)
+  db.exec(`PRAGMA busy_timeout = 3000`)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS entries (
@@ -57,11 +60,13 @@ export function createMemory({ dbPath }) {
   return { db }
 }
 
-/** 按 user_version 逐步迁移 */
+/** 按 user_version 逐步迁移。整体单事务——任何一步失败都回滚，不留半成品 schema */
 function migrate(db) {
   const { user_version: version } = db.prepare(`PRAGMA user_version`).get()
   if (version >= SCHEMA_VERSION) return
 
+  db.exec("BEGIN IMMEDIATE")
+  try {
   if (version < 2) {
     // v1(trigram) 或空库 → v2(unicode61 + CJK 逐字)：重建 FTS 和触发器
     db.exec(`
@@ -355,6 +360,11 @@ function migrate(db) {
       END;
     `)
     db.exec(`PRAGMA user_version = 8`)
+  }
+  db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
   }
 }
 
@@ -840,7 +850,8 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
 
   onProgress?.({ phase: "scan", total: files.length })
 
-  let updated = 0, removed = 0, skipped = 0
+  let updated = 0, removed = 0, skipped = 0, failed = 0
+  const errors = []
   for (let i = 0; i < files.length; i++) {
     const abs = files[i]
     const rel = abs.slice(dir.length + 1).replaceAll("\\", "/")
@@ -853,17 +864,21 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
       continue
     }
 
-    // 读文件并分块
-    let text
-    try { text = await readFile(abs, "utf8") } catch { continue }
-    const lines = text.split("\n")
-    const lang = detectLanguage(abs)
-    _upsertCodeFile(memory, dir, rel, lines, lang, mtimeMs)
-    updated++
+    // 单文件失败不拖垮整轮同步：记下错误继续，调用方看 failed/errors
+    try {
+      const text = await readFile(abs, "utf8")
+      const lines = text.split("\n")
+      const lang = detectLanguage(abs)
+      _upsertCodeFile(memory, dir, rel, lines, lang, mtimeMs)
+      updated++
+    } catch (e) {
+      failed++
+      if (errors.length < 5) errors.push(`${rel}: ${e.message}`)
+    }
     await yieldTick()
 
     if (onProgress && i % 10 === 0) {
-      onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped })
+      onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped, failed })
     }
   }
 
@@ -875,8 +890,8 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
     }
   }
 
-  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped })
-  return { updated, removed, skipped, total: files.length }
+  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed })
+  return { updated, removed, skipped, failed, errors, total: files.length }
 }
 
 /**
@@ -982,7 +997,12 @@ export function codeSearchTool(memory) {
 export async function reindexFile(memory, cwd, absPath) {
   const ext = absPath.slice(absPath.lastIndexOf(".")).toLowerCase()
   const rel = relative(cwd, absPath).replaceAll("\\", "/")
-  if (rel.startsWith("..")) return // 越界路径拒索引
+  // 越界路径拒索引：必须是 ".." 或 "../..." 才算越界——文件名以 .. 开头（如 ..foo.js）不算
+  if (rel === ".." || rel.startsWith("../")) return
+  // 与 walk 策略一致：跳过隐藏目录和 SKIP_DIRS 里的文件（node_modules/.git/dist…），
+  // 否则这些文件虽然全量扫描时被跳过，单文件增量更新却会漏进来
+  const dirs = rel.split("/").slice(0, -1)
+  if (dirs.some((d) => SKIP_DIRS.has(d) || d.startsWith("."))) return
 
   let text
   try { text = await readFile(absPath, "utf8") } catch {
@@ -1061,7 +1081,8 @@ export async function docSync(memory, dir, { onProgress } = {}) {
 
   onProgress?.({ phase: "scan", total: files.length })
 
-  let updated = 0, removed = 0, skipped = 0
+  let updated = 0, removed = 0, skipped = 0, failed = 0
+  const errors = []
   for (let i = 0; i < files.length; i++) {
     const abs = files[i]
     const rel = abs.slice(dir.length + 1).replaceAll("\\", "/")
@@ -1074,15 +1095,20 @@ export async function docSync(memory, dir, { onProgress } = {}) {
       continue
     }
 
-    let text
-    try { text = await readFile(abs, "utf8") } catch { continue }
-    const lines = text.split("\n")
-    _upsertDocFile(memory, dir, rel, lines, mtimeMs)
-    updated++
+    // 单文件失败不拖垮整轮同步（与 codeSync 同策略）
+    try {
+      const text = await readFile(abs, "utf8")
+      const lines = text.split("\n")
+      _upsertDocFile(memory, dir, rel, lines, mtimeMs)
+      updated++
+    } catch (e) {
+      failed++
+      if (errors.length < 5) errors.push(`${rel}: ${e.message}`)
+    }
     await yieldTick()
 
     if (onProgress && i % 10 === 0) {
-      onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped })
+      onProgress({ phase: "index", current: i + 1, total: files.length, updated, removed, skipped, failed })
     }
   }
 
@@ -1094,8 +1120,8 @@ export async function docSync(memory, dir, { onProgress } = {}) {
     }
   }
 
-  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped })
-  return { updated, removed, skipped, total: files.length }
+  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed })
+  return { updated, removed, skipped, failed, errors, total: files.length }
 }
 
 /**

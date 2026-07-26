@@ -516,9 +516,9 @@ function sanitizeToolName(name) {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64)
 }
 
-/** cmd.exe 参数加引号（含空格/引号时） */
+/** cmd.exe 参数加引号（含空格/引号时）。cmd 不认 \" 转义——内层引号必须翻倍 */
 function quoteArg(s) {
-  return /[\s"]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s
+  return /[\s"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 
 function withTimeout(promise, ms) {
