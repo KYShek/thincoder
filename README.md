@@ -193,6 +193,14 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.7.7 (2026-07)
+- **Code review fixes (4 critical bugs)**:
+  - `gitSync` anchor never set after full `codeSync` fallback → fast path was dead in production; now `codeSync`/`docSync` write the anchor on success
+  - `gitSync` skipped deleted files → stale chunks remained in index forever; `--diff-filter` now includes `D`, and `ENOENT` is distinguished from other errors (failed files don't advance the anchor)
+  - Completion guard was a one-shot latch → after firing once, further mutations could finish unverified; now re-armed with a pushback counter (max 2 pushes, 3rd passes through)
+  - Verify-failure exhaustion returned raw model text without honesty framing → now injects a system reminder forcing the model to state what's still failing, what was tried, and that the work is unfinished
+- **Input queue during processing**: messages typed while the agent is processing are queued and auto-executed when processing ends. Queue preview shown as a single line above the input box (no collision with subagent panel). `Ctrl+D` deletes the last queued item. `/cancel` and `/exit` bypass the queue
+
 ### 0.7.6 (2026-07)
 - **SYSTEM_PROMPT split into core + discipline**: core rules (shared by all agents) separated from coding/testing/debugging discipline (main agent + coder), so explore/plan subagents no longer burn attention on irrelevant coding clauses — single source of truth, one rule changed in one file
 - **git-driven incremental indexing**: new `gitSync` uses `git diff` at startup to find files changed since the last index and rebuilds only their FTS5 chunks. Non-git repos / first run / large changesets (>200 files) automatically fall back to full scans. `codeSync` + `docSync` startup parallelized
