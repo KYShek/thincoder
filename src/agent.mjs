@@ -18,7 +18,8 @@ import { fileURLToPath } from "node:url"
 import { execSync } from "node:child_process"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SYSTEM_PROMPT = readFileSync(join(__dirname, "SYSTEM_PROMPT.md"), "utf8") // 核心规则（主/子 agent 通用）
+const SYSTEM_PROMPT = readFileSync(join(__dirname, "SYSTEM_PROMPT.md"), "utf8") // 核心规则（所有 agent 通用）
+const DISCIPLINE_RULES = readFileSync(join(__dirname, "discipline-rules.md"), "utf8") // 编码/测试/调试纪律（主 agent + coder 子 agent）
 const MAIN_OVERLAY = readFileSync(join(__dirname, "main-overlay.md"), "utf8")   // 主 agent 专属条款（子 agent 没有这些工具）
 const EXPLORE_OVERLAY = readFileSync(join(__dirname, "explore-overlay.md"), "utf8")
 const CODER_OVERLAY = readFileSync(join(__dirname, "coder-overlay.md"), "utf8")
@@ -309,6 +310,7 @@ export const subagentTool = {
       cwd: parent.cwd,
       memory: parent.memory,
       overlay,
+      role,
     })
 
     // explore/plan：注入 git 上下文（分支/最近提交/工作区状态）——探索与规划都和仓库现状有关（借鉴 kimi-code 的 promptPrefix）
@@ -761,7 +763,7 @@ export async function loadProjectInstructions(cwd) {
  * { provider, tools, config, cwd, memory?, overlay? }
  * overlay — 子 agent 角色覆盖文本，拼接在 system prompt 末尾
  */
-export function createAgent({ provider, tools, config, cwd, memory = null, overlay = "" }) {
+export function createAgent({ provider, tools, config, cwd, memory = null, overlay = "", role = "" }) {
   return {
     provider,
     tools,
@@ -769,6 +771,7 @@ export function createAgent({ provider, tools, config, cwd, memory = null, overl
     cwd,
     memory,
     overlay,
+    _role: role,
     history: [], // OpenAI 格式的对话历史（不含 system）
     tasks: [],   // task 工具维护的任务列表
     planMode: false, // plan 工具切换的规划模式
@@ -866,14 +869,16 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   agent._onTaskUpdate = callbacks.onTaskUpdate
 
   // prompt 组织（借鉴 kimi-code 的自包含 profile，分文件方案）：
-  // 子 agent = 角色 overlay（开头确立身份，对齐 kimi 的 role prefix）+ 核心规则——
-  // 不含它没有的工具条款（goal/verify/skill/subagent 只在主 overlay，避免教它调不存在的工具）；
-  // 主 agent = 核心规则 + 主 overlay
+  // 所有 agent 拿核心规则；主 agent + coder 子 agent 额外拿编码/测试/调试纪律；
+  // explore/plan 只拿核心规则（它们是只读的，不需要写代码相关条款）
+  const needsDiscipline = depth === 0 || agent._role === "coder"
+  const base = needsDiscipline ? `${SYSTEM_PROMPT}\n\n${DISCIPLINE_RULES}` : SYSTEM_PROMPT
+
   let systemPrompt = agent.overlay
-    ? `${agent.overlay}\n\n${SYSTEM_PROMPT}`
+    ? `${agent.overlay}\n\n${base}`
     : depth === 0
-      ? `${SYSTEM_PROMPT}\n\n${MAIN_OVERLAY}`
-      : SYSTEM_PROMPT
+      ? `${base}\n\n${MAIN_OVERLAY}`
+      : base
   // 注意：system prompt 里只能放跨 run 稳定的内容（前缀缓存要求逐字节一致）——
   // session start 时间戳每会话固定一次；每轮变化的记忆注入走上面的 user 上下文消息
   const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] ?? process.platform
