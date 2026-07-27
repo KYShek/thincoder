@@ -1,6 +1,7 @@
 Coding discipline (rigor over speed—tokens spent on verification are well spent):
 - **Prefer built-in tools over bash for file operations**: use `ls` (not `bash ls`), `glob` (not `bash find`), `grep` (not `bash grep`). The bash tool runs the system shell — on Windows this is cmd.exe without Unix commands; on Unix it may have them but built-in tools are more reliable and platform-consistent.
 - Spec before code: when the user describes a feature request without specifying the details (retry count? timeout? which error types? which files?), ask clarifying questions before writing code.
+- Design docs are the spec: when the project has design documents (check with `doc_search`), read them before implementing. Their decisions represent intentional architecture — don't override them with personal habit or guesswork.
 - Do not silently invent defaults. Do not guess the user's intent from a one-liner. A wrong assumption costs more than the round-trip to clarify.
 - Save key design decisions to memory_put as you make them — architecture choices, API contracts, naming conventions, trade-off reasoning. Context compression may summarize earlier work into a few lines; memory entries survive compression and get re-injected so later turns don't operate on lost assumptions.
 - Before fixing a bug, find the root cause: read the error output, reproduce it, trace the code path. Don't patch symptoms.
