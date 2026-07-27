@@ -4,7 +4,8 @@ import {
   MAX_READ_LINES,
   gitDiffOne,
   autoSyntaxCheck,
-  resolveInCwd
+  resolveInCwd,
+  resolveExternal,
 } from "./shared.mjs";
 import { mkdir } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
@@ -25,12 +26,13 @@ export const readTool = {
       path: { type: "string", description: "File path (relative to cwd or absolute)" },
       offset: { type: "number", description: "1-based line number to start from" },
       limit: { type: "number", description: `Max lines to return (default ${MAX_READ_LINES})` },
+      allowExternal: { type: "boolean", description: "Allow reading files outside the working directory. Only set true when the user explicitly provided an external path — never use this to explore beyond cwd on your own." },
     },
     required: ["path"],
   },
   readonly: true,
   async execute(args, ctx) {
-    const abs = resolveInCwd(ctx, args.path)
+    const abs = args.allowExternal ? resolveExternal(ctx, args.path) : resolveInCwd(ctx, args.path)
     // Large file guard: check size first, reject reading entire file if >10MB (offset/limit only affect the returned slice, not buffering)
     const st = await stat(abs).catch(() => null)
     if (st && st.size > MAX_FILE_READ_BYTES) throw new Error(`File too large (${Math.round(st.size / 1_000_000)}MB > 10MB limit). Use bash with head/tail or grep for targeted extraction.`)

@@ -1,5 +1,13 @@
+import { C } from "./ansi.mjs"
+
 /** /extract command: extract knowledge from current session.
- *  ctx: { runDistill } */
+ *  ctx: { runDistill, state, pushLine } */
 export async function handleExtractCommand(ctx) {
-  await ctx.runDistill()
+  const { runDistill, state, pushLine } = ctx
+  pushLine("[extract] Analyzing session...", C.dim)
+  const count = await runDistill()
+  const msg = count > 0
+    ? `Knowledge extracted: ${count} candidate(s) saved to memory (use /skills to list, agent will recall via memory_search)`
+    : "No new knowledge found in this session."
+  pushLine(msg, count > 0 ? C.tool : C.dim)
 }

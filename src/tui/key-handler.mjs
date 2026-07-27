@@ -43,7 +43,7 @@ export function createKeyHandler(ctx) {
       if (q.options.length > 0) {
         // options mode: ↑↓ select, Enter confirm, Esc cancel
         if (key.name === "escape") {
-          q.resolve("(cancelled)")
+          q.resolve("")
           state.question = null
           state.status = "Processing..."
           render()
@@ -64,13 +64,13 @@ export function createKeyHandler(ctx) {
       } else {
         // free text: type answer, Enter submit, Esc cancel
         if (key.name === "escape") {
-          q.resolve("(cancelled)")
+          q.resolve("")
           state.question = null
           state.status = "Processing..."
           render()
         } else if (key.name === "return") {
           const answer = (q.answer ?? "").trim()
-          q.resolve(answer || "(empty answer)")
+          q.resolve(answer || "")
           state.question = null
           state.status = "Processing..."
           pushLine(`  → ${answer || "(empty)"}`, C.tool)

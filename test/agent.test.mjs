@@ -223,64 +223,6 @@ function mockLLM(script) {
   })
 }
 
-test("runAgent: 10 轮未碰 task 工具时注入提醒（未建列表也提醒）", async () => {
-  const { createAgent, runAgent } = await import("../src/agent.mjs")
-  const noop = {
-    name: "noop",
-    description: "noop",
-    parameters: { type: "object", properties: {} },
-    readonly: true,
-    execute: async () => "ok",
-  }
-  // 11 轮工具调用 + 1 轮最终回答；提醒应在第 10 轮后注入
-  const script = [...Array.from({ length: 11 }, () => ({ toolCall: { name: "noop" } })), { content: "完成" }]
-  const { server, port } = await mockLLM(script)
-  try {
-    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
-    const cwd = mkdtempSync(join(tmpdir(), "thincoder-agent-test-"))
-    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
-    const out = await runAgent(agent, "测试任务")
-    assert.equal(out, "完成")
-    const reminders = agent.history.filter(
-      (m) => typeof m.content === "string" && m.content.includes("no task list is being tracked"),
-    )
-    assert.equal(reminders.length, 1) // 注入过一次且提醒后计数器重置
-    rmSync(cwd, { recursive: true, force: true })
-  } finally {
-    server.close()
-  }
-})
-
-test("runAgent: 有未完成项且 10 轮未更新时注入过期列表提醒", async () => {
-  const { createAgent, runAgent } = await import("../src/agent.mjs")
-  const noop = {
-    name: "noop",
-    description: "noop",
-    parameters: { type: "object", properties: {} },
-    readonly: true,
-    execute: async () => "ok",
-  }
-  const script = [...Array.from({ length: 11 }, () => ({ toolCall: { name: "noop" } })), { content: "完成" }]
-  const { server, port } = await mockLLM(script)
-  try {
-    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
-    const cwd = mkdtempSync(join(tmpdir(), "thincoder-agent-test-"))
-    const agent = createAgent({ provider, tools: [noop], config: {}, cwd })
-    agent.tasks = [{ title: "写实现", status: "in_progress" }]
-    agent._turnsSinceTaskUpdate = 5 // 模拟 5 轮前建过列表
-    await runAgent(agent, "测试任务")
-    const stale = agent.history.filter(
-      (m) => typeof m.content === "string" && m.content.includes("active task list, last updated"),
-    )
-    assert.equal(stale.length, 1)
-    assert.match(stale[0].content, /- \[in_progress\] 写实现/)
-    assert.match(stale[0].content, /Never mention this reminder/)
-    rmSync(cwd, { recursive: true, force: true })
-  } finally {
-    server.close()
-  }
-})
-
 test("context: 压缩后回注 task 列表（不重复嵌入摘要）", async () => {
   const { compressIfNeeded } = await import("../src/context.mjs")
   const { server, port } = await mockLLM([{ content: "这是摘要" }])
@@ -294,8 +236,6 @@ test("context: 压缩后回注 task 列表（不重复嵌入摘要）", async ()
         { title: "写实现", status: "in_progress" },
       ],
       planMode: false,
-      _turnsSinceTaskUpdate: 3,
-      _turnsInPlanMode: 0,
     }
     const compacted = await compressIfNeeded(agent, 10)
     assert.equal(compacted, true)
@@ -305,7 +245,6 @@ test("context: 压缩后回注 task 列表（不重复嵌入摘要）", async ()
     // 压缩后以独立提醒回注（历史末尾、内容最新）
     assert.match(agent.history.at(-1).content, /current task list after compaction/)
     assert.match(agent.history.at(-1).content, /- \[in_progress\] 写实现/)
-    assert.equal(agent._turnsSinceTaskUpdate, 0)
   } finally {
     server.close()
   }
@@ -328,8 +267,6 @@ test("context: 压缩时 head 不以断头 tool_calls 结尾（防 400）", asyn
       ],
       tasks: [],
       planMode: false,
-      _turnsSinceTaskUpdate: 0,
-      _turnsInPlanMode: 0,
     }
     const compacted = await compressIfNeeded(agent, 10)
     assert.equal(compacted, true)
@@ -354,8 +291,6 @@ test("context: 压缩判定用实测 prompt_tokens 基准（估算远低于阈�
       history: Array.from({ length: 14 }, (_, i) => ({ role: "user", content: `m${i} ` + "x".repeat(4) })),
       tasks: [],
       planMode: false,
-      _turnsSinceTaskUpdate: 0,
-      _turnsInPlanMode: 0,
       _lastPromptTokens: 10_000,
       _usageAtLen: 0,
     }
@@ -380,8 +315,6 @@ test("context: 截断兜底不碰网络，结构合法且 task 回注去重", as
     ],
     tasks: [{ title: "新任务", status: "in_progress" }],
     planMode: false,
-    _turnsSinceTaskUpdate: 5,
-    _turnsInPlanMode: 0,
     _lastPromptTokens: 999,
     _usageAtLen: 3,
   }
@@ -393,7 +326,6 @@ test("context: 截断兜底不碰网络，结构合法且 task 回注去重", as
   assert.equal(reinjects.length, 1)
   assert.match(reinjects[0].content, /- \[in_progress\] 新任务/)
   assert.equal(agent._lastPromptTokens, null)
-  assert.equal(agent._turnsSinceTaskUpdate, 0)
 })
 
 test("runAgent: 工具链末尾（last=tool）也是压缩安全点", async () => {
@@ -742,8 +674,6 @@ test("provider: TPM 闸门——单请求估算超预算时放行（不卡死）
   }
 })
 
-// ---------------------------------------------------------------- 完成守卫（改了东西未 verify 不直接收工）
-
 function makeMutationTool() {
   return {
     name: "mutate",
@@ -754,32 +684,34 @@ function makeMutationTool() {
   }
 }
 
-test("runAgent: 完成守卫——改了文件未 verify 时推回去验证（最多推 2 次）", async () => {
+// ---------------------------------------------------------------- verify guard (config.verifyGuard)
+
+test("runAgent: verify guard on — mutated files but no verify → pushback (max 2)", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "mutate" } },
-    { content: "完成了" },       // 第一次想收工 → 守卫拦截（pushback 1）
-    { content: "还是完成了" },   // 第二次不调 verify → 守卫再拦截（pushback 2）
-    { content: "验证后完成" },   // 第三次 → 守卫放行（pushback 上限到达）
+    { content: "完成了" },
+    { content: "还是完成了" },
+    { content: "验证后完成" },
   ]
   const { server, port } = await mockLLM(script)
   try {
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
     const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
-    const agent = createAgent({ provider, tools: [makeMutationTool()], config: {}, cwd })
+    const agent = createAgent({ provider, tools: [makeMutationTool()], config: { verifyGuard: true }, cwd })
     const out = await runAgent(agent, "改点东西", { onPermissionRequest: async () => true })
     assert.equal(out, "验证后完成")
     const guards = agent.history.filter(
       (m) => typeof m.content === "string" && m.content.includes("have not verified the changes"),
     )
-    assert.equal(guards.length, 2, "守卫应推回 2 次，第三次放行")
+    assert.equal(guards.length, 2)
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()
   }
 })
 
-test("runAgent: 完成守卫——verify 过后直接放行", async () => {
+test("runAgent: verify guard on — verify called → no pushback", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "mutate" } },
@@ -790,7 +722,7 @@ test("runAgent: 完成守卫——verify 过后直接放行", async () => {
   try {
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
     const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
-    const agent = createAgent({ provider, tools: [makeMutationTool()], config: {}, cwd })
+    const agent = createAgent({ provider, tools: [makeMutationTool()], config: { verifyGuard: true }, cwd })
     const out = await runAgent(agent, "改点东西", { onPermissionRequest: async () => true })
     assert.equal(out, "done")
     const guards = agent.history.filter(
@@ -803,7 +735,7 @@ test("runAgent: 完成守卫——verify 过后直接放行", async () => {
   }
 })
 
-test("runAgent: 完成守卫——只跑 bash 不触发（跑测试不该被催）", async () => {
+test("runAgent: verify guard on — bash (sideEffectExempt) not treated as mutation", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const fakeBash = { ...makeMutationTool(), name: "bash", sideEffectExempt: true }
   const script = [{ toolCall: { name: "bash" } }, { content: "测试全绿" }]
@@ -811,7 +743,7 @@ test("runAgent: 完成守卫——只跑 bash 不触发（跑测试不该被催�
   try {
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
     const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
-    const agent = createAgent({ provider, tools: [fakeBash], config: {}, cwd })
+    const agent = createAgent({ provider, tools: [fakeBash], config: { verifyGuard: true }, cwd })
     const out = await runAgent(agent, "跑下测试", { onPermissionRequest: async () => true })
     assert.equal(out, "测试全绿")
     const guards = agent.history.filter(
@@ -823,6 +755,31 @@ test("runAgent: 完成守卫——只跑 bash 不触发（跑测试不该被催�
     server.close()
   }
 })
+
+test("runAgent: verify guard off — mutated files go straight through", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "mutate" } },
+    { content: "完成了" },
+  ]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
+    const agent = createAgent({ provider, tools: [makeMutationTool()], config: { verifyGuard: false }, cwd })
+    const out = await runAgent(agent, "改点东西", { onPermissionRequest: async () => true })
+    assert.equal(out, "完成了")
+    const guards = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("have not verified the changes"),
+    )
+    assert.equal(guards.length, 0)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+// ----------------------------------------------------------------
 
 test("runAgent: thinking 模式下 reasoning_content 跨请求回传（DeepSeek 要求）", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
@@ -1444,7 +1401,7 @@ test("context: 压缩序列化时 user 消息放宽到 8000（长需求不丢）
     const longRequirement = "用户的长需求全文" + "需".repeat(5000)
     const history = Array.from({ length: 14 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(50) }))
     history[2] = { role: "user", content: longRequirement } // 落在被摘要的 middle 段
-    const agent = { provider, history, tasks: [], planMode: false, _turnsSinceTaskUpdate: 0, _turnsInPlanMode: 0 }
+    const agent = { provider, history, tasks: [], planMode: false }
     await compressIfNeeded(agent, 10)
     const summaryRequest = requests[0].messages[0].content
     assert.ok(summaryRequest.includes(longRequirement)) // 5000 字符全量进入摘要器视野
@@ -1465,7 +1422,7 @@ test("context: 历史太短切不出中间段时，巨型消息被确定性瘦�
       { role: "tool", tool_call_id: "c1", content: "结果 " + "y".repeat(20_000) },
       { role: "user", content: "继续" },
     ],
-    tasks: [], planMode: false, _turnsSinceTaskUpdate: 0, _turnsInPlanMode: 0,
+    tasks: [], planMode: false,
   }
   const before = estimateTokens(agent.history)
   const done = await compressIfNeeded(agent, 1_000)

@@ -44,13 +44,11 @@ export {
 // If multiple agents/databases are supported in the future, switch to per-agent cache or import each time.
 let _reindexFile = null
 const AUTO_REMINDER = "[System reminder: AUTO mode is active — all tool calls are automatically approved without asking.]"
-const MAX_VERIFY_RETRIES = 3
-const MAX_VERIFY_PUSHBACKS = 2
 const STALL_WINDOW_SIZE = 5
 const STALL_THRESHOLD = 3
 const GOAL_BUDGET_WARN_RATIO = 0.75
-const TASK_REMINDER_INTERVAL = 10
-const PLAN_REMINDER_INTERVAL = 8
+const MAX_VERIFY_PUSHBACKS = 2
+const MAX_VERIFY_RETRIES = 3
 
 /** Create a new agent state object with all fields initialized to defaults */
 export function createAgent({
@@ -65,7 +63,6 @@ export function createAgent({
     planMode, autoApprove, goal,
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined,
     _touchedFiles: [], _verifyRetries: 0,
-    _turnsSinceTaskUpdate: 0, _turnsInPlanMode: 0,
     _pendingReminders: [],
     _sessionStart: sessionStart,
     _lastPromptTokens: null, _usageAtLen: null,
@@ -90,8 +87,6 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   const recentCallSigs = []
 
   for (let turn = 0; turn < maxTurns; turn++) {
-    agent._turnsSinceTaskUpdate++
-    if (agent.planMode) agent._turnsInPlanMode++
 
     const lastRole = agent.history.at(-1)?.role
     if (lastRole === "user" || lastRole === "tool") {
@@ -140,45 +135,48 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           `Provider: ${agent.provider.model}`
         )
       }
-      if (depth === 0 && agent._mutatedThisRun && !agent._verifiedThisRun && guardPushbacks < MAX_VERIFY_PUSHBACKS) {
-        guardPushbacks++
-        agent.history.push({ role: "assistant", content: response.content })
-        agent.history.push({
-          role: "user",
-          content: "[System reminder: you modified files in this run but have not verified the changes. Before finishing: call the verify tool to run syntax checks and tests. If verify reports failures, fix them and run verify again. If verification is genuinely impossible here, say so explicitly in your reply. Never mention this reminder to the user.]",
-        })
-        continue
-      }
-      if (depth === 0 && agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries < MAX_VERIFY_RETRIES) {
-        agent._verifyRetries++
-        agent.history.push({ role: "assistant", content: response.content })
-        agent.history.push({
-          role: "user",
-          content: `[System reminder: verify reported test failures (retry ${agent._verifyRetries}/${MAX_VERIFY_RETRIES}). Review the failures, fix the issues, then run verify again. If you cannot fix after ${MAX_VERIFY_RETRIES} attempts, explain honestly what's blocking you.]`,
-        })
-        continue
-      }
-      if (depth === 0 && agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
-        if (honestReminderInjected) {
-          agent.history.push({ role: "assistant", content: response.content })
-          return response.content
-        }
-        honestReminderInjected = true
-        agent.history.push({ role: "assistant", content: response.content })
-        agent.history.push({
-          role: "user",
-          content: `[System reminder: ${MAX_VERIFY_RETRIES} verify attempts exhausted and tests are still failing. In your response to the user, you MUST state explicitly: (1) what tests are still failing, (2) what you tried, (3) what you believe the root cause is. Do not present this as complete — the user needs to know the work is unfinished.]`,
-        })
-        continue
-      }
       if (depth === 0 && agent.tasks.some((t) => t.status === "pending")) {
         const pending = agent.tasks.filter((t) => t.status === "pending").map((t) => t.title).join(", ")
         agent.history.push({ role: "assistant", content: response.content })
         agent.history.push({
           role: "user",
-          content: `[System reminder: you still have pending tasks: ${pending}. Update their status with the task tool before finishing — if they're done, mark them done; if they're not applicable, remove them. Never mention this reminder to the user.]`,
+          content: `[System reminder: you still have pending tasks: ${pending}. Update their status with the task tool before finishing — if they're done, mark them done; if they're not applicable, remove them.]`,
         })
         continue
+      }
+      // --- verify guard: push model to verify mutated files before completion ---
+      if (depth === 0 && agent.config.verifyGuard === true) {
+        if (agent._mutatedThisRun && !agent._verifiedThisRun && guardPushbacks < MAX_VERIFY_PUSHBACKS) {
+          guardPushbacks++
+          agent.history.push({ role: "assistant", content: response.content })
+          agent.history.push({
+            role: "user",
+            content: "[System reminder: you modified files in this run but have not verified the changes. Before finishing: call the verify tool to run syntax checks and tests. If verify reports failures, fix them and run verify again. If verification is genuinely impossible here, say so explicitly in your reply.]",
+          })
+          continue
+        }
+        if (agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries < MAX_VERIFY_RETRIES) {
+          agent._verifyRetries++
+          agent.history.push({ role: "assistant", content: response.content })
+          agent.history.push({
+            role: "user",
+            content: `[System reminder: verify reported test failures (retry ${agent._verifyRetries}/${MAX_VERIFY_RETRIES}). Review the failures, fix the issues, then run verify again. If you cannot fix after ${MAX_VERIFY_RETRIES} attempts, explain honestly what's blocking you.]`,
+          })
+          continue
+        }
+        if (agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
+          if (honestReminderInjected) {
+            agent.history.push({ role: "assistant", content: response.content })
+            return response.content
+          }
+          honestReminderInjected = true
+          agent.history.push({ role: "assistant", content: response.content })
+          agent.history.push({
+            role: "user",
+            content: `[System reminder: ${MAX_VERIFY_RETRIES} verify attempts exhausted and tests are still failing. In your response to the user, you MUST state explicitly: (1) what tests are still failing, (2) what you tried, (3) what you believe the root cause is. Do not present this as complete — the user needs to know the work is unfinished.]`,
+          })
+          continue
+        }
       }
       agent.history.push({ role: "assistant", content: response.content })
       return response.content
@@ -267,7 +265,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (last3[0] === last3[1] && last3[1] === last3[2]) {
         agent.history.push({
           role: "user",
-          content: `[System reminder: you have made the identical tool call (${last3[0].slice(0, 120)}) 3 times in a row — you are likely stuck in a loop. Change approach: diagnose the root cause differently, try an alternative, or ask the user. Never mention this reminder to the user.]`,
+          content: `[System reminder: you have made the identical tool call (${last3[0].slice(0, 120)}) 3 times in a row — you are likely stuck in a loop. Change approach: diagnose the root cause differently, try an alternative, or ask the user.]`,
         })
         recentCallSigs.length = 0
       }
@@ -287,41 +285,8 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           `<untrusted_completion_criterion>${escapeXml(agent.goal.criteria)}</untrusted_completion_criterion>\n` +
           (pct >= GOAL_BUDGET_WARN_RATIO ? `WARNING: ${Math.round(pct * 100)}% of the turn budget is used — avoid starting new discretionary work; finish, or report status to the user.\n` : "") +
           `Completion audit: mark complete only when the criteria's check has actually run and passed — weak or indirect evidence, plans, and summaries are NOT completion.\n` +
-          `Blocked audit: report blocked only after the same condition persists across 3 genuine attempts (the goal tool counts).\n` +
-          `Stay focused. Never mention this reminder to the user.]`,
+          `Blocked audit: report blocked only after the same condition persists across 3 genuine attempts (the goal tool counts).]`,
       })
-    }
-
-    // Task reminders
-    if (depth === 0 && agent._turnsSinceTaskUpdate >= TASK_REMINDER_INTERVAL) {
-      const hasIncomplete = agent.tasks.some((t) => t.status !== "done")
-      if (agent.tasks.length > 0 && hasIncomplete) {
-        const taskSummary = agent.tasks.map((t) => `- [${t.status}] ${t.title}`).join("\n")
-        agent.history.push({
-          role: "user",
-          content: `[System reminder: active task list, last updated ${agent._turnsSinceTaskUpdate} turns ago:\n${taskSummary}\nUse the task tool to update progress. Never mention this reminder to the user.]`,
-        })
-      } else if (agent.tasks.length === 0) {
-        agent.history.push({
-          role: "user",
-          content: "[System reminder: no task list is being tracked. If the current work is a multi-step task, consider using the task tool to plan and track progress. This is a gentle reminder; ignore it if not applicable. Never mention this reminder to the user.]",
-        })
-      } else {
-        agent.history.push({
-          role: "user",
-          content: "[System reminder: all tracked tasks are marked done. Use the task tool to clear the list or add new tasks if there's more work. Never mention this reminder to the user.]",
-        })
-      }
-      agent._turnsSinceTaskUpdate = 0
-    }
-
-    // Plan mode guidance
-    if (agent.planMode && agent._turnsInPlanMode >= PLAN_REMINDER_INTERVAL) {
-      agent.history.push({
-        role: "user",
-        content: "[System reminder: plan mode still active after several turns. Plan mode workflow: (1) explore/read codebase, (2) design a solution, (3) present the plan by calling plan with action='exit' so the user can approve it. If you've explored enough, exit plan mode now. Never mention this reminder to the user.]",
-      })
-      agent._turnsInPlanMode = 0
     }
 
     callbacks.onTurnEnd?.(agent, turn)

@@ -7,11 +7,11 @@
 export const goalTool = {
   name: "goal",
   description:
-    "Manage a long-running autonomous goal (completion contract, not a wish). " +
-    "action='set': create/replace the goal. The objective must have a VERIFIABLE end state — criteria must name a machine-checkable proof (tests pass, a command's output, a search result), not effort ('implement X') or vagueness ('works correctly'). If the task has no way to prove completion, help the user add one first — or don't set a goal. " +
-    "action='complete': mark the goal achieved. Only when the criteria's check has actually run and passed — weak or indirect evidence, plans, and summaries are NOT completion. If you modified files, verify must have run first. " +
-    "action='blocked': report an impasse (requires 'reason'). Allowed only after the SAME blocking condition persists across 3 genuine attempts with different approaches — the tool counts. " +
-    "action='cancel': abandon the goal (explain why to the user).",
+    "Manage a long-running autonomous goal. " +
+    "action='set': create or replace the goal — must have a verifiable completion criterion (a machine-checkable proof, not vague effort). " +
+    "action='complete': mark achieved — only after the criterion's check has actually passed. " +
+    "action='blocked': report an impasse (requires 'reason') — only after 3 genuine attempts. " +
+    "action='cancel': abandon the goal.",
   parameters: {
     type: "object",
     properties: {

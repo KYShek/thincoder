@@ -120,26 +120,39 @@ export async function handleMcpCommand(ctx) {
         return
       }
       if (e.action === "add") {
-        const mcpInput = await askQuestion("Enter: <name> <URL|command> [args...]\nURL auto-detect: https://… → HTTP, ws://… → WebSocket, other → stdio command")
-        if (!mcpInput) return
-        const parts = mcpInput.split(/\s+/)
-        if (parts.length < 2) { pushLine("Usage: <name> <URL|command> [args...]", C.error); return }
-        const [name, second, ...extras] = parts
-        const existing = (agent.config?.mcp?.servers ?? []).find((s) => s.name === name)
-        if (existing) { pushLine(`[mcp] "${name}" already exists`, C.error); return }
-        const isWS = /^wss?:\/\//.test(second)
-        const isHTTP = /^https?:\/\//.test(second)
-        let srv
-        if (isWS) {
-          const headers = parseHeaders(extras)
-          srv = { name, wsUrl: second, headers: Object.keys(headers).length > 0 ? headers : undefined }
-        } else if (isHTTP) {
-          const headers = parseHeaders(extras)
-          srv = { name, url: second, headers: Object.keys(headers).length > 0 ? headers : undefined }
-        } else {
-          srv = { name, command: second, args: extras.length > 0 ? extras : undefined }
-        }
-        await addAndConnect(ctx, srv)
+        // Pick transport type first, then ask name + URL/command
+        openPicker({
+          title: "MCP Transport",
+          entries: [
+            { type: "header", text: "Select server transport" },
+            { type: "item", text: "HTTP (https://…)", action: "http" },
+            { type: "item", text: "WebSocket (ws://…)", action: "ws" },
+            { type: "item", text: "stdio (local command)", action: "stdio" },
+          ],
+          onSelect: async (te) => {
+            const name = await askQuestion("Server name:")
+            if (!name) return
+            const existing = (agent.config?.mcp?.servers ?? []).find((s) => s.name === name)
+            if (existing) { pushLine(`[mcp] "${name}" already exists`, C.error); return }
+            if (te.action === "stdio") {
+              const cmd = await askQuestion("Command (e.g. npx, python):")
+              if (!cmd) return
+              const argsInput = await askQuestion("Arguments (space-separated, or leave empty):")
+              const args = argsInput ? argsInput.split(/\s+/) : undefined
+              await addAndConnect(ctx, { name, command: cmd, args })
+            } else {
+              const urlPrompt = te.action === "ws" ? "WebSocket URL (ws://…):" : "HTTP URL (https://…):"
+              const url = await askQuestion(urlPrompt)
+              if (!url) return
+              const headersInput = await askQuestion("Headers (key=value, space-separated, or leave empty):")
+              const headers = headersInput ? parseHeaders(headersInput.split(/\s+/)) : undefined
+              const srv = te.action === "ws"
+                ? { name, wsUrl: url, headers: Object.keys(headers ?? {}).length > 0 ? headers : undefined }
+                : { name, url, headers: Object.keys(headers ?? {}).length > 0 ? headers : undefined }
+              await addAndConnect(ctx, srv)
+            }
+          },
+        })
       }
     },
   })

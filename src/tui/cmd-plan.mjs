@@ -1,9 +1,7 @@
-import { ansi, C } from "./ansi.mjs"
-
 /** /plan command: toggle plan mode (read-only explore → design → implement).
- *  ctx: { agent, pushLine, pushLabel } */
+ *  ctx: { agent } */
 export async function handlePlanCommand(ctx) {
-  const { agent, pushLine, pushLabel } = ctx
+  const { agent } = ctx
   agent.planMode = !agent.planMode
   agent._pendingReminders = agent._pendingReminders ?? []
   if (agent.planMode) {
@@ -11,11 +9,4 @@ export async function handlePlanCommand(ctx) {
   } else {
     agent._pendingReminders.push("[System reminder: plan mode is now OFF. You may edit files, run commands, and implement changes.]")
   }
-  pushLabel(`❯ Plan`, ansi.bold + (agent.planMode ? C.tool : C.dim))
-  pushLine(
-    agent.planMode
-      ? `Plan mode ON: read-only tools only. Design first, then implement. /plan again to exit.`
-      : `Plan mode OFF: you may now edit files and run commands.`,
-    agent.planMode ? C.tool : C.dim,
-  )
 }

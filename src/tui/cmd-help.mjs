@@ -5,7 +5,7 @@ import { ansi, C } from "./ansi.mjs"
 export async function handleHelpCommand(ctx) {
   const { pushLine, pushLabel, SLASH_COMMANDS } = ctx
   const aliasList = { "/help": "/h", "/exit": "/x", "/model": "/m", "/plan": "/p", "/think": "/t", "/clear": "/c", "/new": "/n" }
-  const order = ["Agent", "Session", "Tools", "Config"]
+  const order = ["Agent", "Session", "Project", "System"]
   const byGroup = new Map()
   for (const c of SLASH_COMMANDS) {
     if (!c.group) continue

@@ -214,9 +214,7 @@ export function applySession(agent, data) {
   agent.goal = data.goal ?? null
   agent._pendingReminders = data.pendingReminders ?? []
   agent._sessionStart = data.sessionStart ?? null
-  // Reset turn counters: after switching sessions, should not inherit old session's stall/compaction state
-  agent._turnsSinceTaskUpdate = 0
-  agent._turnsInPlanMode = 0
+  // Reset stall/compaction state on session switch
   agent._compressFailures = 0
   agent._verifyRetries = 0
   agent._verifyPassed = false

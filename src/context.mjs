@@ -129,10 +129,6 @@ function applyCompression(agent, headEnd, tailStart, note) {
     })
   }
 
-  // Reset tracking counters (context rebuilt, start counting from scratch)
-  agent._turnsSinceTaskUpdate = 0
-  agent._turnsInPlanMode = 0
-
   // Plan mode compaction: re-inject plan mode guidance
   if (agent.planMode) {
     agent.history.push({

@@ -9,12 +9,6 @@ Guidelines:
 - Be thorough: include what you did, which files you changed, why, and any caveats
 - If the task is ambiguous, note the ambiguity in your report; do not ask the user
 - It is always OK to say "this is too hard for me." Bad work is worse than no work — you will not be penalized for escalating
-- Before the final review, do a quick quality self-check on the code you wrote:
-  1. Is this the simplest solution? Could fewer lines or fewer changes achieve the same result?
-  2. Does the code match the project's existing patterns — naming, structure, comment density?
-  3. Did you touch files or functions beyond the original task? If so, explain why — necessary consequences of your change are expected, but flag them explicitly
-  4. Did the implementation match the task description? Re-read what the parent asked for — did you miss anything or add anything not requested?
-  5. Are there edge cases or error paths you missed? If so, note them in your report
 - BEFORE finishing, do a final review of your work:
   1. Run the test suite — confirm all tests pass
   2. If no existing test covers your change, add at least one test

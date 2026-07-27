@@ -1,10 +1,8 @@
-import { ansi, C } from "./ansi.mjs"
-
 /** /think command: toggle thinking mode, set reasoning effort.
  *  Extracted from slash-commands.mjs.
- *  ctx: { agent, pushLine, pushLabel, openPicker, syncProviderField } */
+ *  ctx: { agent, openPicker, syncProviderField } */
 export async function handleThinkCommand(ctx) {
-  const { agent, pushLine, pushLabel, openPicker, syncProviderField } = ctx
+  const { agent, openPicker, syncProviderField } = ctx
   const cur = agent.provider
   const thinkingEnabled = cur.thinking?.type === "enabled" || cur.thinking?.type === undefined
   const { specForModel } = await import("../config.mjs")
@@ -30,8 +28,6 @@ export async function handleThinkCommand(ctx) {
       if (e.action === "effort") {
         cur.reasoningEffort = e.level
         await syncProviderField("reasoningEffort", e.level)
-        pushLabel(`❯ Think`, ansi.bold + C.tool)
-        pushLine(`Reasoning effort set to ${e.level}`, C.tool)
       } else {
         const enable = e.action === "on"
         if (isEffortOnly) {
@@ -47,9 +43,6 @@ export async function handleThinkCommand(ctx) {
           if (!enable) await syncProviderField("reasoningEffort", undefined)
           else await syncProviderField("reasoningEffort", cur.reasoningEffort)
         }
-        pushLabel(`❯ Think`, ansi.bold + C.tool)
-        pushLine(`Thinking mode ${enable ? "On" : "Off"}`, C.tool)
-        if (enable) pushLine(`Reasoning effort: ${cur.reasoningEffort}`, C.dim)
       }
     },
   })

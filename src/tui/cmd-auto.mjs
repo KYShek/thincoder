@@ -1,9 +1,7 @@
-import { ansi, C } from "./ansi.mjs"
-
 /** /auto command: toggle auto-approve mode.
- *  ctx: { agent, pushLine, pushLabel } */
+ *  ctx: { agent } */
 export async function handleAutoCommand(ctx) {
-  const { agent, pushLine, pushLabel } = ctx
+  const { agent } = ctx
   agent.autoApprove = !agent.autoApprove
   agent._pendingReminders = agent._pendingReminders ?? []
   if (agent.autoApprove) {
@@ -11,11 +9,4 @@ export async function handleAutoCommand(ctx) {
   } else {
     agent._pendingReminders.push("[System reminder: AUTO mode is now OFF. Destructive tool calls now require user approval again. Confirm before writing files, running commands, or spawning subagents.]")
   }
-  pushLabel(`❯ Auto`, ansi.bold + (agent.autoApprove ? C.warn : C.tool))
-  pushLine(
-    agent.autoApprove
-      ? `AUTO ON: all tool calls (write/bash/subagent) auto-approved. For long tasks. /auto to disable.`
-      : `AUTO OFF: destructive tool calls require per-use approval again.`,
-    agent.autoApprove ? C.warn : C.dim,
-  )
 }

@@ -35,6 +35,7 @@ export async function runDistill(ctx) {
       saved++
     }
     pushLine(`[distill] Done: saved ${saved}/${candidates.length} item(s)`, C.tool)
+    return saved
   } catch (error) {
     pushLine(`[distill] error: ${error.message}`, C.error)
   } finally {

@@ -169,6 +169,12 @@ export function resolveInCwd(ctx, p) {
   return resolved
 }
 
+/** Resolve a path relative to cwd without boundary check — use only when the user explicitly provides an external path */
+export function resolveExternal(ctx, p) {
+  const cwd = realCwd(ctx.cwd)
+  return resolve(cwd, p)
+}
+
 /** Coarse segmentation for destructive pre-check (also splits on > >> < so destructive detection still works through redirection) */
 export function shellSegments(command) {
   return command.split(/&&|\|\||>>|\$\(|[;|\n<>]|`|[(]/)

@@ -31,6 +31,7 @@ const DEFAULTS = {
     maxTurns: 100,
     subagentTurns: 100,
     compactThreshold: 100000,
+    verifyGuard: false,  // push model back to verify when files were mutated but verify not run (opt-in)
   },
   memory: {
     dbPath: join(configDir, "memory.db"),

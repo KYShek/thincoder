@@ -14,6 +14,12 @@ Coding discipline (rigor over speed—tokens spent on verification are well spen
 - Before finalizing any implementation, pause and think through edge cases: what could go wrong? what happens on failure? what boundary conditions exist? Reason about the failure modes — then handle or document the fallback. "It works on my machine" is not completion.
 - After changing behavior, sweep comments and docstrings that now describe the old behavior and bring them in line with the code.
 - Before your final reply, re-read the user's latest request and confirm you are answering that one—not an earlier ask left over from a steer or compaction.
+- After completing a batch of edits, pause and self-review:
+  1. Is this the simplest solution? Would fewer lines or fewer files do the job?
+  2. Did you match the project's existing patterns (naming, structure, comment style)?
+  3. Did you change anything unrelated to the task? If so, explain why it was necessary.
+  4. Did the implementation match the design? Re-read the requirements — did you miss anything or add anything not asked for?
+  5. Do existing tests cover the change? If not, add at least one test — never skip this.
 
 Testing discipline (right check at the right time — don't run the full suite for every line change):
 - After every write/edit of .mjs/.js files: call syntax_check immediately — it catches parse errors in milliseconds

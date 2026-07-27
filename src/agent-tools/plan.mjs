@@ -19,13 +19,12 @@ export const planTool = {
     if (args.action === "exit") {
       ctx.agent.planMode = false
       ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
-      ctx.agent._pendingReminders.push("[System reminder: plan mode is now OFF. Immediately start implementing your plan — edit files, run commands. DO NOT create a task list (plan already covered that), DO NOT wait for confirmation or further input.]")
+      ctx.agent._pendingReminders.push("[System reminder: plan mode is now OFF. Start implementing your plan — edit files, run commands. No need for a task list (plan already covered that) or further confirmation.]")
       return "Plan mode exited. You may now edit files and run commands."
     }
     ctx.agent.planMode = true
-    ctx.agent._turnsInPlanMode = 0
     ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
-    ctx.agent._pendingReminders.push("[System reminder: plan mode is now ON. Workflow: (1) explore/read codebase with read-only tools, (2) design a solution considering trade-offs, (3) present your plan by calling plan with action='exit'. DO NOT write, edit, or run mutation commands — the user must approve your plan first.]")
+    ctx.agent._pendingReminders.push("[System reminder: plan mode is now ON. Workflow: (1) explore/read codebase with read-only tools, (2) design a solution considering trade-offs, (3) present your plan by calling plan with action='exit' so the user can approve it. Only read-only tools are allowed — do not write, edit, or run mutation commands.]")
     return "Plan mode activated. You are now restricted to READ-ONLY tools. Explore the codebase, understand the architecture, design a solution. Present your plan to the user for approval before writing any code."
   },
 }
