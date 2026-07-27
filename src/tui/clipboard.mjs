@@ -1,7 +1,7 @@
 import { C } from "./ansi.mjs"
 
-/** Ctrl+V / Alt+V：读取剪贴板图片 → 写入工作目录临时文件 → 输入框插入 read_image 命令。
- *  从 index.mjs 抽出。
+/** Ctrl+V / Alt+V: read clipboard image → write temp file in working directory → insert read_image command into input box.
+ *  Extracted from index.mjs.
  *  ctx: { agent, state, pushLine, render } */
 export async function pasteClipboardImage(ctx) {
   const { agent, state, pushLine, render } = ctx

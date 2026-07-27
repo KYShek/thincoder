@@ -3,6 +3,7 @@
  */
 import { rpcId, INIT_TIMEOUT_MS, CALL_TIMEOUT_MS, withTimeout, withAuthToken } from "./helpers.mjs"
 
+/** Create an MCP WebSocket transport */
 export function wsTransport(wsUrl, extraHeaders = {}) {
   const pending = new Map()
   let closed = false
@@ -36,7 +37,7 @@ export function wsTransport(wsUrl, extraHeaders = {}) {
             pending.delete(msg.id)
             resolver(msg)
           }
-        } catch { /* 非 JSON，忽略 */ }
+        } catch { /* not JSON, ignore */ }
       })
 
       ws.addEventListener("error", (event) => {
@@ -80,7 +81,7 @@ export function wsTransport(wsUrl, extraHeaders = {}) {
   const close = () => {
     closed = true
     failAll("Connection closed")
-    try { ws?.close() } catch { /* 忽略 */ }
+    try { ws?.close() } catch { /* ignore */ }
   }
 
   return { send, notify, close, connect }

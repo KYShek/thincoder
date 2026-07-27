@@ -1,9 +1,9 @@
 /**
- * memory/schema.mjs — 数据库 schema 定义、迁移、CJK 分词
- * v1：node:sqlite + FTS5 单机实现，零依赖。
+ * memory/schema.mjs — database schema definition, migration, CJK segmentation
+ * v1: node:sqlite + FTS5 standalone implementation, zero dependencies.
  *
- * 中文检索方案：FTS5 unicode61 分词 + CJK 逐字加空格（写入和查询两侧同样处理）。
- * 效果：中文按字索引，"分号" 这类双字词也能命中；ASCII 仍按整词。
+ * Chinese search strategy: FTS5 unicode61 tokenizer + CJK character-by-character spacing (applied to both write and query sides).
+ * Effect: Chinese indexed by character; two-character words like "分号" still match; ASCII stays whole-word.
  */
 
 import { DatabaseSync } from "node:sqlite"
@@ -12,19 +12,20 @@ import { dirname } from "node:path"
 
 export const VALID_TYPES = new Set(["rule", "knowledge", "decision", "pattern"])
 export const SCHEMA_VERSION = 9
+export const SQLITE_BUSY_TIMEOUT = 3000
 
-// 代码索引：源码文件扩展名
+// Code index: source file extensions
 export const CODE_EXTS = new Set([".mjs", ".js", ".ts", ".tsx", ".jsx", ".py", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".swift", ".kt", ".sh", ".bash", ".sql", ".yaml", ".yml", ".toml", ".json", ".css", ".html", ".vue", ".svelte"])
-// 文档索引：markdown / 纯文本（分开索引，便于 LLM 区分"设计规范"和"现存代码"）
+// Doc index: markdown / plain text (separate index makes it easier for LLM to distinguish "design specs" from "existing code")
 export const DOC_EXTS = new Set([".md", ".mdc", ".txt", ".rst", ".adoc"])
-// 总是跳过的目录名
+// Directory names always skipped
 export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage", "__pycache__", ".venv", "venv", "target", ".next", ".nuxt", ".svelte-kit"])
-// 大文件阈值（行数）：超过此行数按符号分块，否则整文件入索引
+// Large file threshold (lines): above this, chunk by symbol; otherwise index entire file
 export const BIG_FILE_LINES = 2000
 
 /**
- * CJK 逐字加空格：让 unicode61 把每个汉字/日韩字当独立 token。
- * 写入和查询必须使用同一处理，检索才能对上。
+ * CJK character-by-character spacing: makes unicode61 treat each Han/Kana/Hangul character as an independent token.
+ * Both write and query must use the same processing for retrieval to match.
  */
 export function segmentCJK(text) {
   return text.replace(
@@ -34,15 +35,15 @@ export function segmentCJK(text) {
 }
 
 /**
- * 打开/初始化记忆库。dbPath 不存在会自动创建。
- * 返回的 memory 对象即接口，后续函数的第一个参数都是它。
+ * Open/initialize the memory store. dbPath is auto-created if missing.
+ * The returned memory object is the interface; all subsequent functions take it as their first argument.
  */
 export function createMemory({ dbPath }) {
   mkdirSync(dirname(dbPath), { recursive: true })
   const db = new DatabaseSync(dbPath)
-  // WAL 读写不互锁（TUI 检索和后台索引可并发）；busy_timeout 防多进程同库直接 SQLITE_BUSY
+  // WAL: reads and writes don't block each other (TUI search and background indexing can run concurrently); busy_timeout prevents SQLITE_BUSY from multi-process same-db access
   db.exec(`PRAGMA journal_mode = WAL`)
-  db.exec(`PRAGMA busy_timeout = 3000`)
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT}`)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS entries (
@@ -63,7 +64,7 @@ export function createMemory({ dbPath }) {
   return { db }
 }
 
-/** 按 user_version 逐步迁移。整体单事务——任何一步失败都回滚，不留半成品 schema */
+/** Step-by-step migration by user_version. Single transaction — any step failure rolls back, no half-finished schema left behind. */
 export function migrate(db) {
   const { user_version: version } = db.prepare(`PRAGMA user_version`).get()
   if (version >= SCHEMA_VERSION) return
@@ -71,21 +72,21 @@ export function migrate(db) {
   db.exec("BEGIN IMMEDIATE")
   try {
   if (version < 2) {
-    // v1(trigram) 或空库 → v2(unicode61 + CJK 逐字)：重建 FTS 和触发器
+    // v1 (trigram) or empty DB → v2 (unicode61 + CJK char-by-char): rebuild FTS and triggers
     db.exec(`
       DROP TRIGGER IF EXISTS entries_ai;
       DROP TRIGGER IF EXISTS entries_ad;
       DROP TRIGGER IF EXISTS entries_au;
       DROP TABLE IF EXISTS entries_fts;
     `)
-    // 老库（v1）没有 seg 列，补上
+    // Old DB (v1) has no seg columns — add them
     const columns = db.prepare(`PRAGMA table_info(entries)`).all().map((c) => c.name)
     for (const col of ["seg_title", "seg_content", "seg_tags"]) {
       if (!columns.includes(col)) {
         db.exec(`ALTER TABLE entries ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`)
       }
     }
-    // 回填 seg 列（JS 侧分字，SQL 做不了）
+    // Backfill seg columns (segmentation done in JS; SQL can't do it)
     const rows = db.prepare(`SELECT id, title, content, tags FROM entries`).all()
     const update = db.prepare(`UPDATE entries SET seg_title = ?, seg_content = ?, seg_tags = ? WHERE id = ?`)
     for (const r of rows) {
@@ -120,7 +121,7 @@ export function migrate(db) {
   }
 
   if (version < 3) {
-    // v3：markdown 层（project/team）的 files 表 + FTS + 触发器
+    // v3: markdown layer (project/team) files table + FTS + triggers
     db.exec(`
       CREATE TABLE IF NOT EXISTS files (
         layer TEXT NOT NULL CHECK(layer IN ('project','team')),
@@ -166,7 +167,7 @@ export function migrate(db) {
   }
 
   if (version < 4) {
-    // v4：personal 的 entries 表加向量列（files 表在 v3 已带）；meta 表存 embedding 模型名
+    // v4: add vector column to personal entries table (files table already had it since v3); meta table stores embedding model name
     const columns = db.prepare(`PRAGMA table_info(entries)`).all().map((c) => c.name)
     if (!columns.includes("embedding")) {
       db.exec(`ALTER TABLE entries ADD COLUMN embedding BLOB`)
@@ -176,7 +177,7 @@ export function migrate(db) {
   }
 
   if (version < 5) {
-    // v5：files 表加 origin 列（项目绝对路径），防止跨项目记忆串台
+    // v5: add origin column to files table (absolute project path), prevent cross-project memory collision
     const columns = db.prepare(`PRAGMA table_info(files)`).all().map((c) => c.name)
     if (!columns.includes("origin")) {
       db.exec(`ALTER TABLE files ADD COLUMN origin TEXT NOT NULL DEFAULT ''`)
@@ -185,7 +186,7 @@ export function migrate(db) {
   }
 
   if (version < 6) {
-    // v6：代码索引——code_chunks 表 + FTS5（与 files 表同样模式）
+    // v6: code index — code_chunks table + FTS5 (same pattern as files table)
     db.exec(`
       CREATE TABLE IF NOT EXISTS code_chunks (
         path TEXT NOT NULL,
@@ -228,7 +229,7 @@ export function migrate(db) {
   }
 
   if (version < 7) {
-    // v7：文档索引——doc_chunks 表 + FTS5（与 code_chunks 同模式），markdown 按 ## 标题分块
+    // v7: doc index — doc_chunks table + FTS5 (same pattern as code_chunks), markdown chunked by ## headings
     db.exec(`
       CREATE TABLE IF NOT EXISTS doc_chunks (
         path TEXT NOT NULL,
@@ -270,8 +271,8 @@ export function migrate(db) {
   }
 
   if (version < 8) {
-    // v8：code_chunks/doc_chunks 加 origin 列（项目根目录绝对路径），主键改为 (origin, path, line_start)。
-    // SQLite 不能 ALTER 主键 → 直接删表重建（下次 codeSync/docSync 自动重索引）。
+    // v8: add origin column to code_chunks/doc_chunks (absolute project root), PK changed to (origin, path, line_start).
+    // SQLite can't ALTER primary key → drop and recreate table (auto-reindexed by next codeSync/docSync).
     db.exec(`
       DROP TRIGGER IF EXISTS code_chunks_ai;
       DROP TRIGGER IF EXISTS code_chunks_ad;
@@ -365,8 +366,8 @@ export function migrate(db) {
   }
 
   if (version < 9) {
-    // v9: files 表 PK 加 origin，防跨项目 project 层记忆覆盖
-    // SQLite 不能 ALTER 主键 → 删表重建（下次 syncDir 自动重索引）
+    // v9: files table PK gains origin, prevents cross-project project-layer memory overwrite
+    // SQLite can't ALTER primary key → drop and recreate table (auto-reindexed by next syncDir)
     db.exec(`
       DROP TRIGGER IF EXISTS files_ai;
       DROP TRIGGER IF EXISTS files_ad;

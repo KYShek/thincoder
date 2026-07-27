@@ -1,7 +1,7 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /goal 命令：设置/查看/取消长期目标。
- *  从 slash-commands.mjs 抽出。
+/** /goal command: set/view/cancel long-term goal.
+ *  Extracted from slash-commands.mjs.
  *  ctx: { agent, pushLine, pushLabel, openPicker, askQuestion } */
 export async function handleGoalCommand(ctx) {
   const { agent, pushLine, pushLabel, openPicker, askQuestion } = ctx
@@ -31,7 +31,7 @@ export async function handleGoalCommand(ctx) {
         pushLine(`Goal cancelled.`, C.dim)
         return
       }
-      // set — 需要输入目标文本
+      // set — requires entering goal text
       const goalText = await askQuestion("Enter goal description (; separates criteria)")
       if (!goalText) return
       const semi = goalText.indexOf("；") >= 0 ? "；" : goalText.indexOf(";") >= 0 ? ";" : null
@@ -41,7 +41,7 @@ export async function handleGoalCommand(ctx) {
       pushLabel(`❯ Goal`, ansi.bold + C.warn)
       pushLine(`Goal set: ${objective}`, C.tool)
       if (criteria) pushLine(`  Criteria: ${criteria}`, C.dim)
-      else pushLine(`  ⚠ No criteria — agent will be asked to provide verifiable criteria when using goal set`, C.warn)
+      else pushLine(`  ⚠ No criteria provided — the agent will determine its own criteria as it works on this goal`, C.warn)
     },
   })
 }

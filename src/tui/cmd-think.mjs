@@ -1,7 +1,7 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /think 命令：切换思考模式、设置 reasoning effort。
- *  从 slash-commands.mjs 抽出。
+/** /think command: toggle thinking mode, set reasoning effort.
+ *  Extracted from slash-commands.mjs.
  *  ctx: { agent, pushLine, pushLabel, openPicker, syncProviderField } */
 export async function handleThinkCommand(ctx) {
   const { agent, pushLine, pushLabel, openPicker, syncProviderField } = ctx

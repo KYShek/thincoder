@@ -1,6 +1,6 @@
 /**
- * memory.mjs — 记忆系统（重新导出中心）
- * 子模块在 src/memory/ 目录下，按职责拆分。
+ * memory.mjs — memory system re-export hub
+ * Submodules in src/memory/ directory, split by responsibility.
  */
 
 // schema + constants

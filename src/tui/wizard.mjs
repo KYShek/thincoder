@@ -1,7 +1,7 @@
 /**
- * wizard.mjs — 首次启动 Config 向导
- * 从 index.mjs 抽出：provider 选择 → 逐项输入 (name/baseURL/model/key/embedkey) → 持久化 → 接模型选择器。
- * 通过 ctx 对象访问 startTUI 闭包中的共享状态与 UI 函数。
+ * wizard.mjs — first-launch config wizard
+ * Extracted from index.mjs: provider select → step-by-step input (name/baseURL/model/key/embedkey) → persist → then model picker.
+ * Accesses shared state and UI functions from the startTUI closure via ctx object.
  * ctx: { agent, state, pushLine, pushLabel, render, persistRaw, openModelPicker }
  */
 
@@ -9,13 +9,13 @@ import { PROVIDER_PRESETS as PRESETS } from "../config.mjs"
 import { ansi, C } from "./ansi.mjs"
 
 /**
- * 创建向导控制器。
- * 返回 { startWizard, renderWizard, wizardChooseProvider, wizardSubmitText, cancelWizard, finishWizard }
+ * Creates the wizard controller.
+ * Returns { startWizard, renderWizard, wizardChooseProvider, wizardSubmitText, cancelWizard, finishWizard }
  */
 export function createWizard(ctx) {
   const { agent, state, pushLine, pushLabel, render, persistRaw } = ctx
 
-  /** 菜单步的候选项：已有 provider (no key 的标注）+ 未添加的预设 + 自定义 */
+  /** Candidates for the menu step: existing providers (marked "no key" if missing), unadded presets, custom */
   function wizardProviderItems() {
     const items = []
     for (const p of agent.providers) {
@@ -30,7 +30,7 @@ export function createWizard(ctx) {
     return items
   }
 
-  /** 文本步骤定义：提示语 + 校验 (通过返回 true，否则返回错误文案） */
+  /** Text step definitions: prompt + validation (returns true if valid, otherwise error message) */
   const WIZARD_STEPS = {
     name: {
       prompt: "Name this provider (alphanumeric/-/_ e.g. my-openai)",
@@ -51,7 +51,7 @@ export function createWizard(ctx) {
     },
     embedkey: {
       prompt: "Optional: embedding API key (SiliconFlow, for memory vector search; press Enter to skip)",
-      validate: () => true, // 可跳过
+      validate: () => true, // skippable
     },
   }
   const WIZARD_NEXT = { name: "baseURL", baseURL: "model", model: "key", key: "embedkey", embedkey: null }
@@ -123,11 +123,11 @@ export function createWizard(ctx) {
 
   function cancelWizard() {
     state.wizard = null
-    pushLine("Skipped initial setup. Add a provider anytime via /provider add, set its key via /provider key.", C.dim)
+    pushLine("Skipped initial setup. Use /model to add providers and configure API keys anytime.", C.dim)
     render()
   }
 
-  /** 向导完成：写入 provider (有则更新）、设为激活、持久化，然后接模型选择器 */
+  /** Wizard complete: write provider (update if exists), set active, persist, then open model picker */
   async function finishWizard() {
     const f = state.wizard.fields
     state.wizard = null
@@ -147,7 +147,7 @@ export function createWizard(ctx) {
     agent.config.activeProvider = f.name
     pushLabel(`❯ Setup`, ansi.bold + C.tool)
     pushLine(`Setup complete: ${f.name} / ${f.model} (saved to config)`, C.tool)
-    // embedding key：配了就启用向量检索，没配提示事后通道
+    // embedding key: if provided, enable vector search; if not, show how to enable later
     if (f.embedkey) {
       agent.config.embedding ??= {}
       agent.config.embedding.apiKey = f.embedkey

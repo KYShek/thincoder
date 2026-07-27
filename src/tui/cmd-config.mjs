@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs"
 import { ansi, C } from "./ansi.mjs"
 
-/** /config 命令：设置 embedding key / 高级 path=value 配置。
- *  从 slash-commands.mjs 抽出。
+/** /config command: set embedding key / advanced path=value config.
+ *  Extracted from slash-commands.mjs.
  *  ctx: { agent, pushLine, pushLabel, openPicker, askQuestion, persistRaw, maskKey, ansi, C } */
 export async function handleConfigCommand(ctx) {
   const { agent, pushLine, pushLabel, openPicker, askQuestion, persistRaw, maskKey } = ctx

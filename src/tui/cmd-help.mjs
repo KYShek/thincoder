@@ -1,6 +1,6 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /help 命令：列出所有斜杠命令及别名。
+/** /help command: list all slash commands and aliases.
  *  ctx: { pushLine, pushLabel, SLASH_COMMANDS } */
 export async function handleHelpCommand(ctx) {
   const { pushLine, pushLabel, SLASH_COMMANDS } = ctx

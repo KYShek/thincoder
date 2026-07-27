@@ -5,13 +5,13 @@ import { teamConfig, gitAuthor } from "./make-agent.mjs"
 import { setupWizard } from "./setup-wizard.mjs"
 import { askPermission } from "./permission.mjs"
 
-/** 缺 key 时的统一提示 */
+/** Unified message when no API key is configured */
 function noKeyMessage() {
   return `还没有配置 API key。运行 thincoder 进入 TUI，用 /provider add 和 /provider key 配置；或直接编辑 ${configPath}`
 }
 
 /** thincoder distill <transcript-file> [--yes] [--scope=...]
- *  返回退出码：0=成功，1=错误 */
+ *  Returns exit code: 0=success, 1=error */
 export async function distillCommand(args, exitSoon) {
   const flags = {}
   const positional = []

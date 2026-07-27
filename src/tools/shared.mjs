@@ -1,6 +1,6 @@
 /**
- * tools/shared.mjs — 共享工具函数、常量、OpenAI schema 转换
- * 被 tools/file.mjs / system.mjs / web.mjs / git.mjs 导入
+ * tools/shared.mjs — shared tool utilities, constants, OpenAI schema conversion
+ * Imported by tools/file.mjs / system.mjs / web.mjs / git.mjs
  */
 
 import { spawn, execFileSync } from "node:child_process"
@@ -13,11 +13,14 @@ export const DESC = (name) => readFileSync(join(__dirname, "..", "tools", `${nam
 
 export const MAX_READ_LINES = 2000
 export const MAX_OUTPUT_CHARS = 200_000
+
+const ENCODING_DETECT_MAX_TRIM = 3
+const SYNTAX_CHECK_TIMEOUT = 10000
 export const BASH_TIMEOUT_MS = 120_000
 export const MAX_RESPONSE_BODY_BYTES = 5_000_000
 export const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage"])
 
-/** 转成 OpenAI tools 参数格式 */
+/** Convert to OpenAI tools parameter format */
 export function toOpenAISchema(tool) {
   return {
     type: "function",
@@ -29,7 +32,7 @@ export function toOpenAISchema(tool) {
   }
 }
 
-/** 剥离 ANSI 转义序列 */
+/** Strip ANSI escape sequences */
 export function sanitizeOutput(s) {
   return s
     .replace(/\x1b\[[0-9;?]*[\x40-\x7E]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g, "")
@@ -37,12 +40,13 @@ export function sanitizeOutput(s) {
     .replace(/\r/g, "\n")
 }
 
+/** Truncate text to max chars, appending a truncation notice */
 export function truncate(text, max = MAX_OUTPUT_CHARS) {
   if (text.length <= max) return text
   return text.slice(0, max) + `\n[... truncated: ${text.length - max} chars omitted — redirect to a file if you need the full output]`
 }
 
-/** 限量读取响应体 */
+/** Read response body with a byte limit */
 export async function readBodyText(response, limit = MAX_RESPONSE_BODY_BYTES) {
   if (!response.body) return ""
   const reader = response.body.getReader()
@@ -59,8 +63,8 @@ export async function readBodyText(response, limit = MAX_RESPONSE_BODY_BYTES) {
   return new TextDecoder("utf-8").decode(Buffer.concat(chunks))
 }
 
-/** 流解码器：编码嗅探 ASCII→UTF-8→GBK。
- *  每调用一次创建独立解码实例——不可跨并行流共享（内部 decoder 状态积累）。 */
+/** Streaming decoder: encoding sniffing ASCII→UTF-8→GBK.
+ *  Each call creates an independent decoder instance — must not be shared across parallel streams (internal decoder state accumulates). */
 export function makeDecoder() {
   let decoder = null
   let pending = Buffer.alloc(0)
@@ -69,7 +73,7 @@ export function makeDecoder() {
     if (!decoder) {
       const hasHighByte = pending.some((b) => b >= 0x80)
       if (!hasHighByte) { const s = pending.toString("ascii"); pending = Buffer.alloc(0); return s }
-      for (let trim = 0; trim <= 3 && !decoder; trim++) {
+      for (let trim = 0; trim <= ENCODING_DETECT_MAX_TRIM && !decoder; trim++) {
         try { new TextDecoder("utf-8", { fatal: true }).decode(pending.subarray(0, pending.length - trim)); decoder = new TextDecoder("utf-8") }
         catch { /* continue */ }
       }
@@ -81,7 +85,7 @@ export function makeDecoder() {
   }
 }
 
-/** 单文件 git diff，失败静默返回空。大 diff 超 maxBuffer 时截断而非吞掉 */
+/** Single-file git diff. Silently returns empty on failure. Large diffs that exceed maxBuffer are truncated rather than swallowed. */
 export function gitDiffOne(cwd, abs) {
   try {
     const diff = execFileSync("git", ["--no-pager", "diff", "--no-color", "--", abs], {
@@ -92,7 +96,7 @@ export function gitDiffOne(cwd, abs) {
     if (lines.length <= 200) return diff
     return lines.slice(0, 200).join("\n") + `\n... (${lines.length - 200} more diff lines)`
   } catch (e) {
-    // maxBuffer 溢出时 e.stdout 含已收集的部分；其他错误（非 git 仓库等）返回空
+    // maxBuffer overflow: e.stdout contains partial collected output; other errors (non-git repo etc.) return empty
     if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && e.stdout) {
       const lines = e.stdout.toString().split("\n")
       return lines.slice(0, 200).join("\n") + `\n... (diff too large, showing first 200 of more lines)`
@@ -101,11 +105,11 @@ export function gitDiffOne(cwd, abs) {
   }
 }
 
-/** 文件变更后自动语法检查 */
+/** Auto syntax check after file modification */
 export function autoSyntaxCheck(abs) {
   if (!/\.(m?js)$/i.test(abs)) return ""
   try {
-    execFileSync("node", ["--check", abs], { stdio: ["ignore", "pipe", "pipe"], timeout: 10000 })
+    execFileSync("node", ["--check", abs], { stdio: ["ignore", "pipe", "pipe"], timeout: SYNTAX_CHECK_TIMEOUT })
     return "\nSyntax: OK"
   } catch (e) {
     const err = (e.stderr || e.stdout || e.message || "").toString().split("\n").slice(0, 3).join("\n")
@@ -113,7 +117,7 @@ export function autoSyntaxCheck(abs) {
   }
 }
 
-/** 逐级向上找真实路径 */
+/** Resolve realpath by walking up the directory tree */
 export function realpathNearest(abs) {
   let cur = abs
   const tail = []
@@ -128,11 +132,13 @@ export function realpathNearest(abs) {
 }
 
 const realCwdCache = new Map()
+/** Resolve cwd to realpath, cached */
 export function realCwd(cwd) {
   if (!realCwdCache.has(cwd)) realCwdCache.set(cwd, realpathNearest(resolve(cwd)))
   return realCwdCache.get(cwd)
 }
 
+/** Assert that a resolved path is inside cwd; throws on escape */
 export function assertInside(cwd, resolved, p) {
   const rel = relative(cwd, resolved)
   if (isAbsolute(rel) || rel === ".." || rel.startsWith(".." + sep)) {
@@ -140,6 +146,7 @@ export function assertInside(cwd, resolved, p) {
   }
 }
 
+/** Resolve a user-supplied path relative to cwd, asserting it stays within cwd */
 export function resolveInCwd(ctx, p) {
   const cwd = realCwd(ctx.cwd)
   const resolved = resolve(cwd, p)
@@ -149,25 +156,25 @@ export function resolveInCwd(ctx, p) {
   return resolved
 }
 
-/** 破坏性预检用的粗切分（也切 > >> <，使段内破坏性检测在重定向时仍生效） */
+/** Coarse segmentation for destructive pre-check (also splits on > >> < so destructive detection still works through redirection) */
 export function shellSegments(command) {
   return command.split(/&&|\|\||>>|\$\(|[;|\n<>]|`|[(]/)
 }
 
-/** 检测 shell 输出/输入重定向（> >> < 后跟文件名）——引号内未排除，保守拦截 */
+/** Detect shell output/input redirection (> >> < followed by filename) — not excluded inside quotes, conservative block */
 export function hasFileRedirection(command) {
   return /(^|[\s;&|])>{1,2}\s*\S/.test(command) || /(^|[\s;&|])<\s*\S/.test(command)
 }
 
-/** 单命令段是否为破坏性非 git 命令（保守：宁可误拦） */
+/** Whether a single command segment is a destructive non-git command (conservative: prefer false positives) */
 export function isDestructiveCommand(seg) {
   const s = seg
-  // rm 同时带递归(-r/-R)与强制(-f)标志：-rf / -fr / -r -f / -Rf 等
+  // rm with both recursive (-r/-R) and force (-f) flags: -rf / -fr / -r -f / -Rf etc.
   if (/\brm\b/.test(s) && /\s-\S*r/i.test(s) && /\s-\S*f/i.test(s)) return true
   if (/\brmdir\b/i.test(s)) return true
   if (/\bdel\b/i.test(s) && /\/f\b/i.test(s)) return true
   if (/\brd\b/i.test(s) && /\/s\b/i.test(s)) return true
-  // format 作为命令调用（排除 --format= 之类的选项误报）
+  // format called as a command (exclude --format= option false positives)
   if (/\bformat\b\s+\S/i.test(s) && !/--format\b/i.test(s)) return true
   if (/\bshred\b/i.test(s)) return true
   if (/\bdd\b/.test(s) && /\bof=/i.test(s)) return true
@@ -177,7 +184,7 @@ export function isDestructiveCommand(seg) {
   return false
 }
 
-/** 单命令段是否销毁未提交改动 */
+/** Whether a single command segment destroys uncommitted changes */
 export function isDestructiveGitSegment(seg) {
   if (!/^\s*git\s/.test(seg)) return false
   if (/\scheckout\s+(?:--|\.(?:\s|$))/.test(seg)) return true
@@ -187,7 +194,7 @@ export function isDestructiveGitSegment(seg) {
   return false
 }
 
-/** cwd 是否在 git 仓库内 */
+/** Whether cwd is inside a git repository */
 export function insideGitRepo(cwd) {
   try {
     execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
@@ -197,7 +204,7 @@ export function insideGitRepo(cwd) {
   } catch { return false }
 }
 
-/** glob 转正则 */
+/** Convert glob pattern to regex */
 export function globToRegex(pattern) {
   const DS = "\u0001", DP = "\u0002"
   const escaped = pattern
@@ -209,7 +216,7 @@ export function globToRegex(pattern) {
   return new RegExp(`^${escaped}$`)
 }
 
-/** 剥 HTML 标签 */
+/** Strip HTML tags */
 export function stripTags(html) {
   return html
     .replace(/<[^>]+>/g, "")
@@ -224,7 +231,7 @@ export function stripTags(html) {
     .trim()
 }
 
-/** HTML → 粗文本：去脚本样式、块级标签换行、剥标签、解码实体、压缩空行 */
+/** HTML → plain text: strip scripts/styles, newline block tags, strip tags, decode entities, compress blank lines */
 export function htmlToText(html) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -240,18 +247,18 @@ export function htmlToText(html) {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&") // &amp; 必须最后解码，否则 &amp;lt; 会被二次解码成 <
+    .replace(/&amp;/g, "&") // &amp; must be decoded last, otherwise &amp;lt; gets double-decoded to <
     .replace(/[ \t]+/g, " ")
     .replace(/\n\s*\n\s*\n+/g, "\n\n")
     .trim()
 }
 
-/** 执行 git 命令。maxBuffer 10MB 防大 diff/log 溢出；溢出时返回截断的部分输出而非空。 */
+/** Execute a git command. maxBuffer 10MB prevents large diff/log overflow; on overflow, returns truncated partial output rather than empty. */
 export function runGit(cwd, cmdArgs) {
   try {
     return execFileSync("git", cmdArgs, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/\r/g, "")
   } catch (e) {
-    // ERR_CHILD_PROCESS_STDIO_MAXBUFFER 时 e.stdout 含部分输出，截取前 200 行返回
+    // ERR_CHILD_PROCESS_STDIO_MAXBUFFER: e.stdout contains partial output, return first 200 lines
     if (e.stdout) return String(e.stdout).trim().replace(/\r/g, "").split("\n").slice(0, 200).join("\n")
     return ""
   }

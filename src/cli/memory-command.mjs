@@ -1,6 +1,6 @@
 import { put, remove, search, list } from "../memory.mjs"
 
-/** thincoder memory <list|search|put|remove> 子命令 */
+/** thincoder memory <list|search|put|remove> subcommands */
 export async function memoryCommand(memory, args) {
   const [sub, ...rest] = args
 

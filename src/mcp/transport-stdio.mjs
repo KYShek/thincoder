@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process"
 import { rpcId, CALL_TIMEOUT_MS, withTimeout, quoteArg } from "./helpers.mjs"
 
+/** Create an MCP stdio transport over a spawned child process */
 export function stdioTransport(command, args) {
   const spawnOptions = { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env } }
   const child =
@@ -39,7 +40,7 @@ export function stdioTransport(command, args) {
           pending.delete(msg.id)
           resolver(msg)
         }
-      } catch { /* 非 JSON 行忽略 */ }
+      } catch { /* non-JSON line, ignore */ }
     }
   })
 
@@ -77,7 +78,7 @@ export function stdioTransport(command, args) {
     if (closed) return
     try {
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n")
-    } catch { /* 忽略 */ }
+    } catch { /* ignore */ }
   }
 
   return { send, notify, close: () => { if (!closed) child.kill() } }

@@ -1,4 +1,4 @@
-// tools/index.mjs — 后端兼容重导出
+// tools/index.mjs — backend-compatible re-export
 export { toOpenAISchema } from "./shared.mjs";
 
 import { readTool, writeTool, editTool, insertAfterTool, readImageTool } from "./file.mjs";

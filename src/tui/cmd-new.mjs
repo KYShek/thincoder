@@ -1,7 +1,7 @@
 import { clearSession } from "../session.mjs"
 import { C } from "./ansi.mjs"
 
-/** /new 命令：新建会话（旧会话归档到槽位）。
+/** /new command: start new session (old session archived to slot).
  *  ctx: { agent, state, pushLine } */
 export async function handleNewCommand(ctx) {
   const { agent, state, pushLine } = ctx

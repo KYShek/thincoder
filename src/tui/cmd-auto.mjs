@@ -1,6 +1,6 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /auto 命令：切换 auto-approve 模式。
+/** /auto command: toggle auto-approve mode.
  *  ctx: { agent, pushLine, pushLabel } */
 export async function handleAutoCommand(ctx) {
   const { agent, pushLine, pushLabel } = ctx

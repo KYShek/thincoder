@@ -13,6 +13,9 @@ import { writeFile } from "node:fs/promises";
 import { unlink } from "node:fs/promises";
 import { join, relative, dirname } from "node:path";
 
+const MAX_FILE_READ_BYTES = 10_000_000
+const MAX_IMAGE_BYTES = 15_000_000
+
 export const readTool = {
   name: "read",
   description: DESC("read"),
@@ -28,9 +31,9 @@ export const readTool = {
   readonly: true,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
-    // 大文件保护：先查大小，超 10MB 拒绝整文件读入（offset/limit 只影响返回切片，不影响缓冲）
+    // Large file guard: check size first, reject reading entire file if >10MB (offset/limit only affect the returned slice, not buffering)
     const st = await stat(abs).catch(() => null)
-    if (st && st.size > 10_000_000) throw new Error(`File too large (${Math.round(st.size / 1_000_000)}MB > 10MB limit). Use bash with head/tail or grep for targeted extraction.`)
+    if (st && st.size > MAX_FILE_READ_BYTES) throw new Error(`File too large (${Math.round(st.size / 1_000_000)}MB > 10MB limit). Use bash with head/tail or grep for targeted extraction.`)
     const content = await readFile(abs, "utf8")
     const lines = content.split("\n")
     const offset = Math.max(1, args.offset ?? 1)
@@ -57,15 +60,15 @@ export const readImageTool = {
     required: ["path"],
   },
   readonly: true,
-  /** 返回 JSON：{ text, images }，供 agent 层转为多模态 user 消息 */
+  /** Returns JSON: { text, images }, for the agent layer to convert into multimodal user messages */
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     const ext = abs.slice(abs.lastIndexOf(".") + 1).toLowerCase()
     const mime = IMAGE_EXTENSIONS[ext]
     if (!mime) throw new Error(`Unsupported image format: .${ext}. Supported: ${Object.keys(IMAGE_EXTENSIONS).join(", ")}`)
-    // 先查大小再读入——防超大图片撑爆内存（20MB base64 ≈ 15MB 原始）
+    // Check size before reading — prevent huge images from blowing up memory (20MB base64 ≈ 15MB raw)
     const imgStat = await stat(abs).catch(() => null)
-    if (imgStat && imgStat.size > 15_000_000) throw new Error(`Image too large: ${Math.round(imgStat.size / 1_000_000)}MB (max 15MB)`)
+    if (imgStat && imgStat.size > MAX_IMAGE_BYTES) throw new Error(`Image too large: ${Math.round(imgStat.size / 1_000_000)}MB (max 15MB)`)
     const buf = await readFile(abs) // raw buffer, no encoding
     const b64 = buf.toString("base64")
     const bytes = buf.length
@@ -73,10 +76,10 @@ export const readImageTool = {
       text: `[read_image: ${args.path} (${mime}, ${bytes} bytes)]`,
       images: [{ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }],
     })
-    // 粘贴产生的临时文件用完即删，不留垃圾
+    // Paste-created temp files: delete after use, no litter
     const basename = abs.includes("/") ? abs.slice(abs.lastIndexOf("/") + 1) : abs.slice(abs.lastIndexOf("\\") + 1)
     if (basename.startsWith(".thincoder-paste-")) {
-      try { await unlink(abs) } catch { /* 删不掉就算了 */ }
+      try { await unlink(abs) } catch { /* can't delete, so be it */ }
     }
     return result
   },
@@ -131,7 +134,7 @@ export const editTool = {
     const content = await readFile(abs, "utf8")
     const occurrences = content.split(args.old_string).length - 1
     if (occurrences === 0) {
-      // 给出线索帮模型定位：首行预览 + 常见原因
+      // Give clues to help the model locate: first-line preview + common causes
       const preview = args.old_string.slice(0, 100).split("\n")[0]
       throw new Error(
         `old_string not found in ${args.path}\n` +
@@ -144,7 +147,7 @@ export const editTool = {
     }
     const updated = args.replace_all
       ? content.split(args.old_string).join(args.new_string)
-      // 函数式替换：避免 new_string 里的 $ 替换模式（匹配串/前后文引用）被展开
+      // Functional replacement: avoid $-substitution patterns in new_string (match string / backreference) being expanded
       : content.replace(args.old_string, () => args.new_string)
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)

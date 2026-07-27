@@ -1,7 +1,7 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /mcp 命令处理器：查看/添加/删除/重连 MCP server。
- *  从 slash-commands.mjs 抽出，含 /mcp 专用的 parseHeaders / addAndConnect helper。
+/** /mcp command handler: view/add/remove/reconnect MCP server.
+ *  Extracted from slash-commands.mjs, includes /mcp-specific parseHeaders / addAndConnect helpers.
  *  ctx: { agent, pushLine, pushLabel, openPicker, askQuestion, persistRaw, ansi, C } */
 
 function parseHeaders(pairs) {
@@ -13,7 +13,7 @@ function parseHeaders(pairs) {
   return headers
 }
 
-/** /mcp 共享 helper: 保存 Config + Connecting (persistRaw 从 ctx 获取) */
+/** /mcp shared helper: save config + connect (persistRaw obtained from ctx) */
 async function addAndConnect(ctx, srv) {
   const { agent, pushLine, pushLabel, persistRaw } = ctx
   await persistRaw((raw) => {
@@ -83,10 +83,10 @@ export async function handleMcpCommand(ctx) {
           title: "Remove MCP Server",
           entries: removeEntries,
           onSelect: async (se) => {
-            // 从配置删除
+            // Remove from config
             agent.config.mcp.servers = servers.filter((s) => s.name !== se.name)
             await persistRaw((raw) => { raw.mcp.servers = agent.config.mcp.servers })
-            // 从工具列表删除
+            // Remove from tool list
             const { removeMcpTools } = await import("../mcp.mjs")
             removeMcpTools(agent, se.name)
             pushLine(`[mcp] ${se.name} removed`, C.tool)

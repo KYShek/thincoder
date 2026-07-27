@@ -1,19 +1,19 @@
 /**
- * embedding.mjs — 向量嵌入
- * OpenAI 兼容 /v1/embeddings（SiliconFlow bge-m3 / Ollama / OpenAI 均可），
- * 复用 provider.mjs 的 fetch + 重试模式，零依赖。
- * 向量在入库前归一化，之后点积即余弦相似度。
+ * embedding.mjs — vector embeddings
+ * OpenAI-compatible /v1/embeddings (SiliconFlow bge-m3 / Ollama / OpenAI all supported),
+ * reuses provider.mjs fetch + retry pattern, zero dependencies.
+ * Vectors are normalized before storage; dot product then equals cosine similarity.
  */
 
 import { RETRYABLE_STATUS } from "./provider/index.mjs"
 const MAX_RETRIES = 3
-const BATCH_SIZE = 32 // 单次请求的文本数上限（SiliconFlow 限制内）
+const BATCH_SIZE = 32 // max texts per request (within SiliconFlow limits)
 
-/** 创建 embedder。config: { baseURL, apiKey, model } */
+/** Create an embedder. config: { baseURL, apiKey, model } */
 export function createEmbedder(config) {
-  if (!config?.baseURL) throw new Error("embedding config: baseURL is required")
-  if (!config?.apiKey) throw new Error("embedding config: apiKey is required (config file or SILICONFLOW_API_KEY env)")
-  if (!config?.model) throw new Error("embedding config: model is required")
+  if (!config?.baseURL) throw new Error("embedding config: baseURL is required — configure embedding.baseURL in ~/.thincoder/config.json")
+  if (!config?.apiKey) throw new Error("embedding config: apiKey is required — set SILICONFLOW_API_KEY env or configure embedding.apiKey in ~/.thincoder/config.json")
+  if (!config?.model) throw new Error("embedding config: model is required — configure embedding.model in ~/.thincoder/config.json")
   return {
     baseURL: config.baseURL.replace(/\/+$/, ""),
     apiKey: config.apiKey,
@@ -22,8 +22,8 @@ export function createEmbedder(config) {
 }
 
 /**
- * 批量嵌入。texts: string[] → Float32Array[]（已归一化）
- * 自动分批，失败重试（指数退避）。
+ * Batch embedding. texts: string[] → Float32Array[] (normalized)
+ * Auto-batches, retries on failure (exponential backoff).
  */
 export async function embed(embedder, texts, { signal } = {}) {
   if (texts.length === 0) return []
@@ -31,11 +31,11 @@ export async function embed(embedder, texts, { signal } = {}) {
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE)
     const data = await requestWithRetry(embedder, batch, signal)
-    // 数量不符直接报错——静默接受会让向量与文本错位，污染整个索引
+    // Mismatched count is a hard error — silently accepting would misalign vectors with texts, poisoning the entire index
     if (!Array.isArray(data.data) || data.data.length !== batch.length) {
       throw new Error(`Embedding API returned ${data.data?.length ?? 0} vectors for ${batch.length} inputs`)
     }
-    // 规范上 data[] 顺序与输入一致，但以 index 字段为准排序（有的话），不赌服务端实现
+    // Spec says data[] order matches input, but sort by index field if present — don't bet on server implementation
     const items = data.data.every((d) => typeof d.index === "number")
       ? [...data.data].sort((a, b) => a.index - b.index)
       : data.data
@@ -46,7 +46,7 @@ export async function embed(embedder, texts, { signal } = {}) {
   return vectors
 }
 
-/** 余弦相似度（输入均已归一化，点积即余弦） */
+/** Cosine similarity (inputs are normalized, dot product equals cosine) */
 export function cosine(a, b) {
   if (a.length !== b.length) return 0
   let sum = 0
@@ -55,20 +55,20 @@ export function cosine(a, b) {
   return sum
 }
 
-/** Float32Array → 可存 sqlite BLOB 的 Buffer */
+/** Float32Array → Buffer suitable for sqlite BLOB storage */
 export function toBlob(vec) {
   return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
 }
 
 /** sqlite BLOB → Float32Array */
 export function fromBlob(buf) {
-  // BLOB 可能来自 Buffer 池，byteOffset 不保证 4 对齐，直接建视图会 RangeError——先复制对齐
+  // BLOB may come from Buffer pool where byteOffset isn't 4-aligned; creating a view directly would RangeError — copy to align first
   if (buf.byteOffset % 4 !== 0) buf = new Uint8Array(buf)
   if (buf.byteLength % 4 !== 0) return new Float32Array(0)
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
 }
 
-// ---------------------------------------------------------------- 内部
+// ---------------------------------------------------------------- internal
 
 async function requestWithRetry(embedder, input, signal) {
   let lastError

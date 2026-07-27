@@ -1,6 +1,6 @@
 /**
- * provider/index.mjs — 后端兼容重导出
- * import { chat } from "./provider" → 自动解析到本文件
+ * provider/index.mjs — backward-compatible re-export
+ * import { chat } from "./provider" → resolves to this file
  */
 export { chat, createProvider, listModels } from "./core.mjs"
 export { RETRYABLE_STATUS, _rateHooks, estimateText, estimateRequestTokens, rateGate, recordRate } from "./rate.mjs"

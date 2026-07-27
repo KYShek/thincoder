@@ -1,5 +1,5 @@
 /**
- * memory/docs.mjs — 文档索引同步、检索、agent 工具生成
+ * memory/docs.mjs — doc index sync, retrieval, agent tool generation
  */
 
 import { readFile, readdir, stat } from "node:fs/promises"
@@ -11,9 +11,12 @@ import { buildFtsQuery, put, search, putMarkdown } from "./core.mjs"
 import { _upsertDocFile, yieldTick } from "./code-index.mjs"
 import { markIndexedCommit } from "./code-sync.mjs"
 
+const DOC_EMBED_BATCH = 64
+const EMBED_TEXT_MAX_LEN = 2000
+
 /**
- * 同步文档索引：扫描 dir 下所有 .md/.mdc/.txt/.rst/.adoc → 分块 → upsert 到 doc_chunks。
- * 按 mtime 增量。
+ * Sync doc index: scan all .md/.mdc/.txt/.rst/.adoc under dir → chunk → upsert into doc_chunks.
+ * Incremental by mtime.
  */
 export async function docSync(memory, dir, { onProgress } = {}) {
   const files = []
@@ -82,8 +85,8 @@ export async function docSync(memory, dir, { onProgress } = {}) {
 }
 
 /**
- * 文档检索：FTS5(BM25) + 可选向量余弦，RRF 合并。
- * 无 embedder 时退化为纯 FTS；ftsQuery 为空且有 embedder 时退化为纯向量。
+ * Doc search: FTS5(BM25) + optional vector cosine, RRF merged.
+ * Falls back to pure FTS when no embedder; falls back to pure vector when ftsQuery is empty and embedder is present.
  */
 export async function docSearch(memory, query, { limit = 5 } = {}) {
   const ftsQuery = buildFtsQuery(query)
@@ -125,14 +128,20 @@ export async function docSearch(memory, query, { limit = 5 } = {}) {
   const fetchChunk = memory.db.prepare(`
     SELECT path, language, heading, content, line_start, line_end FROM doc_chunks WHERE rowid = ?
   `)
-  return [...scores.entries()]
+  const sorted = [...scores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map(([rowid]) => fetchChunk.get(rowid))
+  return sorted
+    .map(([rowid, score]) => {
+      const chunk = fetchChunk.get(rowid)
+      if (!chunk) return null
+      chunk._score = Math.round(score * 100) / 100
+      return chunk
+    })
     .filter(Boolean)
 }
 
-/** 惰性补算 doc_chunks 缺失的向量 */
+/** Lazily backfill missing vectors for doc_chunks */
 export async function ensureDocEmbeddings(memory) {
   if (!memory.embedder) return
   const modelKey = memory.embedder.model
@@ -143,17 +152,17 @@ export async function ensureDocEmbeddings(memory) {
       ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(modelKey)
   }
 
-  const pending = memory.db.prepare(`SELECT rowid, path, heading, content FROM doc_chunks WHERE embedding IS NULL LIMIT 64`).all()
+  const pending = memory.db.prepare(`SELECT rowid, path, heading, content FROM doc_chunks WHERE embedding IS NULL LIMIT ${DOC_EMBED_BATCH}`).all()
   if (pending.length === 0) return
 
-  const texts = pending.map((r) => `${r.heading || r.path}\n${r.content.slice(0, 2000)}`)
+  const texts = pending.map((r) => `${r.heading || r.path}\n${r.content.slice(0, EMBED_TEXT_MAX_LEN)}`)
   const vecs = await embed(memory.embedder, texts)
 
   const update = memory.db.prepare(`UPDATE doc_chunks SET embedding = ? WHERE rowid = ?`)
   pending.forEach((r, i) => update.run(toBlob(vecs[i]), r.rowid))
 }
 
-/** 生成 doc_search 工具（只读）。 */
+/** Generate the doc_search tool (read-only). */
 export function docSearchTool(memory) {
   return {
     name: "doc_search",
@@ -172,17 +181,17 @@ export function docSearchTool(memory) {
       const results = await docSearch(memory, args.query, { limit: args.limit ?? 5 })
       if (results.length === 0) return "(no matching documentation)"
       return results.map((r) =>
-        `${r.path}${r.heading ? ` > ${r.heading}` : ""} (L${r.line_start}-L${r.line_end}):\n${r.content.slice(0, 2000)}`
+        `${r.path}${r.heading ? ` > ${r.heading}` : ""} (L${r.line_start}-L${r.line_end}, relevance ${r._score?.toFixed(2) ?? "?"}):\n${r.content.slice(0, 2000)}`
       ).join("\n\n---\n\n")
     },
   }
 }
 
-// ---------------------------------------------------------------- agent 工具
+// ---------------------------------------------------------------- agent tools
 
 /**
- * 生成记忆相关的两个 agent 工具（遵循 tools.mjs 的工具形状）。
- * memory_put 是有副作用工具（需权限确认），memory_search 只读。
+ * Generate the two memory-related agent tools (following the tools.mjs tool shape).
+ * memory_put is a side-effecting tool (needs permission confirmation), memory_search is read-only.
  * opts: { cwd, projectDir, author, team: { dir, name } | null }
  */
 export function memoryTools(memory, opts = {}) {

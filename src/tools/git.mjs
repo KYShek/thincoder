@@ -20,7 +20,7 @@ export const gitDiffTool = {
   readonly: true,
   execute(args, ctx) {
     const ref = args.ref ?? "HEAD"
-    // ref 由模型提供且位于 "--" 之前：校验字符集，防 "--output=..." 之类被 git 当成选项
+    // ref supplied by model and placed before "--": validate charset, prevent "--output=..." etc. from being treated as git options
     if (!/^[A-Za-z0-9._\/~^][A-Za-z0-9._\/~^-]*$/.test(ref)) throw new Error(`Invalid git ref: ${ref}`)
     const flags = args.staged ? ["--staged"] : []
     const paths = args.path ? [args.path] : []
@@ -49,14 +49,14 @@ export const gitStatusTool = {
     const conflicts = []
     for (const line of porcelain.split("\n")) {
       if (!line) continue
-      // porcelain: XY path — 2 状态字符 + 空格 + 文件路径（部分环境只 1 空格）
-      // 去掉可能的 CR（execFileSync 在某些 Windows git 下会残留 \r 在行末但不在换行符中）
+      // porcelain: XY path — 2 status chars + space + file path (some environments have only 1 space)
+      // Strip possible CR (execFileSync on some Windows git leaves \r at end of line but not in newline)
       const clean = line.replace(/\r/g, "")
-      // 尝试匹配 "XY path" 或 "XY  path"（可变间距）
+      // Try matching "XY path" or "XY  path" (variable spacing)
       const m = clean.match(/^(..?)\s+(.+)$/)
       if (!m) continue
       const [, status, rawFile] = m
-      // 重命名条目 porcelain 输出为 "R  old -> new"，拆开明确展示而非当成一个字面文件名
+      // Rename entries in porcelain output are "R  old -> new", split for clarity instead of treating as a literal filename
       const file = status.includes("R") && rawFile.includes(" -> ") ? rawFile.replace(" -> ", " → ") : rawFile
       const idx = status[0] ?? " "
       const wt = status[1] ?? " "
@@ -128,7 +128,7 @@ export const questionTool = {
   },
 }
 
-/** 执行 git 命令；非 git 仓库 / git 不可用时返回空字符串 */
+/** Execute a git command; returns empty string when not a git repo / git unavailable */
 
 // ---------------------------------------------------------------- checkpoint
 
@@ -170,14 +170,14 @@ export const checkpointTool = {
       const cps = await listCheckpoints(ctx.cwd)
       if (cps.length === 0) return "(no checkpoints yet — one is auto-created before each user task)"
 
-      // 指定 id：显示该快照内文件目录树
+      // Specific id: show the file tree within that snapshot
       if (args.id) {
         const cp = cps.find((c) => c.id === args.id)
         if (!cp) throw new Error(`checkpoint ${args.id} not found`)
         return formatFileTree(cp)
       }
 
-      // 概览：所有快照列表
+      // Overview: list of all snapshots
       return cps.map((c) => {
         const parts = [`${c.id}  ${new Date(c.time).toISOString()}`]
         if (c.tracked.length) parts.push(`${c.tracked.length} tracked: ${c.tracked.join(", ")}`)
@@ -189,7 +189,7 @@ export const checkpointTool = {
   },
 }
 
-/** 把快照的文件列表格式化为目录树（目录在前，缩进展示） */
+/** Format a checkpoint's file list as a directory tree (directories first, indented display) */
 function formatFileTree(cp) {
   const all = [
     ...(cp.tracked ?? []).map((f) => ({ path: f, type: "" })),
@@ -197,10 +197,10 @@ function formatFileTree(cp) {
   ]
   if (all.length === 0) return "(empty checkpoint)"
 
-  // 按路径排序（目录自然分组）
+  // Sort by path (directories group naturally)
   all.sort((a, b) => a.path.localeCompare(b.path))
 
-  // 构建目录 → 文件列表映射
+  // Build directory → file list map
   const tree = new Map()
   for (const { path, type } of all) {
     const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "."
@@ -208,12 +208,12 @@ function formatFileTree(cp) {
     tree.get(dir).push({ name: path.slice(dir === "." ? 0 : dir.length + 1), type })
   }
 
-  // 按目录排序输出
+  // Output sorted by directory
   const lines = []
   const dirs = [...tree.keys()].sort()
   for (const dir of dirs) {
     if (dir !== "." && !lines.includes(dir + "/")) {
-      // 父目录先于子目录
+      // Parent directory before child directory
       const parts = dir.split("/")
       for (let i = 1; i <= parts.length; i++) {
         const prefix = parts.slice(0, i).join("/") + "/"
@@ -221,7 +221,7 @@ function formatFileTree(cp) {
       }
     }
   }
-  // 确保目录在文件前
+  // Ensure directories precede files
   for (const dir of dirs) {
     if (dir !== ".") {
       for (const { name, type } of tree.get(dir)) {

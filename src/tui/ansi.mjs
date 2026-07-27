@@ -1,6 +1,6 @@
 /**
- * tui-ansi.mjs — ANSI 转义序列与终端颜色常量
- * 零依赖，纯常量导出。
+ * tui-ansi.mjs — ANSI escape sequences and terminal color constants.
+ * Zero dependencies, pure constant exports.
  */
 
 export const ESC = "\x1b"

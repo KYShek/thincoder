@@ -1,18 +1,22 @@
 /**
- * memory/code-sync.mjs — 代码索引同步、检索、增量更新
+ * memory/code-sync.mjs — code index sync, retrieval, incremental update
  */
 
 import { readFile, stat } from "node:fs/promises"
 import { join, relative } from "node:path"
 import { embed, cosine, toBlob, fromBlob } from "../embedding.mjs"
 import { CODE_EXTS, DOC_EXTS, SKIP_DIRS } from "./schema.mjs"
-import { buildFtsQuery, ensureEmbeddings } from "./core.mjs"
+import { buildFtsQuery, ensureEmbeddings, EMBED_TEXT_MAX_LEN } from "./core.mjs"
 import { detectLanguage, _upsertCodeFile, _upsertDocFile, yieldTick } from "./code-index.mjs"
 
+const DIFF_FULL_SYNC_THRESHOLD = 200
+const CODE_EMBED_BATCH = 64
+
 /**
- * git 驱动增量索引：用 git diff 找出上次索引以来的变更文件，
- * 只重建这些文件的 FTS5 块（不碰向量）。比全量 mtime 扫描快一个数量级。
- * 返回 { updated, removed, skipped } 或 null（git 不可用）。
+ * git-driven incremental indexing: use git diff to find files changed since
+ * the last index, and only rebuild FTS5 chunks for those files (vectors are untouched).
+ * An order of magnitude faster than full mtime scanning.
+ * Returns { updated, removed, skipped } or null (git unavailable).
  */
 export async function gitSync(memory, dir, { onProgress } = {}) {
   const { execSync, execFileSync } = await import("node:child_process")
@@ -34,8 +38,8 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
     return null
   }
 
-  if (diffOut.length > 200) {
-    // diff 太大，增量没意义——回退全量同步并更新锚点
+  if (diffOut.length > DIFF_FULL_SYNC_THRESHOLD) {
+    // diff too large, incremental is useless — fall back to full sync and update anchor
     await codeSync(memory, dir, { onProgress })
     const { docSync } = await import("./docs.mjs")
     await docSync(memory, dir, { onProgress })
@@ -60,11 +64,11 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
       if (CODE_EXTS.has(ext)) {
         const lang = detectLanguage(abs)
         let mtimeMs = 0
-        try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { /* 新文件 */ }
+        try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { /* new file */ }
         _upsertCodeFile(memory, dir, rel, lines, lang, mtimeMs)
       } else {
         let mtimeMs = 0
-        try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { /* 新文件 */ }
+        try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { /* new file */ }
         _upsertDocFile(memory, dir, rel, lines, mtimeMs)
       }
       updated++
@@ -94,8 +98,8 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
 }
 
 /**
- * 同步代码索引：扫描 dir 下所有源文件 → 分块 → upsert 到 code_chunks。
- * 按 mtime 增量——只重建变更过的文件块。
+ * Sync code index: scan all source files under dir → chunk → upsert into code_chunks.
+ * Incremental by mtime — only rebuilds chunks for files that have changed.
  */
 export async function codeSync(memory, dir, { onProgress } = {}) {
   const files = []
@@ -165,19 +169,19 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
   return { updated, removed, skipped, failed, errors, total: files.length }
 }
 
-/** 记录当前 HEAD 作为索引锚点（gitSync 增量 diff 基准）；非 git 仓库静默跳过 */
+/** Record current HEAD as the index anchor (gitSync incremental diff baseline); silently skip non-git repos */
 export async function markIndexedCommit(memory, dir) {
   try {
     const { execSync } = await import("node:child_process")
     const head = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim()
     memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_indexed_commit', ?)
       ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(head)
-  } catch { /* 非 git 仓库或 git 不可用，跳过 */ }
+  } catch { /* not a git repo or git unavailable, skip */ }
 }
 
 /**
- * 代码检索：FTS5(BM25) + 可选向量余弦，RRF 合并。
- * 无 embedder 时退化为纯 FTS；ftsQuery 为空且有 embedder 时退化为纯向量。
+ * Code search: FTS5(BM25) + optional vector cosine, RRF merged.
+ * Falls back to pure FTS when no embedder; falls back to pure vector when ftsQuery is empty and embedder is present.
  */
 export async function codeSearch(memory, query, { limit = 5 } = {}) {
   const ftsQuery = buildFtsQuery(query)
@@ -219,14 +223,20 @@ export async function codeSearch(memory, query, { limit = 5 } = {}) {
   const fetchChunk = memory.db.prepare(`
     SELECT path, language, symbol_name, content, line_start, line_end FROM code_chunks WHERE rowid = ?
   `)
-  return [...scores.entries()]
+  const sorted = [...scores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map(([rowid]) => fetchChunk.get(rowid))
+  return sorted
+    .map(([rowid, score]) => {
+      const chunk = fetchChunk.get(rowid)
+      if (!chunk) return null
+      chunk._score = Math.round(score * 100) / 100
+      return chunk
+    })
     .filter(Boolean)
 }
 
-/** 惰性补算 code_chunks 缺失的向量 */
+/** Lazily backfill missing vectors for code_chunks */
 export async function ensureCodeEmbeddings(memory) {
   if (!memory.embedder) return
   const modelKey = memory.embedder.model
@@ -237,17 +247,17 @@ export async function ensureCodeEmbeddings(memory) {
       ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(modelKey)
   }
 
-  const pending = memory.db.prepare(`SELECT rowid, path, symbol_name, content FROM code_chunks WHERE embedding IS NULL LIMIT 64`).all()
+  const pending = memory.db.prepare(`SELECT rowid, path, symbol_name, content FROM code_chunks WHERE embedding IS NULL LIMIT ${CODE_EMBED_BATCH}`).all()
   if (pending.length === 0) return
 
-  const texts = pending.map((r) => `${r.path}${r.symbol_name ? " :: " + r.symbol_name : ""}\n${r.content.slice(0, 2000)}`)
+  const texts = pending.map((r) => `${r.path}${r.symbol_name ? " :: " + r.symbol_name : ""}\n${r.content.slice(0, EMBED_TEXT_MAX_LEN)}`)
   const vecs = await embed(memory.embedder, texts)
 
   const update = memory.db.prepare(`UPDATE code_chunks SET embedding = ? WHERE rowid = ?`)
   pending.forEach((r, i) => update.run(toBlob(vecs[i]), r.rowid))
 }
 
-/** 生成 code_search 工具（只读）。 */
+/** Generate the code_search tool (read-only). */
 export function codeSearchTool(memory) {
   return {
     name: "code_search",
@@ -266,14 +276,14 @@ export function codeSearchTool(memory) {
       const results = await codeSearch(memory, args.query, { limit: args.limit ?? 5 })
       if (results.length === 0) return "(no matching code)"
       return results.map((r) =>
-        `${r.path}${r.symbol_name ? ` :: ${r.symbol_name}` : ""} (L${r.line_start}-L${r.line_end}):\n${r.content.slice(0, 2000)}`
+        `${r.path}${r.symbol_name ? ` :: ${r.symbol_name}` : ""} (L${r.line_start}-L${r.line_end}, relevance ${r._score?.toFixed(2) ?? "?"}):\n${r.content.slice(0, 2000)}`
       ).join("\n\n---\n\n")
     },
   }
 }
 
 /**
- * 单文件增量重索引：write/edit/delete 后调用，只重建这一条路径。
+ * Single-file incremental reindex: called after write/edit/delete, only rebuilds this one path.
  */
 export async function reindexFile(memory, cwd, absPath) {
   const ext = absPath.slice(absPath.lastIndexOf(".")).toLowerCase()
@@ -293,14 +303,14 @@ export async function reindexFile(memory, cwd, absPath) {
   if (CODE_EXTS.has(ext)) {
     const lang = detectLanguage(absPath)
     let mtimeMs = 0
-    try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
+    try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* new file */ }
     _upsertCodeFile(memory, cwd, rel, lines, lang, mtimeMs)
   } else if (DOC_EXTS.has(ext)) {
     let mtimeMs = 0
-    try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* 新文件 */ }
+    try { mtimeMs = Math.floor((await stat(absPath)).mtimeMs) } catch { /* new file */ }
     _upsertDocFile(memory, cwd, rel, lines, mtimeMs)
   }
   if (memory.embedder) {
-    try { await ensureEmbeddings(memory) } catch { /* embedding 失败不阻塞 */ }
+    try { await ensureEmbeddings(memory) } catch { /* embedding failure is non-blocking */ }
   }
 }

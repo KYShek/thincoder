@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * thincoder — 命令入口
- *   thincoder                 启动 TUI
- *   thincoder chat "..."      一次性 agent 问答（可调用工具，流式输出）
- *   thincoder memory <sub>    记忆管理：list / search / put / remove
- *   thincoder upgrade         从 npm 升级到最新版
- *   thincoder -v              显示版本号
- *   thincoder --help          显示帮助
+ * thincoder — CLI entry point
+ *   thincoder                 Launch the interactive TUI
+ *   thincoder chat "..."      One-shot agent run (tools enabled, streamed)
+ *   thincoder memory <sub>    Memory management: list / search / put / remove
+ *   thincoder upgrade         Update to the latest version from npm
+ *   thincoder -v              Print version
+ *   thincoder --help          Print help
  */
 
 import { readFileSync } from "node:fs"
@@ -15,7 +15,7 @@ import { join } from "node:path"
 import { runAgent } from "../src/agent.mjs"
 import { loadConfig, configPath } from "../src/config.mjs"
 import { createMemory, syncDir } from "../src/memory.mjs"
-import { makeAgent, teamConfig, gitAuthor } from "../src/cli/make-agent.mjs"
+import { assembleAgent, teamConfig, gitAuthor } from "../src/cli/make-agent.mjs"
 import { memoryCommand } from "../src/cli/memory-command.mjs"
 import { setupWizard } from "../src/cli/setup-wizard.mjs"
 import { summarize, askPermission } from "../src/cli/permission.mjs"
@@ -24,7 +24,7 @@ import { distillCommand } from "../src/cli/distill-command.mjs"
 const [command, ...args] = process.argv.slice(2)
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
 
-// 顶层兜底：任何未捕获错误打印一行消息干净退出，不糊用户一脸 stack
+// Top-level safety net: print one-line error and exit cleanly, no stack traces to the user
 process.on("uncaughtException", (error) => {
   console.error(`[error] ${error.message}`)
   exitSoon(1)
@@ -38,7 +38,7 @@ const USAGE = `thincoder - thin coding agent
 
 Usage:
   thincoder                 Launch the interactive TUI
-  thincoder chat <prompt>   One-shot agent run (tools enabled), streams reply to stdout
+  thincoder chat [--auto] <prompt>   One-shot agent run (tools enabled), streams reply to stdout; --auto approves all tool calls
   thincoder memory list [--type=<t>]           List memory entries
   thincoder memory search <query>              Search memory
   thincoder memory put --type=<t> --title=<t> --content=<c> [--tags=<t>]
@@ -51,21 +51,21 @@ Usage:
   thincoder upgrade         Update to the latest version from npm
   thincoder -v, --version   Print version
 
-Config: ~/.thincoder/config.json (providers[] + activeProvider；TUI 内用 /provider、/model 管理)
+Config: ~/.thincoder/config.json (providers[] + activeProvider; manage via /provider, /model in TUI)
 Env:    THINCODER_API_KEY, THINCODER_BASE_URL, THINCODER_MODEL, THINCODER_ACTIVE_PROVIDER
 `
 
-/** 缺 key 时的统一提示 */
+/** Unified message when no API key is configured */
 function noKeyMessage() {
-  return `还没有配置 API key。运行 thincoder 进入 TUI，用 /provider add 和 /provider key 配置；或直接编辑 ${configPath}`
+  return `No API key configured yet. Run "thincoder" to enter TUI, use /provider add and /provider key; or edit ${configPath} directly`
 }
 
-/** 延迟退出：fetch 后立刻 process.exit 在 Windows/Node 24 会触发 libuv 断言，让一句柄关完再走 */
+/** Delay exit: process.exit right after fetch triggers libuv assertion on Windows/Node 24; let handles drain first */
 function exitSoon(code) {
   setTimeout(() => process.exit(code), 100)
 }
 
-/** 语义化版本比较：a<b 返回 -1，相等 0，a>b 返回 1；非数字段按字符串比 */
+/** Semantic version comparison: a<b returns -1, equal 0, a>b returns 1; non-numeric segments compare as strings */
 function compareVersions(a, b) {
   const pa = String(a).split("."), pb = String(b).split(".")
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
@@ -90,7 +90,7 @@ switch (command) {
       break
     }
 
-    const agent = await makeAgent()
+    const agent = await assembleAgent()
     if (!agent.provider.apiKey) {
       if (!process.stdin.isTTY) {
         console.error(noKeyMessage())
@@ -104,7 +104,7 @@ switch (command) {
       }
       agent.provider = p
       agent.activeProvider = p.name
-      // 向导可能配了 embedding key：挂上向量检索
+      // Wizard may have configured an embedding key: attach vector search
       const fresh = loadConfig()
       if (fresh.embedding?.apiKey && agent.memory && !agent.memory.embedder) {
         const { createEmbedder } = await import("../src/embedding.mjs")
@@ -112,13 +112,13 @@ switch (command) {
       }
     }
     if (auto) agent.autoApprove = true
-    // 累计 token 用量，结束时输出到 stderr（不污染 stdout 管道）
+    // Accumulate token usage, output to stderr at the end (don't pollute stdout pipe)
     const usageTotal = { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }
     try {
       await runAgent(agent, prompt, {
         onToken: (text) => process.stdout.write(text),
         onWait: ({ phase, seconds }) => {
-          console.error(phase === "gate" ? `[rate-limit] TPM 节流等待 ~${seconds}s` : `[rate-limit] 429，${seconds}s 后重试`)
+          console.error(phase === "gate" ? `[rate-limit] TPM throttle waiting ~${seconds}s` : `[rate-limit] 429 response, retrying in ${seconds}s`)
         },
         onToolCall: (name, toolArgs) => {
           console.error(`\n[tool] ${name} ${summarize(toolArgs)}`)
@@ -128,7 +128,7 @@ switch (command) {
           console.error(`[done] ${name} -> ${preview.split("\n")[0]}`)
         },
         onToolOutput: (name, chunk) => process.stderr.write(chunk),
-        onCompress: () => console.error(`\n[context] 上下文过长，已自动压缩（早期对话由 LLM 摘要）`),
+        onCompress: () => console.error(`\n[context] Context too long, auto-compacted (early conversation summarized by LLM)`),
         onTaskUpdate: (items) => {
           const done = items.filter((i) => i.status === "done").length
           const current = items.find((i) => i.status === "in_progress")
@@ -230,7 +230,7 @@ switch (command) {
 
   case "tui":
   case undefined: {
-    const agent = await makeAgent()
+    const agent = await assembleAgent()
     const config = loadConfig()
     // 恢复上次的会话（同一项目目录）；provider 按保存的名字切回（用户上次可能换过模型）
     const { loadSession, applySession } = await import("../src/session.mjs")
@@ -275,16 +275,16 @@ switch (command) {
     try {
       remote = execSync("npm view thincoder version", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
     } catch {
-      console.error("[upgrade] 无法查询 npm registry，请确认网络和 npm 已安装")
+      console.error("[upgrade] Unable to query npm registry — check your network connection and that npm is installed")
       exitSoon(1)
       break
     }
     if (compareVersions(local, remote) >= 0) {
-      console.log(`ThinCoder ${local} 已是最新。`)
+      console.log(`ThinCoder ${local} is already the latest.`)
     } else {
-      console.log(`升级: ${local} → ${remote}`)
+      console.log(`Upgrading: ${local} → ${remote}`)
       execSync("npm install -g thincoder@latest", { stdio: "inherit" })
-      console.log(`已升级到 ${remote}`)
+      console.log(`Upgraded to ${remote}`)
     }
     break
   }

@@ -1,8 +1,8 @@
 /**
- * slash-commands.mjs — 斜杠命令定义、分发、Tab 补全。
- * 每个子命令的具体实现都在独立的 cmd-*.mjs 中，本文件只做 dispatch。
+ * slash-commands.mjs — slash command definitions, dispatch, Tab completion.
+ * Each subcommand's implementation lives in its own cmd-*.mjs file; this file only does dispatch.
  *
- * ctx 对象由 index.mjs 注入，透传给各 handler：
+ * ctx object is injected by index.mjs and forwarded to each handler:
  *   { agent, state, distillOpts, pushLine, pushLabel, render,
  *     openPicker, openModelPicker, setProviderKey, runDistill,
  *     persistRaw, syncProviderField, maskKey, exit, SLASH_COMMANDS }
@@ -47,7 +47,7 @@ export const SLASH_COMMANDS = [
   { name: "/help", group: "", desc: "this list" },
 ]
 
-/** 命令 → handler 映射表 */
+/** Command → handler mapping table */
 const HANDLERS = {
   "/clear": handleClearCommand,
   "/new": handleNewCommand,
@@ -69,17 +69,17 @@ const HANDLERS = {
 }
 
 /**
- * 创建斜杠命令处理器。
- * 返回 { handleSlash, completions, handleTab }。
+ * Creates the slash command processor.
+ * Returns { handleSlash, completions, handleTab }.
  */
 export function createSlashCommands(ctx) {
   const { agent, state, render } = ctx
-  // 给 /help 传 SLASH_COMMANDS
+  // forward SLASH_COMMANDS to /help
   const handlerCtx = { ...ctx, SLASH_COMMANDS }
 
   async function handleSlash(text) {
     const [cmd] = text.split(/\s+/)
-    // 高频命令缩写
+    // high-frequency command aliases
     const aliases = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
     const resolved = aliases[cmd] ?? cmd
     const handler = HANDLERS[resolved]
@@ -90,18 +90,18 @@ export function createSlashCommands(ctx) {
     ctx.pushLine(`Unknown command: ${cmd} (/help for available commands)`, C.error)
   }
 
-  /** Tab 补全候选：Commands 名 / 子 Commands / provider 名 / 预设名 / think 参数 */
+  /** Tab completion candidates: command names / subcommands / provider names / preset names / think params */
   function completions(input) {
     if (!input.startsWith("/")) return []
     const parts = input.split(/\s+/)
-    // 还在敲第一个 token：补 Commands 名
+    // still typing the first token: complete command names
     if (parts.length === 1) {
       return SLASH_COMMANDS.filter((c) => c.name.startsWith(parts[0])).map((c) => c.name)
     }
     const cmd = parts[0]
-    const last = parts.at(-1) // 结尾是空格时，列出全部候选
+    const last = parts.at(-1) // when trailing space, list all candidates
     const head = parts.slice(0, -1).join(" ")
-    const argIndex = parts.length - 2 // 正在敲第几个参数 (0 基）
+    const argIndex = parts.length - 2 // which parameter is being typed (0-based)
     const match = (cands) => cands.filter((c) => c.startsWith(last)).map((c) => `${head} ${c}`)
     if (cmd === "/model" && argIndex === 0) return match(agent.providers.map((p) => p.name))
     if (cmd === "/think") {
@@ -117,11 +117,11 @@ export function createSlashCommands(ctx) {
     return []
   }
 
-  /** Tab：计算候选并循环替换输入 */
+  /** Tab: compute candidates and cycle through replacement */
   function handleTab() {
     const input = state.input.join("")
     if (state.completion && input === state.completion.candidates[state.completion.index]) {
-      // 上一次的候选还在输入框：循环到下一个
+      // previous candidate still in input box: cycle to next
       state.completion.index = (state.completion.index + 1) % state.completion.candidates.length
     } else {
       const candidates = completions(input)

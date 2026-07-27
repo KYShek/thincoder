@@ -1,7 +1,8 @@
 /**
- * goal 工具：长程自主目标的生命周期管理（完成合约制）。
- * 三态：active / complete / blocked；完成要过 verify 证据门槛，
- * 阻塞要同一条件连续 3 次才受理；系统每轮注入状态 + 预算进度 + 审计纪律。
+ * goal tool: lifecycle management for long-running autonomous goals (completion contract).
+ * Three states: active / complete / blocked. Completion must pass a verify evidence threshold;
+ * blocked is only accepted after the same condition persists 3 consecutive times.
+ * The system injects status + budget progress + audit discipline every turn.
  */
 export const goalTool = {
   name: "goal",
@@ -39,7 +40,7 @@ export const goalTool = {
         setAt: Date.now(),
         status: "active",
         turnsUsed: 0,
-        _blockTally: null, // { reason, count } — 同一阻塞条件的连续次数（blocked 审计用）
+        _blockTally: null, // { reason, count } — consecutive count of the same blocking condition (for blocked audit)
       }
       return `Goal set: ${agent.goal.objective}\nDone when: ${agent.goal.criteria}\nThe system will inject goal status every turn. Completion and blocked claims are audited — see the reminders.`
     }
@@ -47,7 +48,7 @@ export const goalTool = {
       return `Error: no active goal to '${args.action}' (current: ${agent.goal?.status ?? "none"}). Set one first.`
     }
     if (args.action === "complete") {
-      // 证据链门槛：本轮改过文件却没跑过 verify，不许宣布完成（对齐完成守卫）
+      // Evidence chain threshold: files were mutated this run without verify — refuse completion (aligns with completion guard)
       if (agent._mutatedThisRun && !agent._verifiedThisRun) {
         return "Error: files were modified but verify has not run. Run the check your criteria names AND the verify tool before marking the goal complete — false completion is the worst outcome of autonomous work."
       }
@@ -56,7 +57,7 @@ export const goalTool = {
     }
     if (args.action === "blocked") {
       if (!args.reason) return "Error: 'reason' required for 'blocked' action."
-      // 阻塞审计：同一条件须连续出现 3 次（换过方法仍被同一条件挡住才算真阻塞）
+      // Blocked audit: same condition must appear 3 consecutive times (only counts as real blocking if different approaches still hit the same wall)
       const tally = agent.goal._blockTally
       const count = tally?.reason === args.reason ? tally.count + 1 : 1
       agent.goal._blockTally = { reason: args.reason, count }

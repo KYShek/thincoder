@@ -1,6 +1,6 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /skills 命令：列出项目技能。
+/** /skills command: list project skills.
  *  ctx: { agent, pushLine, pushLabel } */
 export async function handleSkillsCommand(ctx) {
   const { agent, pushLine, pushLabel } = ctx

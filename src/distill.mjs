@@ -1,53 +1,53 @@
 /**
- * distill.mjs — 从会话中提取知识候选条目（双轨制的"自动轨"）
- * 原则（已定）：手动触发、LLM 出候选、人工逐条确认后入库。
- * 绝不做会话结束后的全自动沉淀。
+ * distill.mjs — extract knowledge candidates from sessions (the "automatic track" of the dual-track system)
+ * Principle (settled): manually triggered, LLM produces candidates, human confirms each one before writing.
+ * Absolutely no automatic storage at session end.
  */
 
 import { chat } from "./provider/index.mjs"
 import { put, putMarkdown } from "./memory.mjs"
 import { commitAndPush } from "./git/gitmem.mjs"
 
-const DISTILL_PROMPT = `你是知识提取器。阅读下面的 agent 工作会话记录，提取值得跨会话长期记住的知识。
+const DISTILL_PROMPT = `You are a knowledge extractor. Read the following agent work session log and extract knowledge worth remembering across sessions.
 
-输出一个 JSON 数组（不要输出任何其他内容）：
+Output a JSON array (nothing else):
 [
   {
     "type": "rule | knowledge | decision | pattern",
-    "title": "简短标题",
-    "content": "完整内容，自包含，脱离会话上下文也能看懂",
+    "title": "Short title",
+    "content": "Full content, self-contained — understandable without session context",
     "tags": ["tag1", "tag2"],
     "scope": "personal | project"
   }
 ]
 
-提取标准：
-- knowledge：项目的事实性知识（架构、部署、约定俗成的做法）
-- decision：会话中做出的技术决策及理由
-- pattern：调试经验、问题解法、可复用的工作模式
-- rule：编码规范类（谨慎！规范通常应由人手动撰写，只有会话中明确确立的才提取）
-- scope 判断：专属于当前项目的用 project；通用的或个人偏好用 personal
+Extraction criteria:
+- knowledge: factual project knowledge (architecture, deployment, conventions)
+- decision: technical decisions made in the session and their rationale
+- pattern: debugging experiences, solutions, reusable workflows
+- rule: coding standards (caution! rules are usually best written manually; only extract rules explicitly established in the session)
+- scope: use "project" for project-specific knowledge; use "personal" for general or personal preferences
 
-不要提取：
-- 一次性的任务细节（"今天改了某个文件的某行"）
-- 会话中提到的临时状态（当前的 bug、进行中的工作）
-- 客套话和显而易见的事实
+Do NOT extract:
+- one-off task details ("changed line X in file Y today")
+- transient state mentioned in the session (current bugs, work-in-progress)
+- pleasantries and obvious facts
 
-如果没有值得提取的内容，输出 []
-如果会话太长，优先提取最后出现的、仍在生效的结论。
+If nothing is worth extracting, output []
+If the session is long, prioritize conclusions that appeared last and are still in effect.
 
-会话记录：
+Session log:
 `
 
 /**
- * 从会话记录提取候选条目。transcript: 纯文本会话记录。
- * 返回 [{ type, title, content, tags, scope }]，解析失败返回 []
+ * Extract candidates from a session transcript. transcript: plain-text session record.
+ * Returns [{ type, title, content, tags, scope }], or [] on parse failure.
  */
 export async function extractCandidates(provider, transcript) {
   const res = await chat(provider, {
     messages: [{ role: "user", content: DISTILL_PROMPT + transcript }],
   })
-  // 非贪婪匹配第一个 JSON 数组（贪婪 [\s\S]* 会跨多个数组把中间文本也吃进去）
+  // Non-greedy match first JSON array (greedy [\s\S]* would eat across multiple arrays including interstitial text)
   const match = res.content.match(/\[[\s\S]*?\]/)
   if (!match) return []
   try {
@@ -60,37 +60,37 @@ export async function extractCandidates(provider, transcript) {
 }
 
 /**
- * 把 agent 的 OpenAI 格式 history 转成可读的会话记录文本。
+ * Convert agent's OpenAI-format history to readable session transcript text.
  */
 export function historyToTranscript(history, { maxChars = 30_000 } = {}) {
   const lines = []
   for (const m of history) {
     if (m.role === "tool") {
-      lines.push(`[工具结果] ${(m.content ?? "").slice(0, 500)}`)
+      lines.push(`[tool result] ${(m.content ?? "").slice(0, 500)}`)
     } else if (m.tool_calls?.length) {
       const calls = m.tool_calls.map((tc) => `${tc.function?.name ?? "?"}(${tc.function?.arguments?.slice(0, 200) ?? ""})`).join(", ")
-      lines.push(`[assistant] ${m.content ?? ""}\n[调用工具] ${calls}`)
+      lines.push(`[assistant] ${m.content ?? ""}\n[called tools] ${calls}`)
     } else {
       lines.push(`[${m.role}] ${m.content ?? ""}`)
     }
   }
   const text = lines.join("\n\n")
-  // 超长时保留头尾（最早的需求 + 最新的结论最重要）
+  // Overlong: keep head and tail (earliest requirements + latest conclusions are most important)
   if (text.length <= maxChars) return text
   const half = Math.floor(maxChars / 2)
-  return text.slice(0, half) + "\n\n...[中间部分省略]...\n\n" + text.slice(-half)
+  return text.slice(0, half) + "\n\n...[... middle portion omitted ...]...\n\n" + text.slice(-half)
 }
 
 /**
- * 把确认的候选条目写入指定层。
+ * Write confirmed candidates to the specified layer.
  * opts: { projectDir, team: { dir } | null, author }
- * scope=team 需要 opts.team；project 需要 opts.projectDir。
- * 返回写入结果描述。
+ * scope=team requires opts.team; project requires opts.projectDir.
+ * Returns write result description.
  */
 export async function saveCandidate(memory, candidate, opts = {}) {
   const scope = candidate.scope ?? "personal"
-  // tags 来自 LLM 输出（不可信）：非数组时先 String 化再按逗号/空白切分——
-  // 直接对非字符串调 .split 会崩，模型也常给 "a, b" 这种逗号串
+  // tags come from LLM output (untrusted): if not an array, stringify then split by comma/whitespace —
+  // calling .split on a non-string would crash, and models often produce "a, b" comma strings
   const tags = Array.isArray(candidate.tags)
     ? candidate.tags.map((t) => String(t)).filter(Boolean)
     : String(candidate.tags ?? "").split(/[\s,]+/).filter(Boolean)
@@ -100,7 +100,7 @@ export async function saveCandidate(memory, candidate, opts = {}) {
     return `personal#${id}`
   }
   if (scope === "project") {
-    if (!opts.projectDir) throw new Error("project scope unavailable")
+    if (!opts.projectDir) throw new Error("project scope unavailable — no project directory configured (set memory.projectDir in ~/.thincoder/config.json)")
     const filename = await putMarkdown(memory, {
       layer: "project", dir: opts.projectDir,
       type: candidate.type, title: candidate.title, content: candidate.content,
@@ -109,7 +109,7 @@ export async function saveCandidate(memory, candidate, opts = {}) {
     return `project:${filename}`
   }
   if (scope === "team") {
-    if (!opts.team?.dir) throw new Error("team scope not configured")
+    if (!opts.team?.dir) throw new Error("team scope not configured — configure memory.team in ~/.thincoder/config.json")
     const filename = await putMarkdown(memory, {
       layer: "team", dir: opts.team.dir,
       type: candidate.type, title: candidate.title, content: candidate.content,

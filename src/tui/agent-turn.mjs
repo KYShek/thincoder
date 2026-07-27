@@ -3,8 +3,8 @@ import { saveSession } from "../session.mjs"
 import { sliceByWidth } from "./render.mjs"
 import { ansi, C } from "./ansi.mjs"
 
-/** 执行一轮 agent 对话（从 submit 或队列取出调用）。
- *  从 index.mjs 抽出：agent 循环 + 回调构建 + 错误处理 + 队列处理。
+/** Execute one agent conversation turn (triggered by submit or queue).
+ *  Extracted from index.mjs: agent loop + callback construction + error handling + queue processing.
  *  ctx: { agent, state, pushLine, pushLabel, render, scheduleRender,
  *         ensureAssistantLabel, askPermission, askQuestion,
  *         handleSlash, summarize } */
@@ -153,15 +153,16 @@ export async function runAgentTurn(ctx, text) {
       }
     },
     onToolOutput: (name, chunk) => {
-      // 有输出面板的工具：流式写到面板而不是冲进对话
-      const panel = state.outputPanels[name]
-      if (panel) {
-        panel.text = (panel.text ?? "") + chunk
-        if (panel.text.length > 4000) panel.text = panel.text.slice(-4000)
-        scheduleRender()
-        return
+      // Route streaming output to a panel if one exists or was requested via outputPanel flag.
+      let panel = state.outputPanels[name]
+      if (!panel) {
+        // Lazy-create panel: defensive against race conditions where setupOutputPanel
+        // hasn't fired yet or the callbacks chain dropped it (subagent relay, reconnect, etc.)
+        state.outputPanels[name] = { text: "", done: false }
+        panel = state.outputPanels[name]
       }
-      state.toolStreams[name] = (state.toolStreams[name] ?? "") + chunk
+      panel.text = (panel.text ?? "") + chunk
+      if (panel.text.length > 4000) panel.text = panel.text.slice(-4000)
       scheduleRender()
     },
     onPermissionRequest: (name, args) => askPermission(name, args),

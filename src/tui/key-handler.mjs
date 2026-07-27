@@ -1,7 +1,7 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** 键盘事件分发：权限确认 / 问答 / picker / wizard / 编辑 / 翻页 / 历史 / 粘贴。
- *  从 index.mjs 抽出。
+/** Keyboard event dispatch: permission confirm / question / picker / wizard / edit / scroll / history / paste.
+ *  Extracted from index.mjs.
  *  ctx: { agent, state, render, renderPickerLines, closePicker,
  *         handleSlash, handleTab, submit, pasteClipboardImage,
  *         wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
@@ -10,7 +10,7 @@ export function createKeyHandler(ctx) {
   const { agent, state, render, closePicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup } = ctx
 
   return function onKeypress(str, key = {}) {
-    // 权限确认态：y 批准 / n 拒绝 / a 批准并On AUTO (后续不再询问）
+    // permission confirm state: y approve / n deny / a approve + turn ON AUTO (no further prompts)
     if (state.permission) {
       const answer = (str || "").toLowerCase()
       const isContinue = state.permission.name === "continue"
@@ -27,7 +27,7 @@ export function createKeyHandler(ctx) {
           pushLine(`  [auto] AUTO ON: tool calls no longer prompt for approval (/auto to disable)`, C.warn)
         }
         const approved = answer === "y" || (answer === "a" && !isContinue)
-        // 决定落痕：对话区留下批准/拒绝记录 (continue 询问有自己的输出，不重复记）
+        // leave trail: record approval/denial in conversation (continue prompt has its own output, don't duplicate)
         if (!isContinue) {
           pushLine(`  [${approved ? "approved" : "denied"}] ${name}`, approved ? C.dim : C.error)
         }
@@ -37,11 +37,11 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // question 工具回调：自由文本 / 选项选择
+    // question tool callback: free text / option selection
     if (state.question) {
       const q = state.question
       if (q.options.length > 0) {
-        // 选项模式：↑↓ 选择，Enter 确认，Esc 取消
+        // options mode: ↑↓ select, Enter confirm, Esc cancel
         if (key.name === "escape") {
           q.resolve("(cancelled)")
           state.question = null
@@ -62,7 +62,7 @@ export function createKeyHandler(ctx) {
           render()
         }
       } else {
-        // 自由文本：键入答案，Enter 提交，Esc 取消
+        // free text: type answer, Enter submit, Esc cancel
         if (key.name === "escape") {
           q.resolve("(cancelled)")
           state.question = null
@@ -97,7 +97,7 @@ export function createKeyHandler(ctx) {
       setTimeout(() => process.exit(0), 100)
     }
 
-    // 通用列表选择器：↑↓ 移动，Enter 确认，Esc 取消
+    // generic list picker: ↑↓ move, Enter confirm, Esc cancel
     if (state.picker) {
       const items = state.picker?.entries.filter((e) => e.type === "item") ?? []
       if (key.name === "escape") {
@@ -111,8 +111,8 @@ export function createKeyHandler(ctx) {
       } else if (key.name === "return" && items.length) {
         const selected = items[state.picker.index]
         const handler = state.picker.onSelect
-        state.picker = null // 先关 picker，避免 onSelect 内部 render 时 picker 还在
-        // onSelect 是 async（如删 provider 要写文件），用 catch 兜住错误不被吞
+        state.picker = null // close picker first, avoid picker still being present during onSelect render
+        // onSelect is async (e.g. removing a provider writes file), catch errors so they aren't swallowed
         Promise.resolve(handler?.(selected)).catch((err) => {
           pushLine(`[error] ${err.message}`, C.error)
         }).finally(() => render())
@@ -120,7 +120,7 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // 初始Config向导：菜单步 ↑↓/Enter/Esc；文本步 Enter 提交、Esc 取消，编辑键落到正常输入
+    // initial config wizard: menu step ↑↓/Enter/Esc; text step Enter submit, Esc cancel, edit keys fall through to normal input
     if (state.wizard) {
       const w = state.wizard
       if (key.name === "escape") {
@@ -144,11 +144,11 @@ export function createKeyHandler(ctx) {
         wizardSubmitText()
         return
       }
-      // 文本步骤屏蔽翻页/历史，其余编辑键放行到下面的普通输入逻辑
+      // text steps: block scroll/history, remaining edit keys fall through to normal input logic below
       if (key.name === "up" || key.name === "down" || key.name === "pageup" || key.name === "pagedown") return
     }
 
-    // 翻页
+    // page scroll
     if (key.name === "pageup") {
       state.scroll += Math.max(1, (process.stdout.rows || 24) - 8)
       render()
@@ -161,9 +161,9 @@ export function createKeyHandler(ctx) {
     }
 
     if (state.processing) {
-      // 处理中允许输入（排队），但屏蔽方向键历史和 Tab 补全
+      // during processing, allow input (queued), but block arrow-key history and Tab completion
       if (key.name === "tab" || key.name === "up" || key.name === "down") return
-      // Ctrl+D：删除队列中最后一条
+      // Ctrl+D: remove last item from queue
       if (key.ctrl && key.name === "d") {
         if (state.queue.length > 0) {
           state.queue.pop()
@@ -171,16 +171,16 @@ export function createKeyHandler(ctx) {
         }
         return
       }
-      // 其余可打印字符正常进入输入框
+      // remaining printable characters go into input box normally
     }
 
-    // Tab：斜杠Commands补全 (循环候选）；其余输入忽略 (\t 会顶破输入框，永不直接插入）
+    // Tab: slash-command completion (cycle candidates); other input ignored (\t would blow up input box, never inserted directly)
     if (key.name === "tab") {
       handleTab()
       return
     }
 
-    // 输入历史
+    // input history
     if (key.name === "up") {
       if (state.history.length) {
         state.historyIndex = state.historyIndex === -1 ? state.history.length - 1 : Math.max(0, state.historyIndex - 1)
@@ -205,7 +205,7 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // 光标移动
+    // cursor movement
     if (key.name === "left") {
       state.cursor = Math.max(0, state.cursor - 1)
       render()
@@ -227,7 +227,7 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // 编辑
+    // editing
     if (key.name === "backspace") {
       if (state.cursor > 0) {
         state.input.splice(state.cursor - 1, 1)
@@ -248,15 +248,15 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // Ctrl+V (Unix) / Alt+V (Windows)：粘贴剪贴板图片 → 存临时文件 → 输入框插入 read_image
+    // Ctrl+V (Unix) / Alt+V (Windows): paste clipboard image → save temp file → insert read_image into input box
     const isPasteImage = (key.name === "v" && (key.ctrl || key.meta)) || (key.name === "v" && key.alt)
     if (isPasteImage) {
       pasteClipboardImage(agent).catch((e) => pushLine(`[error] ${e.message}`, C.error))
       return
     }
 
-    // 可打印字符 / 粘贴 (str 可能一次多个字符）；Tab 一律转成两个空格 (\t 显示宽度不定，会顶破输入框）
-    // \r\n 在 Windows raw mode 下可能漏进来冲乱页面
+    // printable characters / paste (str may contain multiple chars at once); Tab always converted to two spaces (\t has variable display width, would blow up input box)
+    // \r\n may leak through in Windows raw mode and scramble the display
     if (str && !key.ctrl && !key.meta) {
       const chars = [...str.replace(/[\r\n]+/g, "").replace(/\t/g, "  ")]
       state.input.splice(state.cursor, 0, ...chars)

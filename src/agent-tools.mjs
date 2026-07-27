@@ -1,7 +1,7 @@
 /**
- * agent-tools.mjs — 自律工具索引
- * 从 agent.mjs 通过动态 import 加载以避免 ESM 循环依赖。
- * 各工具实现在 agent-tools/ 子目录中。
+ * agent-tools.mjs — self-discipline tool index
+ * Loaded from agent.mjs via dynamic import to avoid ESM circular dependencies.
+ * Each tool implementation lives in the agent-tools/ subdirectory.
  */
 export { planTool } from "./agent-tools/plan.mjs"
 export { subagentTool } from "./agent-tools/subagent.mjs"

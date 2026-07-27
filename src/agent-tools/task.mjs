@@ -1,9 +1,9 @@
 const VALID_TASK_STATUS = new Set(["pending", "in_progress", "done"])
 
 /**
- * task 工具：多步任务规划与进度跟踪（Claude Code 的 todo 模式）。
- * 每次调用整体替换列表；只改 agent 内部状态、不碰外部世界，故 readonly。
- * 通过 ctx.agent 访问调用方 agent（由 runAgent 注入）。
+ * task tool: multi-step task planning and progress tracking (Claude Code's todo mode).
+ * Each call replaces the entire list; only modifies agent internal state (no external world), so readonly.
+ * Accesses the caller agent via ctx.agent (injected by runAgent).
  */
 export const taskTool = {
   name: "task",
@@ -47,7 +47,7 @@ export const taskTool = {
   },
   readonly: true,
   async execute(args, ctx) {
-    // 只保留非 done 项 + 最近完成的 3 项（上下文参考），上限 20 项防堆积
+    // Keep only non-done items + the 3 most recently completed (for context reference), max 20 to prevent accumulation
     const raw = (args.items ?? []).map((it) => ({
       title: String(it.title ?? "").slice(0, 200),
       status: VALID_TASK_STATUS.has(it.status) ? it.status : "pending",

@@ -1,16 +1,16 @@
 import { sliceByWidth } from "./render.mjs"
 import { PROVIDER_PRESETS as PRESETS } from "../config.mjs"
 
-/** 通用列表选择器 + 统一模型/provider 管理 picker。
- *  通过 createPickers(ctx) 接收闭包依赖，
- *  返回 { openPicker, closePicker, renderPickerLines, openModelPicker, setProviderKey }。 */
+/** Generic list picker + unified model/provider management picker.
+ *  Receives closure dependencies via createPickers(ctx),
+ *  returns { openPicker, closePicker, renderPickerLines, openModelPicker, setProviderKey }. */
 export function createPickers(ctx) {
   const { agent, state, render, ansi, C, pushLine, persistRaw, askQuestion, maskKey } = ctx
 
   const pickerItems = () => state.picker?.entries.filter((e) => e.type === "item") ?? []
 
-  /** 打开通用列表选择器。entries 含 { type: "header"|"item", text, note?, ...extra }，
-   *  onSelect 拿到选中条目 (含 extra 字段透传），onCancel 在 Esc 时调。 */
+  /** Open a generic list picker. entries contain { type: "header"|"item", text, note?, ...extra },
+   *  onSelect receives the selected entry (with extra fields forwarded), onCancel called on Esc. */
   function openPicker({ title, entries, onSelect, onCancel, defaultIndex = 0 }) {
     state.picker = { title, entries, lines: [], index: defaultIndex, scroll: 0, selectedLine: 0, onSelect, onCancel }
     renderPickerLines()
@@ -22,7 +22,7 @@ export function createPickers(ctx) {
     render()
   }
 
-  /** 按 entries 重建显示行并刷新 */
+  /** Rebuild display lines from entries and refresh */
   function renderPickerLines() {
     const p = state.picker
     if (!p) return
@@ -48,7 +48,7 @@ export function createPickers(ctx) {
     render()
   }
 
-  // ========== 统一 picker：模型切换 + provider 管理 ==========
+  // ========== unified picker: model switch + provider management ==========
 
   async function openModelPicker() {
     const entries = buildModelEntries()
@@ -64,14 +64,14 @@ export function createPickers(ctx) {
       }
     }
     openPicker({ title: "Models & Providers", entries, onSelect })
-    // 默认选中当前在用的模型
+    // default select the currently active model
     const current = pickerItems().findIndex(
       (e) => e.action === "switch" && e.provider === agent.activeProvider && e.model === agent.provider.model,
     )
     if (current >= 0) state.picker.index = current
     renderPickerLines()
 
-    // 异步拉取远端模型列表，追加到对应 provider 下
+    // async fetch remote model list, append under each provider
     const { listModels } = await import("../provider/index.mjs")
     await Promise.all(
       agent.providers.map(async (p) => {
@@ -84,7 +84,7 @@ export function createPickers(ctx) {
             { baseURL: p.baseURL, apiKey: apiKey ?? "" },
             { signal: AbortSignal.timeout(10000) },
           )
-          // 找到当前 provider 在 entries 里的模型 item 位置，在其后插入新模型
+          // find the model item position for this provider in entries, insert new models after it
           const at = entries.findLastIndex(
             (e) => e.type === "item" && e.action === "switch" && e.provider === p.name,
           )
@@ -97,7 +97,7 @@ export function createPickers(ctx) {
                 .map((m) => ({ type: "item", text: m, action: "switch", provider: p.name, model: m })),
             )
           }
-          // 更新 header note 去掉 loading
+          // update header note to remove "loading..."
           const header = entries.find((e) => e.type === "header" && e.text === p.name)
           if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}`
         } catch (error) {
@@ -109,7 +109,7 @@ export function createPickers(ctx) {
     )
   }
 
-  /** 构建 picker entries：每个 provider 一个 header + 模型列表，底部是管理操作 */
+  /** Build picker entries: each provider gets a header + model list, management actions at the bottom */
   function buildModelEntries() {
     const entries = []
     for (const p of agent.providers) {
@@ -128,7 +128,7 @@ export function createPickers(ctx) {
         marker: active ? "●" : "",
       })
     }
-    // 管理操作
+    // management actions
     entries.push({ type: "header", text: "Provider Management" })
     entries.push({ type: "item", text: "Add provider…", action: "add" })
     if (agent.providers.length > 1) {
@@ -138,7 +138,7 @@ export function createPickers(ctx) {
     return entries
   }
 
-  /** 切换 provider + 模型，持久化，阈值随模型走 */
+  /** Switch provider + model, persist, threshold follows model */
   async function selectModel(item) {
     closePicker()
     const target = agent.providers.find((pp) => pp.name === item.provider)
@@ -167,7 +167,7 @@ export function createPickers(ctx) {
     }
   }
 
-  /** 添加 provider：预设菜单 → 输入 key → 完成，或自定义逐项输入 */
+  /** Add provider: preset menu → input key → done, or custom step-by-step input */
   async function addProviderFlow() {
     const presetEntries = [
       { type: "header", text: "Select a preset provider" },
@@ -204,7 +204,7 @@ export function createPickers(ctx) {
           openModelPicker().catch(() => {})
           return
         }
-        // 预设
+        // preset
         if (agent.providers.some((p) => p.name === se.name)) { openModelPicker().catch(() => {}); return }
         const preset = PRESETS[se.name]
         const providerCfg = { name: se.name, baseURL: preset.baseURL, model: preset.model }
@@ -222,7 +222,7 @@ export function createPickers(ctx) {
     })
   }
 
-  /** 删除 provider（不能删当前激活的） */
+  /** Remove provider (cannot remove the currently active one) */
   async function removeProviderFlow() {
     const candidates = agent.providers.filter((p) => p.name !== agent.activeProvider)
     if (candidates.length === 0) { openModelPicker().catch(() => {}); return }
@@ -243,7 +243,7 @@ export function createPickers(ctx) {
     })
   }
 
-  /** 设置/更改 API key：选 provider → 输入 key */
+  /** Set/change API key: select provider → enter key */
   async function setKeyFlow() {
     const keyEntries = [
       { type: "header", text: "Select provider to configure key" },
@@ -266,7 +266,7 @@ export function createPickers(ctx) {
     })
   }
 
-  /** 给指定 provider 写 key (内存 + Config文件）；若它是current激活的，同步运行时 */
+  /** Write key for a given provider (memory + config file); if it's the currently active one, sync runtime too */
   async function setProviderKey(name, key) {
     const target = agent.providers.find((p) => p.name === name)
     if (!target) return

@@ -1,7 +1,7 @@
 import { C } from "./ansi.mjs"
 
-/** /distill 命令：从当前会话提取候选，逐条 y/n 确认后入库。
- *  从 index.mjs 抽出。
+/** /distill command: extract candidates from current session, confirm each y/n, then save to memory.
+ *  Extracted from index.mjs.
  *  ctx: { agent, state, pushLine, render, askPermission, distillOpts } */
 export async function runDistill(ctx) {
   const { agent, state, pushLine, render, askPermission, distillOpts } = ctx
@@ -24,7 +24,7 @@ export async function runDistill(ctx) {
     for (const c of candidates) {
       pushLine(`── Candidate [${c.type}] ${c.title} (scope: ${c.scope ?? "personal"})`, C.warn)
       for (const line of c.content.split("\n").slice(0, 6)) pushLine(`   ${line}`, C.dim)
-      if (c.type === "rule") pushLine("   (rule  type — consider writing manually; press y to extract)", C.warn)
+      if (c.type === "rule") pushLine("   (rule type — consider writing manually; press y to extract)", C.warn)
       const accept = await askPermission("distill-save", { title: c.title })
       if (!accept) {
         pushLine("   skipped", C.dim)

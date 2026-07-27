@@ -1,6 +1,6 @@
 import { C } from "./ansi.mjs"
 
-/** /reindex 命令：重建记忆索引（files + code_chunks + doc_chunks）。
+/** /reindex command: rebuild memory index (files + code_chunks + doc_chunks).
  *  ctx: { agent, distillOpts, pushLine } */
 export async function handleReindexCommand(ctx) {
   const { agent, distillOpts, pushLine } = ctx
@@ -20,7 +20,7 @@ export async function handleReindexCommand(ctx) {
     total += s.added
     pushLine(`  team: +${s.added} ~${s.updated} -${s.removed}`, C.dim)
   }
-  // 重建代码索引和文档索引并行（读写不同表，WAL 支持）
+  // Rebuild code index and doc index in parallel (read/write different tables, WAL supports)
   pushLine(`  [code+doc] Rebuilding indexes...`, C.tool)
   const [cr, dr] = await Promise.all([
     codeSync(agent.memory, agent.cwd, {

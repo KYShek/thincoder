@@ -1,5 +1,5 @@
 /**
- * memory/core.mjs — 记忆 CRUD、混合检索、embedding 管理
+ * memory/core.mjs — memory CRUD, hybrid retrieval, embedding management
  */
 
 import { parseEntry, serializeEntry, entryFilename } from "../markdown.mjs"
@@ -8,9 +8,14 @@ import { readFile, stat, readdir, writeFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { segmentCJK, VALID_TYPES, SCHEMA_VERSION } from "./schema.mjs"
 
+const EMBED_BATCH_SIZE = 256
+export const EMBED_TEXT_MAX_LEN = 2000
+const FTS_TOKEN_MAX = 16
+const DEFAULT_LIST_LIMIT = 50
+
 /**
- * 写入一条记忆。entry: { type, title, content, tags? }
- * 返回新条目 id。
+ * Write a memory entry. entry: { type, title, content, tags? }
+ * Returns the new entry id.
  */
 export async function put(memory, { type, title, content, tags = "" }) {
   if (!VALID_TYPES.has(type)) {
@@ -27,9 +32,9 @@ export async function put(memory, { type, title, content, tags = "" }) {
 }
 
 /**
- * 混合检索：FTS5(BM25) + 向量余弦，RRF(k=60) 合并排序。
- * 无 embedder 时退化为纯 FTS。结果带 layer 标记。
- * 返回 [{ id, layer, type, title, content, tags, rank }]
+ * Hybrid retrieval: FTS5(BM25) + vector cosine, RRF(k=60) merged ranking.
+ * Falls back to pure FTS when no embedder. Results include layer label.
+ * Returns [{ id, layer, type, title, content, tags, rank }]
  */
 export async function search(memory, query, { limit = 5 } = {}) {
   const ftsQuery = buildFtsQuery(query)
@@ -37,7 +42,7 @@ export async function search(memory, query, { limit = 5 } = {}) {
 
   if (!memory.embedder) return ftsList.slice(0, limit)
 
-  // ---- 向量通道 ----
+  // ---- vector channel ----
   try { await ensureEmbeddings(memory) } catch (e) {
     console.error(`[memory] embedding ensure failed, falling back to FTS-only: ${e.message}`)
     return ftsList.slice(0, limit)
@@ -59,7 +64,7 @@ export async function search(memory, query, { limit = 5 } = {}) {
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(limit * 4, 20))
 
-  // ---- RRF 合并 ----
+  // ---- RRF merge ----
   const K = 60
   const scores = new Map()
   ftsList.forEach((r, i) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (K + i + 1)))
@@ -75,7 +80,7 @@ export async function search(memory, query, { limit = 5 } = {}) {
     .filter(Boolean)
 }
 
-/** 纯 FTS 检索（两表合并，按 bm25 排序），RRF 的位置输入 */
+/** Pure FTS search (two-table merge, sorted by bm25), used as the positional input for RRF */
 export function ftsSearch(memory, ftsQuery, limit) {
   const personal = memory.db.prepare(`
     SELECT e.id, e.type, e.title, e.content, e.tags, bm25(entries_fts) AS rank
@@ -96,23 +101,23 @@ export function ftsSearch(memory, ftsQuery, limit) {
   return [...personal, ...files].sort((a, b) => a.rank - b.rank).slice(0, limit)
 }
 
-/** 按统一 id 取完整条目（personal:<n> / project:<origin>:<path> / team:<origin>:<path>）
- *  注意：v9 起 files 表 PK 为 (layer, origin, path)，同一 layer+path 可能跨多个 origin。
- *  project 层优先返回 projectOrigin 命中的行，team 层取任意一行（跨团队仓库同名时取首条）。 */
+/** Fetch a full entry by unified id (personal:<n> / project:<origin>:<path> / team:<origin>:<path>)
+ *  Note: since v9 the files table PK is (layer, origin, path); the same layer+path may span multiple origins.
+ *  For project layer, prefers the row matching projectOrigin; for team layer, returns any row (first match when multiple team repos share a path). */
 export function fetchEntry(memory, uid) {
   const [layer, ...rest] = uid.split(":")
   if (layer === "personal") {
     const r = memory.db.prepare(`SELECT id, type, title, content, tags FROM entries WHERE id = ?`).get(Number(rest[0]))
     return r ? { ...r, layer, id: uid } : null
   }
-  // rest = [origin, ...pathParts]；origin 可能为空字符串（旧格式兼容）
+  // rest = [origin, ...pathParts]; origin may be empty string (compat with old format)
   const origin = rest[0] ?? ""
   const path = rest.slice(1).join(":")
   if (layer === "project" && memory.projectOrigin) {
     const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND origin = ? AND path = ?`).get(layer, origin || memory.projectOrigin, path)
     if (r) return { ...r, layer, id: uid }
   }
-  // team 层或 project 兜底：按 origin+path 查，origin 为空时退化为只按 path（兼容旧 UID）
+  // team layer or project fallback: query by origin+path; when origin is empty, degrade to path-only (compat with old UID)
   if (origin) {
     const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND origin = ? AND path = ?`).get(layer, origin, path)
     if (r) return { ...r, layer, id: uid }
@@ -122,14 +127,14 @@ export function fetchEntry(memory, uid) {
 }
 
 /**
- * 惰性 embedding：把还没有向量的条目批量补算落库（首次慢、后续零成本）。
- * 检测到 embedding 模型变更时，清空全部向量重建。
+ * Lazy embedding: batch-compute vectors for entries that don't have them yet (slow first time, zero cost thereafter).
+ * When the embedding model changes, clear all vectors and rebuild.
  */
 export async function ensureEmbeddings(memory) {
   const modelKey = memory.embedder.model
   const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'embedding_model'`).get()?.value
   if (stored !== modelKey) {
-    // 统一失效三个表 + 三个 meta key，防维度不匹配的陈旧向量残留
+    // Invalidate all three tables + three meta keys in one go, to prevent stale vectors from dimension mismatch
     memory.db.prepare(`UPDATE entries SET embedding = NULL`).run()
     memory.db.prepare(`UPDATE files SET embedding = NULL`).run()
     memory.db.prepare(`UPDATE code_chunks SET embedding = NULL`).run()
@@ -140,17 +145,17 @@ export async function ensureEmbeddings(memory) {
     upsert.run("doc_embedding_model", modelKey)
   }
 
-  const pendingEntries = memory.db.prepare(`SELECT id, title, content FROM entries WHERE embedding IS NULL LIMIT 256`).all()
-  const pendingFiles = memory.db.prepare(`SELECT rowid, title, content FROM files WHERE embedding IS NULL LIMIT 256`).all()
+  const pendingEntries = memory.db.prepare(`SELECT id, title, content FROM entries WHERE embedding IS NULL LIMIT ${EMBED_BATCH_SIZE}`).all()
+  const pendingFiles = memory.db.prepare(`SELECT rowid, title, content FROM files WHERE embedding IS NULL LIMIT ${EMBED_BATCH_SIZE}`).all()
   if (pendingEntries.length + pendingFiles.length === 0) {
-    // 记忆不算 pending，也补一下代码和文档块的向量
+    // No pending memory entries — also backfill code and doc chunk vectors
     await (await import("./code-sync.mjs")).ensureCodeEmbeddings(memory)
     await (await import("./docs.mjs")).ensureDocEmbeddings(memory)
     return
   }
 
   const items = [...pendingEntries, ...pendingFiles]
-  const texts = items.map((r) => `${r.title}\n${r.content.slice(0, 2000)}`)
+  const texts = items.map((r) => `${r.title}\n${r.content.slice(0, EMBED_TEXT_MAX_LEN)}`)
   const vecs = await embed(memory.embedder, texts)
 
   const updateEntry = memory.db.prepare(`UPDATE entries SET embedding = ? WHERE id = ?`)
@@ -158,16 +163,16 @@ export async function ensureEmbeddings(memory) {
   const updateFile = memory.db.prepare(`UPDATE files SET embedding = ? WHERE rowid = ?`)
   pendingFiles.forEach((r, i) => updateFile.run(toBlob(vecs[pendingEntries.length + i]), r.rowid))
 
-  // 每批嵌入后也补一下代码和文档块
+  // After each batch of embeddings, also backfill code and doc chunks
   await (await import("./code-sync.mjs")).ensureCodeEmbeddings(memory)
   await (await import("./docs.mjs")).ensureDocEmbeddings(memory)
 }
 
 /**
- * 写入一条 markdown 记忆到指定层目录（project/team），并即时索引。
- * 只写文件——project 层绝不替用户的项目仓库做 git 操作；
- * team 层的 commit+push 由 gitmem.mjs 负责。
- * 返回文件名。
+ * Write a markdown memory entry to the specified layer directory (project/team) and index it immediately.
+ * Writes the file only — the project layer never performs git operations on the user's project repo;
+ * team layer commit+push is handled by gitmem.mjs.
+ * Returns the filename.
  */
 export async function putMarkdown(memory, { layer, dir, type, title, content, tags = [], author = "unknown" }) {
   if (layer !== "project" && layer !== "team") throw new Error(`invalid markdown layer: ${layer}`)
@@ -180,7 +185,8 @@ export async function putMarkdown(memory, { layer, dir, type, title, content, ta
 }
 
 /**
- * 同步一个 markdown 目录到索引：新增/变更（按 mtime）重建索引，消失的条目从索引删除。
+ * Sync a markdown directory to the index: new/changed (by mtime) entries are re-indexed,
+ * vanished entries are removed from the index.
  */
 export async function syncDir(memory, { layer, dir }) {
   let names = []
@@ -221,7 +227,7 @@ export async function syncDir(memory, { layer, dir }) {
   return { added, updated, removed, skipped }
 }
 
-/** 解析单个 .md 并 upsert 进 files 表 */
+/** Parse a single .md and upsert into the files table */
 export async function indexMarkdownFile(memory, { layer, dir, filename, mtimeMs }) {
   const abs = join(dir, filename)
   const mtime = mtimeMs ?? Math.floor((await stat(abs)).mtimeMs)
@@ -241,8 +247,8 @@ export async function indexMarkdownFile(memory, { layer, dir, filename, mtimeMs 
   )
 }
 
-/** 列出新条目，可按 type 过滤 */
-export async function list(memory, { type, limit = 50 } = {}) {
+/** List entries, optionally filtered by type */
+export async function list(memory, { type, limit = DEFAULT_LIST_LIMIT } = {}) {
   if (type) {
     if (!VALID_TYPES.has(type)) throw new Error(`Invalid memory type "${type}"`)
     return memory.db
@@ -254,23 +260,24 @@ export async function list(memory, { type, limit = 50 } = {}) {
     .all(limit)
 }
 
-/** 删除一条记忆。返回是否删除成功 */
+/** Delete a memory entry. Returns whether deletion succeeded */
 export async function remove(memory, id) {
   const info = memory.db.prepare(`DELETE FROM entries WHERE id = ?`).run(id)
   return info.changes > 0
 }
 
 /**
- * 构造 FTS5 查询：先按空白/标点切词，再对每个词做 CJK 分字。
- * 这样 CJK 多字词保持为 FTS5 短语（"分号" → "分 号" → 短语查询，精确匹配相邻字），
- * 而不同词之间用 OR 连接（"命名 规范" → "命 名" OR "规 范"，两个短语各需相邻匹配）。
+ * Build an FTS5 query: first split by whitespace/punctuation into tokens,
+ * then apply CJK character segmentation to each token.
+ * This keeps multi-character CJK words as FTS5 phrases ("分号" → "分 号" → phrase query, exact adjacency match),
+ * while different tokens are joined with OR ("命名 规范" → "命 名" OR "规 范", each phrase requires its own adjacency).
  */
 export function buildFtsQuery(query) {
   const terms = query
     .split(/[\s,，。、;；!！?？()（）"`]+/)
     .map((t) => t.trim())
     .filter(Boolean)
-    .slice(0, 16)
+    .slice(0, FTS_TOKEN_MAX)
     .map((t) => segmentCJK(t))
   if (terms.length === 0) return ""
   return terms.map((t) => `"${t.replaceAll('"', '""')}"`).join(" OR ")

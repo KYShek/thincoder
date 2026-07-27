@@ -1,5 +1,5 @@
 /**
- * agent/setup.mjs — runAgent 的前置准备：上下文注入、system prompt 构建、工具注入
+ * agent/setup.mjs — runAgent pre-flight setup: context injection, system prompt construction, tool injection
  */
 import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT } from "../context.mjs"
 import { search as memorySearch, docSearch } from "../memory.mjs"
@@ -14,26 +14,41 @@ import {
 } from "./helpers.mjs"
 
 const AUTO_REMINDER = "[System reminder: AUTO mode is active — all tool calls are automatically approved without asking.]"
+const DEFAULT_COMPACT_THRESHOLD = 100_000
+const DOC_SEARCH_LIMIT = 5
+const DOC_CHUNK_PREVIEW_LEN = 300
+const MEMORY_SEARCH_LIMIT = 3
 
 /**
- * 准备一次 agent run：注入上下文、构建 system prompt、注入工具。
- * 返回主循环需要的所有状态，同时把初始化消息写入 agent.history。
+ * Prepare an agent run: inject context, build system prompt, inject tools.
+ * Returns all state needed by the main loop, and writes initialization messages into agent.history.
  */
 export async function prepareRun(agent, input, callbacks, {
   depth = 0, signal, overrideTurns, resume, systemPrompt: corePrompt, disciplineRules, mainOverlay,
 } = {}) {
   const maxTurns = overrideTurns ?? agent.config?.agent?.maxTurns ?? DEFAULT_MAX_TURNS
-  const threshold = agent.config?.agent?.compactThreshold ?? 100_000
+  const threshold = agent.config?.agent?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD
 
   agent._lastPromptTokens = null
   agent._usageAtLen = null
   agent.history = repairHistory(agent.history)
 
   if (!resume) {
+      // Git context: branch, recent commits, uncommitted changes
+      if (depth === 0) {
+        const gitCtx = collectGitContext(agent.cwd)
+        if (gitCtx) {
+          agent.history.push({
+            role: "user",
+            content: `[System reminder: git context:\n${escapeXml(gitCtx)}]`,
+            transient: true,
+          })
+        }
+      }
     if (depth === 0) {
       const tree = listWorkDir(agent.cwd)
       if (tree) {
-        agent.history.push({ role: "user", content: `[System reminder: working directory snapshot:\n<untrusted_cwd_listing>\n${escapeXml(tree)}\n</untrusted_cwd_listing>]`, transient: true })
+        agent.history.push({ role: "user", content: `[System reminder: working directory snapshot (${new Date().toISOString()}):\n<untrusted_cwd_listing>\n${escapeXml(tree)}\n</untrusted_cwd_listing>]`, transient: true })
       }
       if (agent.memory && !agent.history.some((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_INJECT_PREFIX))) {
         try {
@@ -42,11 +57,11 @@ export async function prepareRun(agent, input, callbacks, {
           if (summary && !summary.startsWith("(no indexed")) {
             agent.history.push({ role: "user", content: `${OUTLINE_INJECT_PREFIX}\n${summary}]`, transient: true })
           }
-        } catch { /* 索引未就绪不报错 */ }
+        } catch { /* index not ready — suppress error */ }
       }
     }
     if (agent.memory) {
-      const docs = await docSearch(agent.memory, input, { limit: 5 })
+      const docs = await docSearch(agent.memory, input, { limit: DOC_SEARCH_LIMIT })
       if (docs.length > 0) {
         const count = agent.memory.db.prepare(`SELECT COUNT(*) AS n FROM doc_chunks`).get()?.n ?? 0
         const more = count > docs.length ? ` (${count} chunks indexed total — call doc_search if you need more)` : ""
@@ -54,12 +69,12 @@ export async function prepareRun(agent, input, callbacks, {
           role: "user",
           content:
             `[Relevant documentation${more}:\n` +
-            docs.map((d) => `- ${d.path}${d.heading ? " > " + d.heading : ""}: <untrusted_doc_chunk>${escapeXml(d.content.slice(0, 300))}</untrusted_doc_chunk>`).join("\n") +
+            docs.map((d) => `- ${d.path}${d.heading ? " > " + d.heading : ""}: <untrusted_doc_chunk>${escapeXml(d.content.slice(0, DOC_CHUNK_PREVIEW_LEN))}</untrusted_doc_chunk>`).join("\n") +
             "]",
           transient: true,
         })
       }
-      const memories = await memorySearch(agent.memory, input, { limit: 3 })
+      const memories = await memorySearch(agent.memory, input, { limit: MEMORY_SEARCH_LIMIT })
       if (memories.length > 0) {
         agent.history.push({
           role: "user",
@@ -71,6 +86,13 @@ export async function prepareRun(agent, input, callbacks, {
         })
       }
     }
+    if (depth === 0) {
+      agent.history.push({
+        role: "user",
+        content: `[System reminder: current time is ${new Date().toISOString()}.]`,
+        transient: true,
+      })
+    }
     agent.history.push({ role: "user", content: input })
   }
 
@@ -81,7 +103,7 @@ export async function prepareRun(agent, input, callbacks, {
     agent._pendingReminders = []
   }
 
-  // task/plan 工具随主循环注入；subagent/skill/goal/verify 只在顶层注入
+  // task/plan tools are injected with the main loop; subagent/skill/goal/verify only at top level
   const { planTool, subagentTool, taskTool, skillTool, goalTool, verifyTool, recentChangesTool } = await import("../agent-tools.mjs")
   const tools = [...agent.tools, taskTool, planTool, ...(depth === 0 ? [subagentTool, skillTool, goalTool, verifyTool, recentChangesTool] : [])]
   const toolSchemas = tools.map(toOpenAISchema)

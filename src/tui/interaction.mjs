@@ -1,22 +1,22 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** 交互原语：权限审批 + 问答输入。
- *  从 index.mjs 抽出，通过 createInteraction(ctx) 接收闭包依赖。
+/** Interaction primitives: permission approval + question input.
+ *  Extracted from index.mjs, receives closure dependencies via createInteraction(ctx).
  *  ctx: { agent, state, pushLine, pushLabel, render, summarize } */
 export function createInteraction(ctx) {
   const { agent, state, pushLine, pushLabel, render, summarize } = ctx
 
-  /** 权限请求的关键信息 (按工具定制），返回行数组。name 可能带子 agent 前缀 ("coder/bash"），取基名匹配 */
+  /** Key info for permission request (customized by tool), returns array of lines. name may have subagent prefix ("coder/bash"), use base name to match */
   function formatPermission(name, args) {
     const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(${s.length} chars total)` : s)
     const base = name.includes("/") ? name.split("/").pop() : name
     if (base === "bash") return cap(args.command ?? "").split("\n")
     if (base === "write") {
-      // 批准写文件必须看得到要写什么：路径 + 内容预览
+      // approving file writes must show what's being written: path + content preview
       return [`${args.path} (write ${(args.content ?? "").length} chars)`, ...cap(args.content ?? "", 1000).split("\n")]
     }
     if (base === "edit") {
-      // 简易 diff：- 旧内容 / + 新内容
+      // simple diff: - old content / + new content
       return [
         `${args.path}`,
         ...cap(args.old_string ?? "", 500).split("\n").map((l) => `- ${l}`),
@@ -25,7 +25,7 @@ export function createInteraction(ctx) {
       ]
     }
     if (base === "apply_patch") {
-      // 补丁本身就是可读的 diff，直接预览
+      // patches are readable diffs themselves, preview directly
       return cap(args.patch ?? "", 1500).split("\n")
     }
     if (base === "delete") return [`${args.path}${args.force ? " (force: also delete tracked files)" : ""}`]
@@ -35,12 +35,12 @@ export function createInteraction(ctx) {
   }
 
   function askPermission(name, args) {
-    // auto 模式：完全授权，不再询问
+    // auto mode: fully authorized, no more prompts
     if (agent.autoApprove) {
       pushLine(`  [auto] ${name} ${summarize(args)}`, C.warn)
       return Promise.resolve(true)
     }
-    // 预览内容存到 permissionPreview，渲染在输入框上方紧挨"Allow?"提示
+    // store preview content in permissionPreview, rendered above input box next to "Allow?" prompt
     state.permissionPreview = formatPermission(name, args)
     return new Promise((resolve) => {
       state.permission = { name, args, resolve }
@@ -50,13 +50,14 @@ export function createInteraction(ctx) {
   }
 
   function askQuestion(text, options = []) {
-    // 一次只能问一个：question 是只读工具走并行通道，同批第二个直接驳回，
-    // 否则后到的会覆盖 state.question，先到的 Promise 永远悬挂 (agent 死等）
+    // only one question at a time: question is a read-only tool on a parallel channel,
+    // a second concurrent one is rejected directly; otherwise the later one overwrites
+    // state.question and the first Promise hangs forever (agent deadlock)
     if (state.question) {
       return Promise.resolve("(error: another question is pending; ask one at a time and wait for the answer)")
     }
     if (!options.length) {
-      // 自由文本：打开输入态让用户打字，Enter 提交
+      // free text: open input mode for user typing, Enter to submit
       pushLabel(`❯ Question`, ansi.bold + C.tool)
       for (const line of text.split("\n")) pushLine(`  ${line}`, C.text)
       return new Promise((resolve) => {
@@ -65,7 +66,7 @@ export function createInteraction(ctx) {
         render()
       })
     }
-    // 选项模式：输入框内显示列表，方向键选，Enter 确认
+    // options mode: show list in input box, arrow keys to select, Enter to confirm
     pushLabel(`❯ Question`, ansi.bold + C.tool)
     for (const line of text.split("\n")) pushLine(`  ${line}`, C.text)
     return new Promise((resolve) => {

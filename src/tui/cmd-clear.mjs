@@ -1,4 +1,4 @@
-/** /clear 命令：清屏（二次确认防误触）。
+/** /clear command: clear screen (confirm to prevent accidental trigger).
  *  ctx: { state, openPicker, render } */
 export async function handleClearCommand(ctx) {
   const { state, openPicker, render } = ctx

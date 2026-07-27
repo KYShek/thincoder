@@ -1,9 +1,9 @@
 /**
- * session.mjs — 会话持久化
- * 每个项目（按 cwd 哈希）最多保留 5 轮会话，按最后使用时间轮转。
- * 两种恢复需求分开存：agent 恢复（history）要上下文连续，用户恢复（display）要所见即所得。
+ * session.mjs — session persistence
+ * Each project (keyed by cwd hash) keeps up to 5 session slots, rotated by last-access time.
+ * Two recovery needs stored separately: agent recovery (history) needs context continuity, user recovery (display) needs WYSIWYG.
  *
- * 文件布局：{hash}.json（当前）、{hash}.json.1~5（槽位）、{hash}.json.manifest（槽位元数据）
+ * File layout: {hash}.json (current), {hash}.json.1~5 (slots), {hash}.json.manifest (slot metadata)
  */
 
 import { createHash } from "node:crypto"
@@ -12,18 +12,20 @@ import { join, dirname } from "node:path"
 import { configDir } from "./config.mjs"
 
 const MAX_SLOTS = 5
+const CWD_HASH_LEN = 12
 
+/** Derive session file path from cwd hash */
 export function sessionPath(cwd) {
-  const hash = createHash("sha1").update(cwd).digest("hex").slice(0, 12)
+  const hash = createHash("sha1").update(cwd).digest("hex").slice(0, CWD_HASH_LEN)
   return join(configDir, "sessions", `${hash}.json`)
 }
 
 function slotPath(cwd, n) { return sessionPath(cwd) + "." + n }
 function manifestPath(cwd) { return sessionPath(cwd) + ".manifest" }
 
-/** 原子写：先写临时文件再 rename 替换，防写入中途崩溃留下截断的 JSON 丢整个会话。
- *  rename 在 POSIX 上原子；Windows 上目标已存在时 Node 24 用 MoveFileExW+REPLACE_EXISTING 也能原子替换。
- *  某些旧 Windows 文件系统可能抛 EPERM，重试一次。 */
+/** Atomic write: write to temp file then rename to replace, preventing truncated JSON from mid-write crash.
+ *  rename is atomic on POSIX; on Windows with existing target, Node 24 uses MoveFileExW+REPLACE_EXISTING for atomic replace.
+ *  Some older Windows filesystems may throw EPERM — retry once. */
 function writeSessionFile(p, data) {
   mkdirSync(dirname(p), { recursive: true })
   const tmp = `${p}.tmp`
@@ -31,19 +33,19 @@ function writeSessionFile(p, data) {
   try {
     renameSync(tmp, p)
   } catch {
-    // Windows 可能因防病毒锁/网络盘竞争而 rename 失败，删目标后重试
+    // Windows: rename may fail due to antivirus lock / network drive contention — delete target and retry
     try { unlinkSync(p) } catch {}
     try {
       renameSync(tmp, p)
-      // rename 成功：清理临时文件
+      // rename succeeded: clean up temp file
       try { unlinkSync(tmp) } catch {}
     } catch {
-      // rename 仍失败：保留 tmp 作为兜底数据（下次读取会优先找主文件，找不到时 tmp 至少还在）
+      // rename still failed: keep tmp as fallback data (next read prefers main file; if missing, tmp is at least there)
     }
   }
 }
 
-// ========== 槽位管理 ==========
+// ========== slot management ==========
 
 function loadManifest(cwd) {
   try {
@@ -57,14 +59,14 @@ function saveManifest(cwd, m) {
   writeSessionFile(manifestPath(cwd), m)
 }
 
-/** 归档当前会话到空闲槽位——满了踢最老；exclude 指定一个不许被踢的槽位（switchToSlot 的目标槽） */
+/** Archive current session to a free slot — evict oldest if full; exclude specifies a slot that must not be evicted (switchToSlot target) */
 export function archiveCurrent(cwd, { exclude } = {}) {
   const src = sessionPath(cwd)
   if (!existsSync(src)) return
   const m = loadManifest(cwd)
 
   let slot
-  // 只计数字 key 的槽位，排除 _currentName 等遗留非数字 key
+  // Only count numeric-keyed slots, exclude legacy non-numeric keys like _currentName
   const entries = Object.entries(m.slots).filter(([n]) => /^\d+$/.test(n))
   if (entries.length < MAX_SLOTS) {
     slot = 1
@@ -75,12 +77,12 @@ export function archiveCurrent(cwd, { exclude } = {}) {
   }
 
   const dst = slotPath(cwd, slot)
-  // 复制（rename 会丢当前）；走原子写，防中途崩溃留下截断的 JSON 丢归档
+  // Copy (rename would lose current); use atomic write to prevent truncated JSON in archive from mid-crash
   let data
   try {
     data = JSON.parse(readFileSync(src, "utf8"))
   } catch {
-    // 会话文件损坏，放弃归档，下次保存会覆盖
+    // Session file corrupted, abandon archive; next save will overwrite
     return
   }
   writeSessionFile(dst, data)
@@ -90,7 +92,7 @@ export function archiveCurrent(cwd, { exclude } = {}) {
   return slot
 }
 
-/** 列出所有归档槽位，最新在前 */
+/** List all archive slots, newest first */
 export function listSlots(cwd) {
   const m = loadManifest(cwd)
   return Object.entries(m.slots)
@@ -98,29 +100,29 @@ export function listSlots(cwd) {
     .sort((a, b) => b.timestamp - a.timestamp)
 }
 
-/** 切换到指定槽位：归档当前 → 槽位文件复制到当前 → 返回恢复数据（失败返回 null） */
+/** Switch to a specific slot: archive current → copy slot file to current → return recovered data (null on failure) */
 export function switchToSlot(cwd, slot) {
   const m = loadManifest(cwd)
   if (!m.slots[slot]) return null
 
-  // 归档当前（内部写 manifest；之后我们的 m 已过期，需重读）
-  // 满槽时排除目标槽：否则最老槽=目标槽，归档会把目标覆盖掉再复制回来，目标会话永久丢失
+  // Archive current (internally writes manifest; our `m` is stale after, must reload)
+  // When full, exclude target slot: otherwise oldest=target, archive would overwrite target then copy back, permanently losing the target session
   archiveCurrent(cwd, { exclude: slot })
 
-  // 槽位文件 → 当前（copy+unlink，不用 rename：Windows rename 目标已存在会抛 EPERM）
+  // Slot file → current (copy+unlink, not rename: Windows rename on existing target throws EPERM)
   const src = slotPath(cwd, slot)
   const dst = sessionPath(cwd)
   if (!existsSync(src)) return null
   try {
-    try { unlinkSync(dst) } catch { /* 不存在就算了 */ }
+    try { unlinkSync(dst) } catch { /* doesn't exist, that's fine */ }
     copyFileSync(src, dst)
     unlinkSync(src)
   } catch {
-    // 文件操作失败（磁盘满/权限不足/锁文件），放弃切换
+    // File operations failed (disk full / permissions / lock), abandon switch
     return null
   }
 
-  // 重读 manifest（archiveCurrent 改了它）
+  // Reload manifest (archiveCurrent modified it)
   const m2 = loadManifest(cwd)
   delete m2.slots[slot]
   saveManifest(cwd, m2)
@@ -128,7 +130,7 @@ export function switchToSlot(cwd, slot) {
   return loadSession(cwd)
 }
 
-// ========== 旧版 transient 前缀清理 ==========
+// ========== legacy transient prefix cleanup ==========
 
 const LEGACY_TRANSIENT_PREFIXES = [
   "[System reminder: working directory snapshot:",
@@ -143,8 +145,9 @@ function isLegacyTransient(m) {
   )
 }
 
-// ========== 核心读写 ==========
+// ========== core read/write ==========
 
+/** Save agent state and display lines to the session file (atomic write) */
 export function saveSession(agent, display) {
   const history = agent.history.filter((m) => !m.transient && !isLegacyTransient(m))
   const data = {
@@ -164,22 +167,45 @@ export function saveSession(agent, display) {
   writeSessionFile(sessionPath(agent.cwd), data)
 }
 
+/** Load session data from disk; returns null if missing, corrupted, or version mismatch */
 export function loadSession(cwd) {
-  try {
-    const p = sessionPath(cwd)
-    if (!existsSync(p)) return null
-    const data = JSON.parse(readFileSync(p, "utf8"))
-    if (data?.version !== 1 && data?.version !== 2) return null
-    if (!Array.isArray(data.history)) return null
-    if (data.cwd && data.cwd.toLowerCase() !== cwd.toLowerCase()) return null
-    data.history = data.history.filter((m) => !isLegacyTransient(m))
-    data.display = Array.isArray(data.display)
-      ? data.display.filter((l) => l && typeof l.text === "string").map((l) => ({ text: l.text, color: l.color }))
-      : []
-    return data
-  } catch { return null }
+  const tryLoad = (p) => {
+    try {
+      if (!existsSync(p)) return null
+      const data = JSON.parse(readFileSync(p, "utf8"))
+      if (data?.version !== 1 && data?.version !== 2) return null
+      if (!Array.isArray(data.history)) return null
+      if (data.cwd && data.cwd.toLowerCase() !== cwd.toLowerCase()) return null
+      data.history = data.history.filter((m) => !isLegacyTransient(m))
+      data.display = Array.isArray(data.display)
+        ? data.display.filter((l) => l && typeof l.text === "string").map((l) => ({ text: l.text, color: l.color }))
+        : []
+      data._recovered = false
+      return data
+    } catch (e) {
+      return { _error: e }
+    }
+  }
+  const p = sessionPath(cwd)
+  let result = tryLoad(p)
+  if (result?._error) {
+    // Main file corrupted — try the .tmp fallback from a failed atomic write
+    console.error(`[session] failed to load ${p}: ${result._error.message}. Trying .tmp fallback...`)
+    const tmpResult = tryLoad(`${p}.tmp`)
+    if (tmpResult && !tmpResult._error) {
+      console.error(`[session] recovered from .tmp fallback`)
+      result = tmpResult
+      result._recovered = true
+    } else {
+      console.error(`[session] .tmp fallback also failed — session lost. Backing up corrupted file as .corrupted.`)
+      try { renameSync(p, `${p}.corrupted`) } catch {}
+      return null
+    }
+  }
+  return result && !result._error ? result : null
 }
 
+/** Apply loaded session data onto an agent object; returns true if provider was switched */
 export function applySession(agent, data) {
   agent.history = data.history
   agent.tasks = data.tasks ?? []
@@ -188,7 +214,7 @@ export function applySession(agent, data) {
   agent.goal = data.goal ?? null
   agent._pendingReminders = data.pendingReminders ?? []
   agent._sessionStart = data.sessionStart ?? null
-  // 重置轮次计数器：切换会话后不应继承旧会话的停滞/压缩状态
+  // Reset turn counters: after switching sessions, should not inherit old session's stall/compaction state
   agent._turnsSinceTaskUpdate = 0
   agent._turnsInPlanMode = 0
   agent._compressFailures = 0
@@ -205,12 +231,13 @@ export function applySession(agent, data) {
   return false
 }
 
+/** Archive current session and reset the session file to empty state */
 export function clearSession(cwd) {
   try {
     archiveCurrent(cwd)
     const p = sessionPath(cwd)
     writeSessionFile(p, { version: 2, cwd, history: [], tasks: [], display: [], goal: null, autoApprove: false, pendingReminders: [], sessionStart: null })
   } catch {
-    // 清不掉就算了，下次保存会覆盖
+    // Can't clear, oh well — next save will overwrite
   }
 }

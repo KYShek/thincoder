@@ -1,7 +1,7 @@
 /**
- * plan 工具：进入/退出规划模式。
- * 规划模式下只允许只读工具——探索代码、设计方案，不写代码。
- * 用户确认方案后退出规划模式开始实现。
+ * plan tool: enter/exit plan mode.
+ * In plan mode only read-only tools are allowed — explore code, design solutions, no code writing.
+ * After the user approves the plan, exit plan mode and start implementing.
  */
 export const planTool = {
   name: "plan",

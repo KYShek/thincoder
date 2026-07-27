@@ -1,5 +1,5 @@
 /**
- * tui.mjs — 终端 UI（重新导出中心）
- * 子模块在 src/tui/ 目录下。
+ * tui.mjs — Terminal UI (re-export hub).
+ * Submodules under src/tui/ directory.
  */
 export { startTUI } from "./tui/index.mjs"

@@ -1,6 +1,6 @@
 /**
  * mcp.mjs — MCP (Model Context Protocol) client
- * config: { command, args?, name } 或 { url, name, headers? } 或 { wsUrl, name, headers? }
+ * config: { command, args?, name } or { url, name, headers? } or { wsUrl, name, headers? }
  */
 import { INIT_TIMEOUT_MS, withTimeout, sanitizeToolName } from "./mcp/helpers.mjs"
 import { stdioTransport } from "./mcp/transport-stdio.mjs"
@@ -46,6 +46,7 @@ async function doInitialize(transport, name) {
   return toolsResp.result?.tools ?? []
 }
 
+/** Connect to an MCP server (stdio/http/ws), initialize, and return built tool wrappers */
 export async function connectMcpServer(config) {
   if (config.wsUrl) {
     const transport = wsTransport(config.wsUrl, config.headers ?? {})
@@ -64,7 +65,7 @@ export async function connectMcpServer(config) {
     try {
       await transport.openSSE()
     } catch {
-      // 不支持 GET 的 server（纯 Streamable HTTP POST）：降级为无 SSE 模式
+      // Server doesn't support GET (pure Streamable HTTP POST): degrade to no-SSE mode
     }
     try {
       const mcpTools = await doInitialize(transport, config.name ?? config.url)
@@ -89,12 +90,14 @@ export async function connectMcpServer(config) {
   throw new Error(`MCP server "${config.name}": needs either 'wsUrl' (websocket), 'command' (stdio), or 'url' (http)`)
 }
 
+/** Close all MCP transport connections on an agent's tools */
 export function closeAllMcp(agent) {
   for (const t of agent.tools) {
     if (t._mcpTransport) t._mcpTransport.close()
   }
 }
 
+/** Remove MCP tools belonging to a specific server from the agent's tool list */
 export function removeMcpTools(agent, serverName) {
   const keep = []
   for (const t of agent.tools) {

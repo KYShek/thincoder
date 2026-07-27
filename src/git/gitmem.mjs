@@ -1,8 +1,9 @@
 /**
- * gitmem.mjs — Team 层记忆的 git 同步
- * 全部通过 child_process 调系统 git，零依赖。
- * 冲突策略（已定）：不同条目天然不冲突；真冲突时中止 rebase 保持仓库干净，
- * 报带手动指引的错误——不做自动合并。
+ * gitmem.mjs — Team-layer memory git sync
+ * All through child_process calling system git, zero dependencies.
+ * Conflict strategy (decided): different entries are naturally conflict-free;
+ * on real conflicts abort rebase to keep the repo clean,
+ * report an error with manual resolution guidance — no auto-merge.
  */
 
 import { execFile } from "node:child_process"
@@ -13,7 +14,7 @@ import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
 
-/** 在 dir 下执行 git，失败抛带 stderr 的错误 */
+/** Run git in dir, throw with stderr on failure */
 async function git(dir, args) {
   try {
     const { stdout } = await execFileAsync("git", args, { cwd: dir, encoding: "utf8" })
@@ -27,7 +28,7 @@ async function git(dir, args) {
   }
 }
 
-/** 团队仓库不存在则 clone。返回是否发生了 clone */
+/** Clone team repo if it doesn't exist. Returns whether a clone happened */
 export async function ensureClone({ repo, dir }) {
   if (existsSync(join(dir, ".git"))) return false
   await mkdir(dirname(dir), { recursive: true })
@@ -36,12 +37,12 @@ export async function ensureClone({ repo, dir }) {
 }
 
 /**
- * 同步：pull --rebase。远端还是空仓库时直接跳过（首次使用前）。
- * 冲突时中止 rebase（保持仓库干净）并抛带指引的错误。
- * 返回 true=拉取成功（调用方随后 syncDir 重建索引）
+ * Sync: pull --rebase. Skip if remote is still empty (first-time use).
+ * On conflict, abort rebase (keep repo clean) and throw a guided error.
+ * Returns true = pull succeeded (caller should then syncDir to rebuild index)
  */
 export async function pullTeam(dir) {
-  // 远端空仓库：没有可拉取的分支（ls-remote 无输出）
+  // Empty remote repo: no branch to pull (ls-remote has no output)
   const refs = await git(dir, ["ls-remote", "--heads", "origin"])
   if (!refs) return false
 
@@ -52,9 +53,9 @@ export async function pullTeam(dir) {
     if (await hasConflict(dir)) {
       await git(dir, ["rebase", "--abort"]).catch(() => {})
       throw new Error(
-        `团队记忆同步冲突：本地与远端修改了同一条目。\n` +
-        `请到 ${dir} 手动执行 git pull 解决冲突，然后重新运行 thincoder sync。\n` +
-        `（本地仓库已恢复到同步前状态，未丢失任何内容）`,
+        `Team memory sync conflict: local and remote modified the same entry.\n` +
+        `Please resolve manually in ${dir} with \`git pull\`, then re-run \`thincoder sync\`.\n` +
+        `(The local repo has been restored to its pre-sync state — nothing was lost.)`,
       )
     }
     throw error
@@ -62,28 +63,28 @@ export async function pullTeam(dir) {
 }
 
 /**
- * 提交并推送一个条目文件。push 被拒（远端有新提交）时 pull --rebase 后重试一次；
- * rebase 冲突同样中止并报错。
+ * Commit and push an entry file. On push rejection (remote has new commits),
+ * pull --rebase then retry once; rebase conflicts also abort and error out.
  */
 export async function commitAndPush(dir, filename, message) {
   await git(dir, ["add", filename])
-  // 内容没变化时 commit 会以 exit 1 报 "nothing to commit"——这是正常的幂等结果，不是错误
+  // Nothing to commit (content unchanged) — this is normal idempotent behavior, not an error
   const dirty = await git(dir, ["status", "--porcelain", "--", filename])
   if (dirty) await git(dir, ["commit", "-m", message])
   try {
     await git(dir, ["push"])
   } catch {
-    await pullTeam(dir) // 冲突时这里会抛出带指引的错误
+    await pullTeam(dir) // Conflicts will throw a guided error here
     await git(dir, ["push"])
   }
 }
 
-/** 当前是否处于 rebase 冲突状态（存在未合并路径） */
+/** Whether currently in a rebase conflict state (unmerged paths exist) */
 async function hasConflict(dir) {
   try {
     const out = await git(dir, ["status", "--porcelain"])
-    // 未合并状态共 7 种：DD AU UD UA DU AA UU——只看 UU/AA/DD 会漏掉带 U 的四种，
-    // 漏判就不 abort，仓库留在冲突中间态（与"保持仓库干净"的承诺相悖）
+    // There are 7 unmerged states: DD AU UD UA DU AA UU — only checking UU/AA/DD misses 4 states with U,
+    // which means the rebase is left mid-conflict (violating the "keep repo clean" promise)
     return out.split("\n").some((l) => l[0] === "U" || l[1] === "U" || l.startsWith("AA") || l.startsWith("DD"))
   } catch {
     return false

@@ -1,5 +1,5 @@
 /**
- * agent/helpers.mjs — Agent 工具函数与常量
+ * agent/helpers.mjs — Agent utility functions and constants
  */
 import { configDir } from "../config.mjs"
 import { readFileSync, readdirSync } from "node:fs"
@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { execSync } from "node:child_process"
 
 export const DEFAULT_MAX_TURNS = 100
-export const DEFAULT_SUBAGENT_TURNS = 20
+export const DEFAULT_SUBAGENT_TURNS = 100
 export const DEFAULT_GOAL_TURNS = 200
 export const MIN_REPORT_CHARS = 200
 export const REPORT_CONTINUATION =
@@ -18,17 +18,23 @@ export const REPORT_CONTINUATION =
 const TOOL_RESULT_OFFLOAD_LIMIT = 16_000
 const TOOL_RESULT_PREVIEW = 2_000
 
+const GIT_TIMEOUT_MS = 5000
+const MAX_GIT_CHANGES_DISPLAY = 20
+
 export const OUTLINE_INJECT_PREFIX = "[System reminder: project dependency outline:"
 export const FILE_MUTATORS = new Set(["write", "edit", "insert_after", "apply_patch", "delete"])
 
+/** Escape XML special characters in a string for safe embedding in XML/HTML */
 export function escapeXml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;")
 }
 
+/** Canonicalize a tool call signature for stall detection: name + stable JSON args */
 export function tryCanonicalize(name, args) {
   try { return name + ":" + JSON.stringify(JSON.parse(args)) } catch { return name + ":" + args }
 }
 
+/** Offload oversized tool results (>16k chars) to disk, returning a preview + file path */
 export async function offloadToolResult(text, callId) {
   if (text.length <= TOOL_RESULT_OFFLOAD_LIMIT) return text
   try {
@@ -46,9 +52,10 @@ export async function offloadToolResult(text, callId) {
   }
 }
 
+/** Collect git branch, recent commits, and working tree status as context text */
 export function collectGitContext(cwd) {
   try {
-    const opts = { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }
+    const opts = { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: GIT_TIMEOUT_MS }
     const branch = execSync("git branch --show-current", opts).trim()
     const log = execSync("git --no-pager log --oneline -5", opts).trim()
     const status = execSync("git status --short", opts).trim()
@@ -56,7 +63,7 @@ export function collectGitContext(cwd) {
     return [
       `Git context: on branch \`${branch || "(detached)"}\`${dirty ? `, ${dirty} uncommitted change(s)` : ", working tree clean"}.`,
       log ? `Recent commits:\n${log}` : "",
-      status ? `Uncommitted:\n${status.split("\n").slice(0, 20).join("\n")}${dirty > 20 ? `\n… (${dirty - 20} more)` : ""}` : "",
+      status ? `Uncommitted:\n${status.split("\n").slice(0, MAX_GIT_CHANGES_DISPLAY).join("\n")}${dirty > MAX_GIT_CHANGES_DISPLAY ? `\n… (${dirty - MAX_GIT_CHANGES_DISPLAY} more)` : ""}` : "",
     ].filter(Boolean).join("\n")
   } catch {
     return ""
@@ -71,18 +78,19 @@ export class ContinueError extends Error {
   }
 }
 
+/** Repair malformed conversation history: remove orphan tool messages and fill missing tool results */
 export function repairHistory(history) {
   const out = []
   let dirty = false
-  const knownIds = new Set() // 迄今 assistant 声明过的 tool_call id
+  const knownIds = new Set() // tool_call ids declared by assistant so far
   for (let i = 0; i < history.length; i++) {
     const m = history[i]
-    // 空 assistant 消息：无正文且无 tool_calls，丢弃
+    // empty assistant message: no content and no tool_calls, discard
     if (m.role === "assistant" && !m.tool_calls?.length && !m.content) {
       dirty = true
       continue
     }
-    // 孤儿 tool 消息：没有对应的 assistant tool_calls 声明，丢弃
+    // orphan tool message: no matching assistant tool_calls declaration, discard
     if (m.role === "tool" && !knownIds.has(m.tool_call_id)) {
       dirty = true
       continue
@@ -91,7 +99,7 @@ export function repairHistory(history) {
     if (m.role !== "assistant" || !m.tool_calls?.length) continue
 
     for (const tc of m.tool_calls) knownIds.add(tc.id)
-    // 收集紧随其后（下一个非 tool 消息之前）的 tool 结果 id
+    // collect tool result ids that immediately follow (before the next non-tool message)
     const answered = new Set()
     let j = i + 1
     while (j < history.length && history[j].role === "tool") {
@@ -99,11 +107,11 @@ export function repairHistory(history) {
         answered.add(history[j].tool_call_id)
         out.push(history[j])
       } else {
-        dirty = true // 孤儿 tool 结果，丢弃
+        dirty = true // orphan tool result, discard
       }
       j++
     }
-    i = j - 1 // 外层 for 会再 +1
+    i = j - 1 // outer for will increment again
 
     for (const tc of m.tool_calls) {
       if (!answered.has(tc.id)) {
@@ -119,6 +127,7 @@ export function repairHistory(history) {
   return dirty ? out : history
 }
 
+/** List working directory contents as a tree (directories expanded up to subMax entries each) */
 export function listWorkDir(cwd, { rootMax = 30, subMax = 10 } = {}) {
   const SKIP = new Set([".git", "node_modules"])
   let entries
@@ -158,12 +167,14 @@ export function listWorkDir(cwd, { rootMax = 30, subMax = 10 } = {}) {
   return lines.join("\n")
 }
 
+/** Return the set of tool names that are marked as read-only */
 export function readonlyToolNames(tools) {
   return new Set(tools.filter((t) => t.readonly).map((t) => t.name))
 }
 
 const MAX_INSTRUCTION_CHARS = 32_000
 
+/** Load AGENTS.md / project_rules.md from the project root, return as project instructions */
 export async function loadProjectInstructions(cwd) {
   const parts = []
   for (const name of ["AGENTS.md", "project_rules.md"]) {
@@ -172,7 +183,7 @@ export async function loadProjectInstructions(cwd) {
       if (!content) continue
       const key = name.toLowerCase()
       parts.push(`<!-- From: ${join(cwd, name)} -->\n${content}`)
-    } catch { /* 文件不存在 */ }
+    } catch { /* file does not exist */ }
   }
   const merged = parts.join("\n\n")
   if (!merged) return ""

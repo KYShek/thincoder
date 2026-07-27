@@ -6,12 +6,12 @@ import {
 } from "../agent.mjs"
 
 /**
- * subagent 工具：派生子 agent 处理独立子任务（隔离上下文，只带回报告）。
- * - role: "explore" — 只读工具，搜索/阅读/分析（适合代码库探索）
- * - role: "coder" — 全套工具，独立完成编码任务（适合隔离实现）
- * - 不指定 role — 默认行为，同主 agent 工具集
- * - 一批多个 subagent 调用走并行通道（parallel: true）
- * - 不递归：子 agent 不含 subagent（depth > 0 不注入）
+ * subagent tool: spawn a child agent to handle an independent subtask (isolated context, only the report is returned).
+ * - role: "explore" — read-only tools, search/read/analyze (suitable for codebase exploration)
+ * - role: "coder" — full tool set, self-contained implementation tasks (suitable for isolated coding)
+ * - no role specified — default behavior, same tool set as parent agent
+ * - parallel subagent calls via the parallel channel (parallel: true)
+ * - non-recursive: child agents do not get the subagent tool (depth > 0 is not injected)
  */
 export const subagentTool = {
   name: "subagent",
@@ -33,7 +33,7 @@ export const subagentTool = {
     const parent = ctx.agent
     const role = args.role
 
-    // 按 role 过滤工具集：explore/plan 只读（plan 是规划 agent，交付物是计划本身）
+    // Filter tool set by role: explore/plan are read-only (plan is a planning agent, its deliverable is the plan itself)
     let tools
     if (role === "explore" || role === "plan") {
       const allowed = readonlyToolNames(parent.tools)
@@ -42,14 +42,14 @@ export const subagentTool = {
       tools = parent.tools
     }
 
-    // 按 role 选择 prompt overlay
+    // Select prompt overlay by role
     let overlay = ""
     if (role === "explore") overlay = EXPLORE_OVERLAY
     else if (role === "coder") overlay = CODER_OVERLAY
     else if (role === "plan") overlay = PLAN_OVERLAY
 
-    // explore/plan 强制只读权限；coder/默认角色：AUTO 直接放行，
-    // 手动模式把权限请求排队透传给父 agent 的审批 UI（人在回路，子 agent 不再被静默拒绝）
+    // explore/plan: force read-only permission; coder/default: AUTO passes through directly,
+    // manual mode queues permission requests for the parent agent's approval UI (human in the loop, child agent is no longer silently rejected)
     let childPermission
     if (role === "explore" || role === "plan") {
       childPermission = async () => false
@@ -59,7 +59,7 @@ export const subagentTool = {
       childPermission = async (name, toolArgs) => {
         if (!ctx.onPermissionRequest) return false
         const ask = () => ctx.onPermissionRequest(`${role ?? "sub"}/${name}`, toolArgs)
-        // 并行子 agent 的权限请求排队，避免两个审批同时弹出互相覆盖（question 工具的教训）
+        // Queue parallel child agent permission requests to avoid two popups simultaneously overwriting each other (lesson from question tool)
         parent._permQueue = (parent._permQueue ?? Promise.resolve()).then(ask, ask)
         return parent._permQueue
       }
@@ -75,16 +75,16 @@ export const subagentTool = {
       role,
     })
 
-    // explore/plan：注入 git 上下文（分支/最近提交/工作区状态）——探索与规划都和仓库现状有关（借鉴 kimi-code 的 promptPrefix）
+    // explore/plan: inject git context (branch/recent commits/working tree state) — exploration and planning both relate to current repo state (inspired by kimi-code's promptPrefix)
     let input = args.context ? `Context:\n${args.context}\n\nTask:\n${args.task}` : args.task
     if (role === "explore" || role === "plan") {
       const gitCtx = collectGitContext(parent.cwd)
       if (gitCtx) input = `<untrusted_git_context>\n${escapeXml(gitCtx)}\n</untrusted_git_context>\n\n${input}`
     }
 
-    // relay 正文/思考 token + 工具调用到父 TUI（子 agent 面板显示活动）。
-    // 前缀含唯一 id：并行同 role 子 agent 各自独立，不互相覆盖。
-    // 格式：role#id/  →  onToken("coder#2/正在写..."), onToolCall("coder#2/read", args)
+    // Relay content/reasoning tokens + tool calls to the parent TUI (child agent panel shows activity).
+    // Prefix includes a unique id: parallel child agents with the same role stay independent and don't overwrite each other.
+    // Format: role#id/  →  onToken("coder#2/writing..."), onToolCall("coder#2/read", args)
     parent._subAgentCounter = (parent._subAgentCounter ?? 0) + 1
     const subId = parent._subAgentCounter
     const relayPrefix = `${role ?? "sub"}#${subId}/`
@@ -103,8 +103,8 @@ export const subagentTool = {
     const childRunOpts = { depth: (ctx.depth ?? 0) + 1, maxTurns: DEFAULT_SUBAGENT_TURNS }
     let report = await runAgent(child, input, childOpts, childRunOpts)
 
-    // 报告太短 = 交接不完整：打回扩写一次（借鉴 kimi-code 的 summaryPolicy：min 200 字符、重试 1 次。
-    // 子 agent 的 history 还在，续写指令作为新输入追加，它能看到自己刚才的工作）
+    // Report too short = incomplete handoff: send back for expansion once (inspired by kimi-code's summaryPolicy: min 200 chars, retry 1 time).
+    // The child agent's history is still intact; the continuation instruction is appended as new input so it can see its own earlier work.
     if (report.length < MIN_REPORT_CHARS) {
       report = await runAgent(child, REPORT_CONTINUATION, childOpts, childRunOpts)
     }

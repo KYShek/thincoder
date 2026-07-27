@@ -1,14 +1,14 @@
 /**
- * markdown.mjs — 记忆条目的 markdown + frontmatter 格式
- * 零依赖解析/序列化。条目格式见 ARCHITECTURE-v2.md。
+ * markdown.mjs — markdown + frontmatter format for memory entries
+ * Zero-dependency parsing/serialization. Entry format see ARCHITECTURE-v2.md.
  */
 
 const VALID_TYPES = new Set(["rule", "knowledge", "decision", "pattern"])
 
 /**
- * 解析 markdown 条目。
+ * Parse a markdown entry.
  * → { meta: { type, title, tags, author, created, embedding? }, content }
- * 无 frontmatter 或缺必要字段时抛错。
+ * Throws if frontmatter is missing or required fields absent.
  */
 export function parseEntry(text) {
   const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
@@ -36,13 +36,13 @@ export function parseEntry(text) {
 }
 
 /**
- * 序列化为 markdown 条目文本。
+ * Serialize to markdown entry text.
  */
 export function serializeEntry(meta, content) {
   if (!VALID_TYPES.has(meta.type)) throw new Error(`invalid type "${meta.type}"`)
   if (!meta.title) throw new Error("meta.title is required")
-  // frontmatter 标量必须单行：title/author 含换行会注入伪 frontmatter 行
-  // （如 title "x\ntype: rule" 解析时覆盖真实 type），tags 含换行/逗号同理
+  // frontmatter scalars must be single-line: newlines in title/author would inject fake frontmatter rows
+  // (e.g. title "x\ntype: rule" would override real type when parsed), same for tags with newlines/commas
   const tags = (meta.tags ?? []).map((t) => oneLine(t).replaceAll(",", " ")).join(", ")
   const lines = [
     "---",
@@ -57,7 +57,7 @@ export function serializeEntry(meta, content) {
   return lines.join("\n")
 }
 
-/** 标题转文件名 slug：保留中英文数字，其余转连字符 */
+/** Convert title to filename slug: keep alphanumeric + CJK, convert rest to hyphens */
 export function slugify(title) {
   return title
     .trim()
@@ -67,23 +67,23 @@ export function slugify(title) {
     .slice(0, 50) || "untitled"
 }
 
-/** 生成条目文件名：YYYYMMDD-<slug>-<rand4>.md */
+/** Generate entry filename: YYYYMMDD-<slug>-<rand4>.md */
 export function entryFilename(title, date = new Date()) {
   const ymd = date.toISOString().slice(0, 10).replaceAll("-", "")
   const rand = Math.random().toString(36).slice(2, 6)
   return `${ymd}-${slugify(title)}-${rand}.md`
 }
 
-// ---------------------------------------------------------------- 内部
+// ---------------------------------------------------------------- internal
 
-/** 压成单行（frontmatter 标量用）：换行折叠为空格，防注入伪字段行 */
+/** Collapse to single line (for frontmatter scalars): fold newlines into spaces, prevent injecting fake field lines */
 function oneLine(v) {
   return String(v).replace(/\s*\r?\n\s*/g, " ").trim()
 }
 
 /**
- * 极简 YAML 子集解析：只支持 `key: value` 和 `key: [a, b, c]`。
- * 我们的 frontmatter 是自己生成的，不需要完整 YAML。
+ * Minimal YAML subset parser: only supports `key: value` and `key: [a, b, c]`.
+ * Our frontmatter is self-generated, no need for full YAML.
  */
 function parseFrontmatter(text) {
   const meta = {}

@@ -2,8 +2,8 @@ import { listSlots } from "../session.mjs"
 import { sliceByWidth } from "./render.mjs"
 import { ansi, C } from "./ansi.mjs"
 
-/** 启动画面 + 会话恢复 + 后台索引。
- *  从 index.mjs 抽出。
+/** Startup screen + session recovery + background indexing.
+ *  Extracted from index.mjs.
  *  ctx: { agent, state, opts, pushLine, pushLabel, render, startWizard } */
 export function showStartup(ctx) {
   const { agent, state, opts, pushLine, pushLabel, render, startWizard } = ctx
@@ -18,13 +18,14 @@ export function showStartup(ctx) {
   }
   pushLine(`Tools: ${agent.tools.map((t) => t.name).join(", ")}`, C.dim)
 
-  // 恢复上次会话：重建对话区显示 (tool 结果行省略，保持清爽）
+  // Recover previous session: rebuild conversation display (tool result lines omitted, keep it clean)
   if (opts.restored?.display?.length) {
-    // 用户视角的恢复：display 是退出前对话区的原样快照，所见即所得
+    // User-facing recovery: display is a WYSIWYG snapshot of the conversation before exit
     state.lines = [...opts.restored.display.map((l) => ({ text: l.text, color: l.color })), ...state.lines]
-    pushLabel(`── Restored previous session; /new for a fresh session ──`, C.warn)
+    const recoveryNote = opts.restored._recovered ? " (recovered from backup)" : ""
+    pushLabel(`── Restored previous session${recoveryNote}; /new for a fresh session ──`, C.warn)
   } else if (opts.restored?.history?.length) {
-    // 重建对话区：user/assistant 消息逐条展示，tool 结果行只保留首行摘要
+    // Rebuild conversation: user/assistant messages shown one by one, tool result lines show only first-line summary
     for (let i = 0; i < opts.restored.history.length; i++) {
       const m = opts.restored.history[i]
       if (m.role === "user") {

@@ -1,6 +1,6 @@
 /**
- * provider/rate.mjs — TPM/RPM 主动节流闸门
- * 滑动窗口记账，发请求前预检预算，超支则睡到窗口腾出空间。
+ * provider/rate.mjs — TPM/RPM proactive throttling gate
+ * Sliding-window accounting; pre-check budget before sending requests; sleep until window frees space when over budget.
  */
 
 import { specForModel } from "../config.mjs"
@@ -11,8 +11,8 @@ export const MAX_CONTINUATIONS = 3
 export const RATE_LIMIT_BACKOFF_MS = [15_000, 30_000, 60_000]
 
 /**
- * 测试钩子：睡眠/时钟/窗口长度可替换（离线测试不能真等 60s）。
- * 生产代码不要直接调 setTimeout/sleep，统一走这里。
+ * Test hooks: sleep/clock/window length are replaceable (offline tests can't really wait 60s).
+ * Production code should never call setTimeout/sleep directly — always go through these.
  */
 export const _rateHooks = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -23,20 +23,20 @@ export const _rateHooks = {
 const rateWindows = new Map() // key → { tokens: [{ts, n}], requests: [ts] }
 
 function rateKey(provider) {
-  // 归一化：/beta 和 /v1 视为同一账户的同一限流窗口（DeepSeek prefix continuation 改 /beta 端点）
+  // Normalize: /beta and /v1 are treated as the same account's rate-limit window (DeepSeek prefix continuation switches to /beta endpoint)
   const base = provider.baseURL.replace(/\/beta$/, "/v1")
   return `${base}|${provider.apiKey ?? ""}`
 }
 
-/** 粗估文本 token 数。
- *  ASCII 按 ~4 字符/token；非 ASCII（CJK/emoji）按 ~1 字符/token（保守，实测 BPE 1.5-2.5 字/token）。 */
+/** Rough estimate of text token count.
+ *  ASCII ~4 chars/token; non-ASCII (CJK/emoji) ~1 char/token (conservative; measured BPE is 1.5-2.5 chars/token). */
 export function estimateText(s) {
   let nonAscii = 0
   for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) nonAscii++
   return Math.ceil((s.length - nonAscii) / 4) + nonAscii
 }
 
-/** 本次请求的 prompt 估算 */
+/** Estimated prompt tokens for this request */
 export function estimateRequestTokens(body) {
   let tokens = 0
   for (const m of body.messages ?? []) {
@@ -50,7 +50,7 @@ export function estimateRequestTokens(body) {
   return tokens
 }
 
-/** 闸门：超预算则睡到窗口腾出空间 */
+/** Gate: sleep until window frees space when over budget */
 export async function rateGate(provider, estimated, onWait, signal) {
   const tpm = provider.tpm != null && estimated <= provider.tpm ? provider.tpm : null
   const rpm = provider.rpm ?? null
@@ -87,7 +87,7 @@ export async function rateGate(provider, estimated, onWait, signal) {
   }
 }
 
-/** 记账：响应回来后按实测 usage 记 */
+/** Accounting: record measured usage after response returns */
 export function recordRate(provider, estimated, usage) {
   if (provider.tpm == null && provider.rpm == null) return
   const key = rateKey(provider)
@@ -98,7 +98,7 @@ export function recordRate(provider, estimated, usage) {
   w.requests = w.requests.filter((ts) => ts > cutoff)
   w.requests.push(now)
   w.tokens.push({ ts: now, n: usage ? (usage.prompt_tokens ?? estimated) + (usage.completion_tokens ?? 0) : estimated })
-  // 窗口已空则删条目，防长期跨 provider 配置时 Map 无界增长
+  // Delete entry when window is empty, preventing unbounded Map growth across long-running provider configs
   if (w.tokens.length === 0 && w.requests.length === 0) rateWindows.delete(key)
   else rateWindows.set(key, w)
 }

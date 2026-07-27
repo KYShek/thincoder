@@ -3,6 +3,7 @@
  */
 import { rpcId, CALL_TIMEOUT_MS, ENDPOINT_WAIT_MS, withTimeout } from "./helpers.mjs"
 
+/** Create an MCP HTTP+SSE transport for Streamable HTTP servers */
 export function httpTransport(baseURL, extraHeaders = {}) {
   const url = baseURL.replace(/\/+$/, "")
   let sessionId = null
@@ -82,7 +83,7 @@ export function httpTransport(baseURL, extraHeaders = {}) {
               pending.delete(msg.id)
               resolver(msg)
             }
-          } catch { /* 非 JSON，忽略 */ }
+          } catch { /* not JSON, ignore */ }
         }
       } catch (error) {
         if (!closed) {

@@ -1,6 +1,6 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /plan 命令：切换 plan mode（只读探索 → 设计 → 实现）。
+/** /plan command: toggle plan mode (read-only explore → design → implement).
  *  ctx: { agent, pushLine, pushLabel } */
 export async function handlePlanCommand(ctx) {
   const { agent, pushLine, pushLabel } = ctx

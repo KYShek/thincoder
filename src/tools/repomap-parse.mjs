@@ -1,14 +1,14 @@
 /**
- * repomap-parse.mjs — 仓库依赖图解析（零依赖，纯 regex）
- * 从 code_chunks 取已知文件列表，实时解析每个文件的 import/export 关系，
- * 构建正向依赖图 + 反向引用图。被 repomap.mjs 的 buildSummary / buildOutline 共用。
+ * repomap-parse.mjs — repo dependency graph parser (zero dependencies, pure regex)
+ * Gets known file list from code_chunks, parses each file's import/export relationships in real time,
+ * builds forward dependency graph + reverse reference graph. Shared by repomap.mjs's buildSummary / buildOutline.
  */
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
 /**
- * 扫描全量文件，构建正向依赖图 + 反向引用图。
- * 返回 { deps, importers, fileCount } 供 buildOutline / buildSummary 共用。
+ * Scan all files, build forward dependency graph + reverse reference graph.
+ * Returns { deps, importers, fileCount } shared by buildOutline / buildSummary.
  */
 export function buildDepGraph(db, cwd) {
   const allFiles = db.prepare(`SELECT DISTINCT path FROM code_chunks ORDER BY path`).all().map((r) => r.path)
@@ -34,7 +34,7 @@ export function buildDepGraph(db, cwd) {
       exports = parseExports(lines, ext)
     }
 
-    // 把 import 路径解析成相对路径（处理 ./ ../）
+    // Resolve import paths to relative paths (handle ./ ../)
     const resolved = []
     for (let imp of imports) {
       if (imp.startsWith("./")) imp = imp.slice(2)
@@ -62,17 +62,17 @@ export function buildDepGraph(db, cwd) {
   return { deps, importers, fileCount: allFiles.length }
 }
 
-// ---------------------------------------------------------- 内部实现
+// ---------------------------------------------------------- internal implementation
 
 function normalizeExt(p) {
   return p.replace(/\.(m?js|jsx|tsx?)$/i, "")
 }
 
-/** 提取 JS/TS 文件的 import 路径（去掉 .ts/.js/.mjs 后缀统一） */
+/** Extract JS/TS file import paths (normalize by stripping .ts/.js/.mjs suffixes) */
 function parseImports(lines, ext) {
   const imports = []
   const text = lines.join("\n")
-  // 普通 import
+  // standard import
   const re = /import\s+(?:{[^}]*}|\*\s+as\s+\w+|\w+\s*,?\s*(?:{[^}]*})?)\s*from\s*['"]([^'"]+)['"]|import\s+['"]([^'"]+)['"]/g
   let m
   while ((m = re.exec(text))) {
@@ -90,7 +90,7 @@ function parseImports(lines, ext) {
   return [...new Set(imports)]
 }
 
-/** 提取 JS/TS 文件的 export 符号 */
+/** Extract JS/TS file export symbols */
 function parseExports(lines, ext) {
   const exports = []
   const text = lines.join("\n")
@@ -107,17 +107,17 @@ function parseExports(lines, ext) {
     if (name) exports.push(name)
     else if (!exports.some((e) => e === "default")) exports.push("default")
   }
-  // export { a, b as c } —— 优先取 as 后的导出名
+  // export { a, b as c } — prefer the "as" alias as the exported name
   const braceRe = /export\s*\{([^}]+)\}/g
   while ((m = braceRe.exec(text))) {
     for (const name of m[1].split(",")) {
       const parts = name.trim().split(/\s+/)
-      // "a as b" → b（导出名），"a" → a
+      // "a as b" → b (exported name), "a" → a
       const exported = parts.length >= 3 ? parts[2] : parts[0]
       if (exported) exports.push(exported)
     }
   }
-  // export const { a, b } = ...（解构导出）
+  // export const { a, b } = ... (destructured export)
   const destructRe = /export\s+(?:const|let|var)\s*\{([^}]+)\}\s*=/g
   while ((m = destructRe.exec(text))) {
     for (const name of m[1].split(",")) {
@@ -129,7 +129,7 @@ function parseExports(lines, ext) {
   return [...new Set(exports)]
 }
 
-/** 提取 Python 的 import 和顶层 def/class */
+/** Extract Python imports and top-level def/class */
 function parsePyOutline(lines) {
   const imports = []
   const symbols = []
@@ -155,9 +155,9 @@ function parsePyOutline(lines) {
 }
 
 /**
- * Python 相对导入 → 相对文件路径：
- * 前导 n 个点表示上溯 n-1 层（"."=当前包），模块点号转路径分隔符。
- * 非相对导入（不以 . 开头）或纯包导入（"from . import x"）返回 null。
+ * Python relative import → relative file path:
+ * Leading n dots mean go up n-1 levels ("." = current package), module dots become path separators.
+ * Non-relative imports (not starting with .) or bare package imports ("from . import x") return null.
  */
 function pyRelPath(mod) {
   if (!mod?.startsWith(".")) return null

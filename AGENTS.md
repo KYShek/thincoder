@@ -4,7 +4,7 @@
 
 Zero-dependency AI coding CLI: pure Node.js >= 24 standard library, no build step, ESM (`.mjs`).
 LLMs are accessed via the OpenAI-compatible protocol (`src/provider/` native fetch + SSE streaming), tracking only flagship models from leading Chinese vendors (DeepSeek / Kimi / GLM / Qwen / MiniMax).
-Design docs live in `../thincoder-design/` (REQUIREMENTS.md / ARCHITECTURE.md / ARCHITECTURE-v2.md).
+Design docs live in `docs/design/` (REQUIREMENTS.md / ARCHITECTURE.md / ARCHITECTURE-v2.md / EVALUATION.md).
 
 ## Hard Constraints
 
@@ -12,7 +12,7 @@ Design docs live in `../thincoder-design/` (REQUIREMENTS.md / ARCHITECTURE.md / 
 - No TypeScript, no build/bundling step of any kind
 - Every change must actually be verified by running it — no "written but never run" code
 
-## Design Principles (full text: ../thincoder-design/ARCHITECTURE.md#设计原则)
+## Design Principles (full text: docs/design/ARCHITECTURE.md#设计原则)
 
 1. **Zero dependencies** — every npm package is a unit of technical debt
 4. **Accuracy over brevity** — context should err on the long side; 1M windows are the norm

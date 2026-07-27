@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
-import { stringWidth, wrapText } from "../src/tui-render.mjs"
+import { stringWidth, wrapText } from "../src/tui/render.mjs"
 import { createMemory, put, search, list, remove, putMarkdown, syncDir } from "../src/memory.mjs"
 import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
 import { builtinTools } from "../src/tools/index.mjs"
@@ -32,7 +32,7 @@ test("wrapText: 按宽度折行，保留空行", () => {
 })
 
 test("sanitizeDisplay: 控制字符不破坏终端网格（\\r 覆盖、\\t 超宽、ANSI/响铃冲屏）", async () => {
-  const { sanitizeDisplay } = await import("../src/tui-render.mjs")
+  const { sanitizeDisplay } = await import("../src/tui/render.mjs")
   // CRLF 文件的 read 预览行：\r 残留会把光标打回行首，clearLine 误清整行
   assert.equal(sanitizeDisplay("1\tconst a = 1;\r"), "1    const a = 1;")
   // 行中间的 \r（老 Mac 文件）：后续字符会从行首覆盖前面内容
@@ -424,7 +424,7 @@ test("team 层: 双 clone 同步 + 冲突诚实报错", async () => {
     git(dirB, "add", file1)
     git(dirB, "commit", "-m", "memory: conflicting update")
 
-    await assert.rejects(() => pullTeam(dirB), /冲突/)
+    await assert.rejects(() => pullTeam(dirB), /Team memory sync conflict/)
     // rebase 已中止：B 仓库不处于冲突状态
     const status = git(dirB, "status", "--porcelain")
     assert.ok(!status.split("\n").some((l) => l.startsWith("UU")))
@@ -436,7 +436,7 @@ test("team 层: 双 clone 同步 + 冲突诚实报错", async () => {
 // ---------------------------------------------------------------- TUI 输入布局 / 项目指令 / websearch
 
 test("layoutInput: 折行与光标定位", async () => {
-  const { layoutInput } = await import("../src/tui-render.mjs")
+  const { layoutInput } = await import("../src/tui/render.mjs")
   // 空输入：一行带提示符，光标在提示符后
   let l = layoutInput([], 0, 10)
   assert.deepEqual(l.lines, ["▸ "])
@@ -695,7 +695,7 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
 // ---------------------------------------------------------------- markdown 表格重排
 
 test("formatTables: CJK 表格按显示宽度对齐", async () => {
-  const { formatTables, stringWidth } = await import("../src/tui-render.mjs")
+  const { formatTables, stringWidth } = await import("../src/tui/render.mjs")
   const md = [
     "前文不是表格",
     "| 工具 | 需要确认 | 作用 |",
@@ -717,7 +717,7 @@ test("formatTables: CJK 表格按显示宽度对齐", async () => {
 })
 
 test("formatTables: 超宽表格按列收缩到可用宽度", async () => {
-  const { formatTables, stringWidth } = await import("../src/tui-render.mjs")
+  const { formatTables, stringWidth } = await import("../src/tui/render.mjs")
   const md = [
     "| 标题 | 非常非常非常非常非常长的一列内容 |",
     "|---|---|",

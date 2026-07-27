@@ -1,17 +1,17 @@
 /**
- * agent/dispatch.mjs — 工具调用两段式执行
+ * agent/dispatch.mjs — two-phase tool call execution
  */
 import { offloadToolResult } from "./helpers.mjs"
 
 /**
- * 两段式执行：
- * 阶段一（串行）：逐个解析参数 + planMode 检查 + 权限确认（有副作用工具）
- * 阶段二（保序执行）：严格按模型调用顺序——连续的只读/parallel 工具并发成组，
- * 有副作用工具在原位置逐个串行（写后读同一文件的一批调用，读必须看到写后的内容）。
- * 返回按调用顺序排列的结果数组（每项含 ok 标记执行成败）。
+ * Two-phase execution:
+ * Phase 1 (serial): parse args one by one + planMode check + permission confirmation (side-effecting tools)
+ * Phase 2 (order-preserving): strictly preserve model call order — consecutive readonly/parallel tools run as concurrent batches,
+ * side-effecting tools run serially in their original position (if a batch writes-then-reads the same file, the read must see the post-write content).
+ * Returns a results array in call order (each entry has an ok flag indicating success/failure).
  */
 export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, depth = 0, signal) {
-  // ---- 阶段一：串行准备 ----
+  // ---- Phase 1: serial preparation ----
   const prepared = []
   for (const toolCall of toolCalls) {
     const tool = toolByName.get(toolCall.name)
@@ -34,7 +34,7 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
     }
 
     if (!tool.readonly) {
-      // autoApprove 短路：agent 已标记自动批准时不再询问
+      // autoApprove short-circuit: skip prompt when agent is already marked for auto-approval
       const allowed = agent.autoApprove
         ? true
         : callbacks.onPermissionRequest
@@ -50,13 +50,15 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
     prepared.push({ toolCall, tool, args })
   }
 
-  // ---- 阶段二：保序执行 ----
+  // ---- Phase 2: order-preserving execution ----
   const runOne = async (item) => {
     if (item.error) return { ...item, result: `Error: ${item.error}`, ok: false }
     if (item.denied) {
       const reason = item.reason === "plan mode"
         ? "Error: plan mode is active — only read-only tools are allowed. Exit plan mode first."
-        : "Error: permission denied by user"
+        : item.reason === "denied by user"
+          ? "Error: permission denied by user"
+          : "Error: no permission handler configured — cannot execute this tool"
       return { ...item, result: reason, ok: false }
     }
     try {

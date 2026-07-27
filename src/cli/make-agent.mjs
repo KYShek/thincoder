@@ -6,26 +6,26 @@ import { createMemory, memoryTools, syncDir, codeSearchTool, docSearchTool } fro
 import { repoOutlineTool } from "../tools/repomap.mjs"
 import { builtinTools } from "../tools/index.mjs"
 
-/** 组装一个带记忆的 agent（同步各层索引后返回） */
-export async function makeAgent() {
+/** Assemble an agent with memory, MCP tools, and code/doc indices attached (sync all layers, then return) */
+export async function assembleAgent() {
   const config = loadConfig()
   const provider = config.provider
   const providers = config.providersList
   const memory = createMemory({ dbPath: config.memory.dbPath })
-  // 向量检索：配了 embedding 就启用（惰性生成向量，首次搜索时补算）
+  // Vector retrieval: enabled if embedding is configured (lazy vector generation, computed on first search)
   if (config.embedding?.apiKey) {
     const { createEmbedder } = await import("../embedding.mjs")
     memory.embedder = createEmbedder(config.embedding)
   }
   const cwd = process.cwd()
-  // code/doc 索引按 origin（项目根目录）隔离：检索只查本项目
+  // code/doc indices isolated by origin (project root dir): search only scoped to this project
   memory.codeOrigin = cwd
-  // Project 层：启动时同步 .thincoder/memory/ 目录到索引（有就同步，没有就跳过）
+  // Project layer: sync .thincoder/memory/ dir to index on startup (sync if present, skip otherwise)
   if (config.memory.projectDir) {
     memory.projectOrigin = join(cwd, config.memory.projectDir)
     await syncDir(memory, { layer: "project", dir: memory.projectOrigin })
   }
-  // Team 层（可选）：首次自动 clone；启动只索引本地目录，拉取远端走显式 thincoder sync
+  // Team layer (optional): auto-clone on first use; startup only indexes local dir, remote pull via explicit thincoder sync
   const team = teamConfig(config)
   if (team) {
     const { ensureClone } = await import("../git/gitmem.mjs")
@@ -34,7 +34,7 @@ export async function makeAgent() {
   }
   const baseTools = [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team }), codeSearchTool(memory), docSearchTool(memory), repoOutlineTool(memory.db, cwd)]
 
-  // MCP servers：并行连接（一个死 server 不会拖住启动），失败的收集警告（TUI 下 stderr 不可见，通过 agent 对象传递）
+  // MCP servers: connect in parallel (a dead server won't block startup), collect failures as warnings (stderr invisible in TUI, passed via agent object)
   const mcpServers = config.mcp?.servers ?? []
   let mcpTools = []
   const mcpWarnings = []
@@ -67,7 +67,7 @@ export async function makeAgent() {
   return agent
 }
 
-/** 读取 team 配置并补全默认目录；未配置返回 null */
+/** Read team config and fill in default dir; return null if not configured */
 export function teamConfig(config) {
   const team = config.memory?.team
   if (!team?.repo) return null
@@ -75,7 +75,7 @@ export function teamConfig(config) {
   return { name, repo: team.repo, dir: team.dir ?? join(configDir, "teams", name) }
 }
 
-/** 条目作者：git config user.name 兜底 unknown */
+/** Entry author: git config user.name, fallback "unknown" */
 export function gitAuthor() {
   try {
     return execSync("git config user.name", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown"

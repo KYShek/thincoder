@@ -2,8 +2,8 @@ import { existsSync } from "node:fs"
 import { basename } from "node:path"
 import { ansi, C } from "./ansi.mjs"
 
-/** /init 命令：探测项目类型，生成 AGENTS.md 骨架。
- *  从 slash-commands.mjs 抽出。
+/** /init command: detect project type, generate AGENTS.md skeleton.
+ *  Extracted from slash-commands.mjs.
  *  ctx: { agent, pushLine, pushLabel } */
 export async function handleInitCommand(ctx) {
   const { agent, pushLine, pushLabel } = ctx
@@ -15,7 +15,7 @@ export async function handleInitCommand(ctx) {
     return
   }
 
-  // 探测项目类型与关键信息
+  // Detect project type and key information
   let name = basename(agent.cwd)
   let lang = "", cmds = ""
 

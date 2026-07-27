@@ -13,11 +13,12 @@ import { existsSync } from "node:fs";
 import { join, relative, dirname } from "node:path";
 
 /**
- * 解析统一 diff（unified diff）：返回 [{ path, isNew, hunks: [{ ops: [{type:" "|"-"|"+", text}] }] }]
- * 按 @@ 头的行数计数消费 hunk 行——LLM 常把上下文空行剥成纯空行，靠计数而不是行首字符判断 hunk 边界
+ * Parse a unified diff: returns [{ path, isNew, hunks: [{ ops: [{type:" "|"-"|"+", text}] }] }]
+ * Consume hunk lines by the line counts in the @@ header — LLMs often strip context blank lines to pure empty lines,
+ * so we use counts rather than first characters to determine hunk boundaries
  */
 function parsePatch(patch) {
-  // 补丁文本常来自 CRLF 终端/模型输出，行尾 \r 会混进 hunk 内容导致上下文对不上，统一剥掉
+  // Patch text often comes from CRLF terminals/model output; trailing \r mixed into hunk content breaks context matching, strip uniformly
   const lines = patch.replace(/\r(?=\n|$)/g, "").split("\n")
   const files = []
   let cur = null
@@ -48,7 +49,7 @@ function parsePatch(patch) {
         if (i >= lines.length) throw new Error("Malformed patch: hunk truncated (line counts in @@ header not satisfied)")
         const hl = lines[i]
         if (hl.startsWith("\\")) { i++; continue } // "\ No newline at end of file"
-        const tag = hl === "" ? " " : hl[0] // 纯空行按上下文行宽容处理
+        const tag = hl === "" ? " " : hl[0] // pure blank line: treat leniently as context line
         const text = hl === "" ? "" : hl.slice(1)
         if (tag === " ") { hunk.ops.push({ type: " ", text }); oldNeed--; newNeed-- }
         else if (tag === "-") { hunk.ops.push({ type: "-", text }); oldNeed-- }
@@ -59,13 +60,13 @@ function parsePatch(patch) {
       cur.hunks.push(hunk)
       continue
     }
-    i++ // diff --git / index / 空行等元信息跳过
+    i++ // skip diff --git / index / blank lines and other metadata
   }
   if (files.length === 0) throw new Error("No file changes found in patch (need --- / +++ headers)")
   return files
 }
 
-/** 在内存行数组上按序应用 hunks；任何一步失败抛错（调用方保证不落盘）。比较时忽略行尾 \r，上下文行保留原始字节 */
+/** Apply hunks sequentially onto an in-memory line array; any failure throws (caller guarantees nothing is written to disk). Ignores trailing \r when comparing; context lines retain original bytes */
 function applyHunks(fileLines, hunks, eol, path) {
   const cr = eol === "\r\n" ? "\r" : ""
   for (let h = 0; h < hunks.length; h++) {
@@ -88,7 +89,7 @@ function applyHunks(fileLines, hunks, eol, path) {
     const out = []
     let src = pos
     for (const op of hunks[h].ops) {
-      if (op.type === " ") out.push(fileLines[src++]) // 上下文保留原始行（行尾/空白原样）
+      if (op.type === " ") out.push(fileLines[src++]) // preserve original context line (trailing whitespace as-is)
       else if (op.type === "-") src++
       else out.push(op.text + cr)
     }
@@ -107,13 +108,13 @@ export const applyPatchTool = {
     required: ["patch"],
   },
   readonly: false,
-  /** 供 agent 层追踪触碰文件（多路径，替代单 path 参数） */
+  /** For the agent layer to track touched files (multi-path, replaces single path parameter) */
   touchedPaths(args) {
     try { return parsePatch(args.patch ?? "").map((f) => f.path) } catch { return [] }
   },
   async execute(args, ctx) {
     const files = parsePatch(args.patch ?? "")
-    // 先全部读入内存试算：任何一个 hunk 不上就整体抛错，不写半个补丁（原子性）
+    // Read all into memory first for trial: if any hunk fails, abort entirely — never write a partial patch (atomicity)
     const planned = []
     for (const f of files) {
       const abs = resolveInCwd(ctx, f.path)
@@ -129,7 +130,7 @@ export const applyPatchTool = {
         planned.push({ abs, path: f.path, content: lines.join("\n"), isNew: false })
       }
     }
-    // 多文件写：先全部写 .tmp，全部成功后再 rename——任一写失败清理已写的 .tmp 不影响已落盘的文件
+    // Multi-file write: write all to .tmp first, rename only after all succeed — failure cleans up written .tmp without affecting committed files
     const { rename, unlink } = await import("node:fs/promises")
     const written = []
     try {
@@ -142,7 +143,7 @@ export const applyPatchTool = {
         await rename(p.abs + ".thincoder-tmp", p.abs)
       }
     } catch (renameError) {
-      // rename 阶段失败：清理残留 .tmp 文件
+      // rename phase failed: clean up leftover .tmp files
       for (const abs of written) {
         try { await unlink(abs + ".thincoder-tmp") } catch {}
       }
@@ -181,7 +182,7 @@ export const syntaxCheckTool = {
       })
       return `Syntax OK: ${args.path}`
     } catch (e) {
-      // node --check 把错误写到 stderr
+      // node --check writes errors to stderr
       const msg = (e.stderr || e.stdout || e.message || "").trim()
       return `Syntax error in ${args.path}:\n${msg || "(unknown)"}`
     }
@@ -207,15 +208,15 @@ export const deleteTool = {
     if (!existsSync(abs)) throw new Error(`File not found: ${args.path}`)
     const s = await stat(abs)
     if (s.isDirectory()) throw new Error(`"${args.path}" is a directory — use bash to remove directories`)
-    // git 跟踪文件拒绝直接删除（安全网）；未跟踪的放行
-    // 用解析后的相对路径（统一正斜杠），防反斜杠/非常规路径绕过 ls-files 匹配
+    // git-tracked files: refuse direct deletion (safety net); untracked: allow
+    // Use resolved relative path (normalized forward slashes) to prevent backslash/unusual paths from bypassing ls-files matching
     const rel = relative(ctx.cwd, abs).replace(/\\/g, "/")
     let tracked = false
     try {
       execFileSync("git", ["ls-files", "--error-unmatch", "--", rel], { cwd: ctx.cwd, stdio: "ignore" })
       tracked = true
     } catch {
-      // 未跟踪 / 非 git 仓库
+      // untracked / non-git repo
     }
     if (tracked && !args.force) throw new Error(`"${args.path}" is git-tracked. Set force=true to delete anyway.`)
     await unlink(abs)

@@ -12,7 +12,8 @@ Design philosophy (the entire meaning of the name): if the Node standard library
 
 ## Features
 
-- **Agent loop**: LLM ↔ tool-call loop, 100-turn cap against runaway, completion guard blocks unverified changes
+- **Fix-verify loop**: file changes without `verify` get pushed back — syntax check + tests must pass before the agent can claim completion (auto-repair up to 3 rounds)
+- **Checkpoint system**: auto-snapshot before every user task, `list`/`create`/`rewind` tools for the model, single-file restore — rewinding itself is reversible (pre-rewind state auto-saved)
 - **Codebase understanding** ⭐0.5.0: `repo_outline` (dependency outline, auto-injected at startup), `code_search` (source FTS5 + vectors + JSDoc extraction), `doc_search` (docs chunked by ## headings) — background indexing, auto-incremental updates on file writes, three tools guided by "structure → intent → details"
 - **Model adaptation** ⭐: top-tier only, latest only. Built-in flagship models from five leading Chinese vendors — DeepSeek / Kimi / GLM / Qwen / MiniMax. No legacy model compatibility, no local model support. Auto-matched context windows, truncation-resume protocols (prefix/partial), thinking-mode APIs (thinking.type / reasoning_effort), reasoning_content echo strategies (reasoningEcho), output limits, temperature range clamping — all five deeply adapted.
 - **Toolset**: `read` / `write` / `edit` / `bash` / `glob` (supports `**`) / `grep` / `websearch` / `ls` / `fetch` + `read_image` (image/video paste) + three retrieval tools + MCP — all zero-dependency, file tools confined to the working directory

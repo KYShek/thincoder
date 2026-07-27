@@ -1,5 +1,5 @@
 /**
- * provider/core.mjs — LLM 调用核心
+ * provider/core.mjs — LLM call core
  * chat / listModels / createProvider / requestWithRetry / readSSE
  */
 
@@ -10,10 +10,13 @@ import {
   estimateRequestTokens, rateGate, recordRate,
 } from "./rate.mjs"
 
+const FETCH_TIMEOUT_MS = 120000
+
+/** Create a validated provider config object from raw config */
 export function createProvider(config) {
-  if (!config?.baseURL) throw new Error("provider config: baseURL is required")
-  if (!config?.apiKey) throw new Error("provider config: apiKey is required (config file or THINCODER_API_KEY env)")
-  if (!config?.model) throw new Error("provider config: model is required")
+  if (!config?.baseURL) throw new Error("provider config: baseURL is required — configure providers in ~/.thincoder/config.json")
+  if (!config?.apiKey) throw new Error("provider config: apiKey is required — set THINCODER_API_KEY env or configure in ~/.thincoder/config.json")
+  if (!config?.model) throw new Error("provider config: model is required — configure in ~/.thincoder/config.json")
   return {
     baseURL: config.baseURL.replace(/\/+$/, ""),
     apiKey: config.apiKey,
@@ -27,6 +30,7 @@ export function createProvider(config) {
   }
 }
 
+/** Send a streaming chat completion request with automatic continuation on truncation */
 export async function chat(provider, { messages, tools, onToken, onReasoning, onWait, signal }) {
   const spec = specForModel(provider.model)
   const body = {
@@ -108,6 +112,7 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
   return result
 }
 
+/** List available model IDs from the provider's /models endpoint */
 export async function listModels(provider, { signal } = {}) {
   const response = await fetch(`${provider.baseURL}/models`, {
     headers: { Authorization: `Bearer ${provider.apiKey}` },
@@ -138,7 +143,7 @@ async function requestWithRetry(provider, body, signal, onWait) {
           Authorization: `Bearer ${provider.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
       })
     } catch (error) {
       if (error.name === "AbortError") throw error
@@ -233,7 +238,7 @@ async function readSSE(response, { onToken, onReasoning }) {
 }
 
 function betaBaseURL(baseURL) {
-  // DeepSeek prefix 续写走 /beta 端点；只处理 /v1 后缀，缺 /v1 时追加 /beta
+  // DeepSeek prefix continuation uses /beta endpoint; only handle /v1 suffix, append /beta when /v1 is missing
   if (/\/v1$/.test(baseURL)) return baseURL.replace(/\/v1$/, "/beta")
   return baseURL.endsWith("/") ? baseURL + "beta" : baseURL + "/beta"
 }

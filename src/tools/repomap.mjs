@@ -1,16 +1,16 @@
 /**
- * repomap.mjs — 仓库依赖大纲（零依赖，纯 regex）
- * 实时解析 import/export 关系，生成紧凑文本给 LLM 理解代码结构。
- * 不存索引——每次调用读文件解析，~50ms 完成。
+ * repomap.mjs — repo dependency outline (zero dependencies, pure regex)
+ * Real-time import/export parsing, generates compact text for LLMs to understand code structure.
+ * No index stored — reads and parses files on each call, ~50ms.
  */
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
-/** 提取 JS/TS 文件的 import 路径（去掉 .ts/.js/.mjs 后缀统一） */
+/** Extract JS/TS file import paths (normalize by stripping .ts/.js/.mjs suffixes) */
 function parseImports(lines, ext) {
   const imports = []
   const text = lines.join("\n")
-  // 普通 import
+  // standard import
   const re = /import\s+(?:{[^}]*}|\*\s+as\s+\w+|\w+\s*,?\s*(?:{[^}]*})?)\s*from\s*['"]([^'"]+)['"]|import\s+['"]([^'"]+)['"]/g
   let m
   while ((m = re.exec(text))) {
@@ -28,7 +28,7 @@ function parseImports(lines, ext) {
   return [...new Set(imports)]
 }
 
-/** 提取 JS/TS 文件的 export 符号 */
+/** Extract JS/TS file export symbols */
 function parseExports(lines, ext) {
   const exports = []
   const text = lines.join("\n")
@@ -45,17 +45,17 @@ function parseExports(lines, ext) {
     if (name) exports.push(name)
     else if (!exports.some((e) => e === "default")) exports.push("default")
   }
-  // export { a, b as c } —— 优先取 as 后的导出名
+  // export { a, b as c } — prefer the "as" alias as the exported name
   const braceRe = /export\s*\{([^}]+)\}/g
   while ((m = braceRe.exec(text))) {
     for (const name of m[1].split(",")) {
       const parts = name.trim().split(/\s+/)
-      // "a as b" → b（导出名），"a" → a
+      // "a as b" → b (exported name), "a" → a
       const exported = parts.length >= 3 ? parts[2] : parts[0]
       if (exported) exports.push(exported)
     }
   }
-  // export const { a, b } = ...（解构导出）
+  // export const { a, b } = ... (destructured export)
   const destructRe = /export\s+(?:const|let|var)\s*\{([^}]+)\}\s*=/g
   while ((m = destructRe.exec(text))) {
     for (const name of m[1].split(",")) {
@@ -67,7 +67,7 @@ function parseExports(lines, ext) {
   return [...new Set(exports)]
 }
 
-/** 提取 Python 的 import 和顶层 def/class */
+/** Extract Python imports and top-level def/class */
 function parsePyOutline(lines) {
   const imports = []
   const symbols = []
@@ -93,9 +93,9 @@ function parsePyOutline(lines) {
 }
 
 /**
- * Python 相对导入 → 相对文件路径：
- * 前导 n 个点表示上溯 n-1 层（"."=当前包），模块点号转路径分隔符。
- * 非相对导入（不以 . 开头）或纯包导入（"from . import x"）返回 null。
+ * Python relative import → relative file path:
+ * Leading n dots mean go up n-1 levels ("." = current package), module dots become path separators.
+ * Non-relative imports (not starting with .) or bare package imports ("from . import x") return null.
  */
 function pyRelPath(mod) {
   if (!mod?.startsWith(".")) return null
@@ -110,8 +110,8 @@ function normalizeExt(p) {
 }
 
 /**
- * 内部：扫描全量文件，构建正向依赖图 + 反向引用图。
- * 返回 { deps, importers, fileCount } 供 buildOutline / buildSummary 共用。
+ * Internal: scan all files, build forward dependency graph + reverse reference graph.
+ * Returns { deps, importers, fileCount } shared by buildOutline / buildSummary.
  */
 function _buildDepGraph(db, cwd) {
   const allFiles = db.prepare(`SELECT DISTINCT path FROM code_chunks ORDER BY path`).all().map((r) => r.path)
@@ -137,7 +137,7 @@ function _buildDepGraph(db, cwd) {
       exports = parseExports(lines, ext)
     }
 
-    // 把 import 路径解析成相对路径（处理 ./ ../）
+    // Resolve import paths to relative paths (handle ./ ../)
     const resolved = []
     for (let imp of imports) {
       if (imp.startsWith("./")) imp = imp.slice(2)
@@ -166,12 +166,12 @@ function _buildDepGraph(db, cwd) {
 }
 
 /**
- * 生成紧凑架构摘要（替换旧的全量注入）。
- * 三层信息，每层信息密度递减：
- *  1. 目录级依赖（多目录项目才有意义，单目录跳过）
- *  2. 枢纽文件 Top-12（被 import 最多的文件——架构骨架）
- *  3. 入口文件（无人 import 的文件——启动/顶层入口）
- * 输出天然有界（~1000-2000 字符），不再需要 OUTLINE_INJECT_MAX 硬截断。
+ * Generate a compact architecture summary (replaces the old full-dump injection).
+ * Three layers, each with decreasing information density:
+ *  1. Directory-level dependencies (meaningful only for multi-directory projects, skipped for single-directory)
+ *  2. Hub files Top-12 (most-imported files — architecture skeleton)
+ *  3. Entry points (files with no importers — startup/top-level entry points)
+ * Output is naturally bounded (~1000-2000 chars), no more OUTLINE_INJECT_MAX hard truncation.
  */
 export function buildSummary(db, cwd) {
   const graph = _buildDepGraph(db, cwd)
@@ -181,7 +181,7 @@ export function buildSummary(db, cwd) {
   const out = []
   out.push(`${fileCount} source files indexed.`)
 
-  // 1) 目录级依赖
+  // 1) Directory-level dependencies
   const dirDeps = new Map() // dir → Set<imported-dir>
   const dirSet = new Set()
   for (const [rel, d] of deps) {
@@ -204,7 +204,7 @@ export function buildSummary(db, cwd) {
     }
   }
 
-  // 2) 枢纽文件 Top-12：按被 import 次数降序
+  // 2) Hub files Top-12: sorted by import count descending
   const HUB_LIMIT = 12
   const hubScores = []
   for (const [rel] of deps) {
@@ -227,7 +227,7 @@ export function buildSummary(db, cwd) {
     }
   }
 
-  // 3) 入口文件：无人 import 的（叶子/入口）
+  // 3) Entry points: files not imported by others (leaf/entry)
   const entries = []
   for (const [rel] of deps) {
     const key = rel.replace(/\.(m?js|jsx|tsx?)$/i, "")
@@ -247,7 +247,7 @@ export function buildSummary(db, cwd) {
   return out.join("\n")
 }
 
-/** 从 code_chunks 取已知文件列表（复用索引），按路径解析生成大纲文本 */
+/** Get known file list from code_chunks (reuse index), parse by path to generate outline text */
 export function buildOutline(db, cwd, focusPath) {
   const graph = _buildDepGraph(db, cwd)
   if (!graph) return "(no indexed source files; run codeSync or /reindex first)"
@@ -260,7 +260,7 @@ export function buildOutline(db, cwd, focusPath) {
     const d = deps.get(rel)
     if (!d) continue
     const parts = []
-    // imported by（匹配时去掉扩展名，因为 import 路径通常不含 .mjs/.js 后缀）
+    // imported by (strip extension when matching, since import paths usually don't include .mjs/.js suffix)
     const key = rel.replace(/\.(m?js|jsx|tsx?)$/i, "")
     const rev = importers.get(key)
     if (rev?.size) parts.push(`← imported by: ${[...rev].join(", ")}`)
@@ -281,8 +281,8 @@ export function buildOutline(db, cwd, focusPath) {
 }
 
 /**
- * 生成 repo_outline 工具（只读）。
- * 需要 memory.db（复用 code_chunks 文件列表）和 cwd。
+ * Build the repo_outline tool (read-only).
+ * Requires memory.db (reuses code_chunks file list) and cwd.
  */
 export function repoOutlineTool(db, cwd) {
   return {

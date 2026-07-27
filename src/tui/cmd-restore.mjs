@@ -1,6 +1,6 @@
 import { ansi, C } from "./ansi.mjs"
 
-/** /restore 命令：列出 git checkpoint 并回滚到选中快照。
+/** /restore command: list git checkpoints and roll back to selected snapshot.
  *  ctx: { agent, openPicker, pushLine, pushLabel } */
 export async function handleRestoreCommand(ctx) {
   const { agent, openPicker, pushLine, pushLabel } = ctx

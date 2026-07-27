@@ -1,10 +1,10 @@
 /**
- * memory/code-index.mjs — 代码和文档的分块、语言检测、符号提取
+ * memory/code-index.mjs — code and document chunking, language detection, symbol extraction
  */
 
 import { segmentCJK, CODE_EXTS, DOC_EXTS, SKIP_DIRS, BIG_FILE_LINES } from "./schema.mjs"
 
-/** 推断文件语言（按扩展名） */
+/** Infer file language by extension */
 export function detectLanguage(filename) {
   const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase()
   const map = {
@@ -21,8 +21,8 @@ export function detectLanguage(filename) {
 }
 
 /**
- * 用正则提取 JS/TS 文件的顶层符号声明（函数、类、const 导出等）。
- * 返回 [{ name, line, kind }]。
+ * Extract top-level symbol declarations (functions, classes, const exports, etc.)
+ * from JS/TS files using regex. Returns [{ name, line, kind }].
  */
 export function extractSymbols(lines, ext) {
   const jsish = new Set([".mjs", ".js", ".ts", ".jsx", ".tsx"])
@@ -41,7 +41,7 @@ export function extractSymbols(lines, ext) {
   return symbols
 }
 
-/** 提取 Python 文件的顶层 def/class。 */
+/** Extract top-level def/class from Python files. */
 export function extractPySymbols(lines) {
   const symbols = []
   const re = /^(?:async\s+)?(?:def|class)\s+(\w+)/gm
@@ -54,8 +54,9 @@ export function extractPySymbols(lines) {
 }
 
 /**
- * 将一个文件拆成代码块。小文件整文件一块；大文件按符号切分，符号间的内容并入前一个符号块。
- * 每个块会额外带上符号前的 JSDoc / docstring 注释，提升搜索质量。
+ * Split a file into code chunks. Small files become a single chunk;
+ * large files are split by symbol, with inter-symbol content merged into the preceding symbol chunk.
+ * Each chunk includes the JSDoc/docstring before its symbol to improve search quality.
  */
 export function chunkCode(lines, filepath) {
   const ext = filepath.slice(filepath.lastIndexOf(".")).toLowerCase()
@@ -91,9 +92,9 @@ export function chunkCode(lines, filepath) {
 }
 
 /**
- * 提取指定行之前的 JSDoc / docstring 注释。
- * JS/TS: 向前扫描 /** ... *​/ 或 // 连续注释行
- * Python: 符号定义行的下一行开始找 """...""" docstring
+ * Extract the JSDoc/docstring comment preceding a given line.
+ * JS/TS: scan backwards for JSDoc block comments or consecutive // comment lines
+ * Python: look for a """...""" docstring on the line after the symbol definition
  */
 export function extractLeadingDoc(lines, lineNum, ext) {
   if (ext === ".py") {
@@ -139,12 +140,12 @@ export function extractLeadingDoc(lines, lineNum, ext) {
   return text.length > 0 && text.length < 300 ? text : ""
 }
 
-/** 将控制权交还给事件循环一个 tick（让键盘输入有机会被处理） */
+/** Yield control to the event loop for one tick (allows keyboard input to be processed) */
 export function yieldTick() {
   return new Promise((r) => setTimeout(r, 0))
 }
 
-/** 单文件入索引：删除旧块 → 分块 → 插入新块 */
+/** Index a single file: delete old chunks → chunk → insert new chunks */
 export function _upsertCodeFile(memory, origin, rel, lines, lang, mtimeMs) {
   const chunks = chunkCode(lines, rel)
   memory.db.exec("BEGIN")
@@ -166,8 +167,8 @@ export function _upsertCodeFile(memory, origin, rel, lines, lang, mtimeMs) {
 }
 
 /**
- * 按 ## 标题切分 markdown 文件。每个 ## section 独立入索引，
- * 标题路径做 heading（如 "README.md > 部署 > Docker"），方便检索定位。
+ * Split a markdown file by ## headings. Each ## section is indexed independently,
+ * with the heading path as the heading label (e.g. "README.md > Deployment > Docker") for easy retrieval.
  */
 export function chunkMarkdown(lines, filepath) {
   const chunks = []
@@ -190,6 +191,7 @@ export function chunkMarkdown(lines, filepath) {
   return chunks.filter((c) => c.content)
 }
 
+/** Upsert a documentation file's chunks into the doc_chunks table within a transaction */
 export function _upsertDocFile(memory, origin, rel, lines, mtimeMs) {
   const chunks = chunkMarkdown(lines, rel)
   const lang = rel.endsWith(".rst") ? "rst" : rel.endsWith(".adoc") ? "asciidoc" : rel.endsWith(".txt") ? "text" : "markdown"

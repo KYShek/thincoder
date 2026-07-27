@@ -1,14 +1,14 @@
 /**
- * tui-render.mjs — 终端显示工具（纯函数，零依赖）
- * 字符宽度计算、CJK/emoji 排版、文本折行、markdown 表格重排。
+ * tui-render.mjs — terminal display utilities (pure functions, zero dependencies)
+ * Character width calculation, CJK/emoji typesetting, text wrapping, markdown table reformatting.
  */
 
-/** 字符显示宽度：CJK/emoji 计 2，组合字符计 0，其余计 1 */
+/** Character display width: CJK/emoji count as 2, combining characters as 0, rest as 1 */
 export function charWidth(cp) {
   if (
-    (cp >= 0x300 && cp <= 0x36f) || // 组合变音符
-    (cp >= 0x200b && cp <= 0x200f) || // 零宽
-    cp === 0xfe0f // emoji 变体选择符
+    (cp >= 0x300 && cp <= 0x36f) || // combining diacritics
+    (cp >= 0x200b && cp <= 0x200f) || // zero-width
+    cp === 0xfe0f // emoji variation selector
   ) {
     return 0
   }
@@ -29,13 +29,14 @@ export function charWidth(cp) {
   return 1
 }
 
+/** Compute the display width of a string (CJK characters count as 2) */
 export function stringWidth(text) {
   let w = 0
   for (const ch of text) w += charWidth(ch.codePointAt(0))
   return w
 }
 
-/** 按显示宽度裁剪 */
+/** Slice by display width */
 export function sliceByWidth(text, maxWidth) {
   let w = 0
   let out = ""
@@ -48,19 +49,19 @@ export function sliceByWidth(text, maxWidth) {
   return out
 }
 
-/** 按显示宽度右补空格 */
+/** Right-pad by display width */
 function padByWidth(text, width) {
   return text + " ".repeat(Math.max(0, width - stringWidth(text)))
 }
 
-// ---------------------------------------------------------------- markdown 表格重排
+// ---------------------------------------------------------------- markdown table reformatting
 
 const isTableRow = (line) => (line.match(/\|/g) ?? []).length >= 2
 const isTableSeparator = (line) => /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes("-")
 
 /**
- * 识别文本中的 markdown 表格块，按显示宽度重排 (修 CJK 错位）。
- * width 为可用显示宽度；过宽的表格按列收缩。非表格行原样保留。
+ * Identify markdown table blocks in text, reformat by display width (fix CJK misalignment).
+ * width is the available display width; over-wide tables shrink columns. Non-table lines are kept as-is.
  */
 export function formatTables(text, width) {
   const lines = text.split("\n")
@@ -94,31 +95,31 @@ function renderTable(block, width) {
   const colCount = Math.max(...rows.map((r) => r.length))
   for (const r of rows) while (r.length < colCount) r.push("")
 
-  // 列宽：先按内容，超宽则从最宽列开始收缩 (收缩到至少 3）
+  // Column widths: content first; if too wide, shrink from widest column (down to at least 3)
   const widths = Array.from({ length: colCount }, (_, c) =>
     Math.max(3, ...rows.map((r) => stringWidth(r[c] ?? ""))),
   )
-  const borders = colCount * 3 + 1 // " │ " 分隔 + 首尾 |
+  const borders = colCount * 3 + 1 // " │ " separators + leading/trailing |
   while (widths.reduce((a, b) => a + b, 0) + borders > width && Math.max(...widths) > 3) {
     const widest = widths.indexOf(Math.max(...widths))
     widths[widest]--
   }
 
-  // 单元格渲染：sliceByWidth 截断 (表头单行），padByWidth 补齐
+  // Cell rendering: sliceByWidth truncates (single-line for header), padByWidth pads
   const fmtCell = (text, ci) => padByWidth(sliceByWidth(text, widths[ci]), widths[ci])
   const fmtRow = (cells) => "│ " + cells.map((c, i) => fmtCell(c, i)).join(" │ ") + " │"
 
-  // 分隔线
+  // separator line
   const separator = "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤"
 
   const out = []
-  // 表头：单行截断 (表头通常是短标签，折行不如截断直观）
+  // Header: single-line truncation (header labels are usually short, truncation beats wrapping)
   out.push(fmtRow(rows[0]))
   out.push(separator)
 
-  // 数据行：过长单元格按列宽折行，一个逻辑行可能对应多条显示行
+  // Data rows: over-long cells wrap by column width; one logical row may produce multiple display lines
   for (let r = 2; r < rows.length; r++) {
-    // wrapText 返回按 width 折行后的行数组，保留内部 \n
+    // wrapText returns array of lines wrapped by width, preserving internal \n
     const wrapped = rows[r].map((cell, ci) => wrapText(cell, widths[ci]))
     const height = Math.max(...wrapped.map((lines) => lines.length))
     for (let lineIdx = 0; lineIdx < height; lineIdx++) {
@@ -129,7 +130,7 @@ function renderTable(block, width) {
   return out
 }
 
-/** 输入区布局：把输入缓冲折行，同时算出光标的 (行, 列) 位置 (显示宽度） */
+/** Input area layout: wrap input buffer into lines, also compute cursor (row, col) position (display width) */
 export function layoutInput(chars, cursor, width) {
   const PROMPT = "\u25b8 "
   const lines = []
@@ -147,8 +148,8 @@ export function layoutInput(chars, cursor, width) {
   }
   for (let i = 0; i <= chars.length; i++) {
     const ch = chars[i]
-    // 先处理 flush：宽字符可能触发换行，cursorCol 必须在 flush 之后取，
-    // 否则光标会停在上一行的末尾而非下一行的起始
+    // Handle flush first: wide chars can trigger line wrap, cursorCol must be taken after flush,
+    // otherwise the cursor lands at end of previous line instead of beginning of next
     if (ch !== undefined && ch !== "\n") {
       const w = charWidth(ch.codePointAt(0))
       if (col + w > avail()) flush()
@@ -171,8 +172,10 @@ export function layoutInput(chars, cursor, width) {
 }
 
 /**
- * 显示净化：控制字符会破坏终端网格数学 (\r 回车覆盖、\t 宽度误判致整帧错位、ANSI/响铃冲屏）。
- * 只动显示层——模型看到的工具结果原文不变；session 里已存的脏 display 回放时也经此净化。
+ * Display sanitization: control characters can break terminal grid math (\r carriage return overwrite,
+ * \t width misjudgment causing entire frame misalignment, ANSI/bell screen floods).
+ * Display-layer only — raw tool results the model sees are unchanged; dirty displays already in session
+ * are also cleaned during replay.
  */
 const ANSI_SEQUENCE_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g
 export function sanitizeDisplay(s) {
@@ -185,7 +188,7 @@ export function sanitizeDisplay(s) {
     .replace(/\n+$/, "")
 }
 
-/** 文本按宽度折行 (保留 \n），返回行数组 */
+/** Wrap text by display width (preserving \n), returns array of lines */
 export function wrapText(text, width) {
   const lines = []
   for (const rawLine of text.split("\n")) {

@@ -1,9 +1,9 @@
 /**
- * render-frame.mjs — 终端帧渲染（纯计算，无副作用）
- * 从 state + agent + layout 产生 ANSI 帧字符串，返回光标位置。
+ * render-frame.mjs — terminal frame renderer (pure computation, no side effects)
+ * Produces an ANSI frame string from state + agent + layout, returns cursor position.
  *
- * 布局计算见 layout.mjs（computeLayout 纯函数）。
- * 副作用（scroll 归位、ctxCache 更新）由调用方在渲染前执行。
+ * Layout calculation lives in layout.mjs (computeLayout pure function).
+ * Side effects (scroll clamping, ctxCache update) are performed by the caller before rendering.
  */
 import { ansi, C, ESC } from "./ansi.mjs"
 import { computeLayout, MAX_SUB_LINES } from "./layout.mjs"
@@ -13,7 +13,7 @@ import {
 import { specForModel } from "../config.mjs"
 import { basename } from "node:path"
 
-// ---------- status bar slash-command hints (查表替代 if-else 链) ----------
+// ---------- status bar slash-command hints (lookup table instead of if-else chain) ----------
 const SLASH_HINTS = {
   "/config": "open config menu",
   "/model": "select model & manage providers",
@@ -25,8 +25,8 @@ const SLASH_HINTS = {
 }
 
 /**
- * 渲染一帧，返回 { frame, cursorRow, cursorCol }。
- * 纯函数：不修改 state/agent。
+ * Render one frame, returns { frame, cursorRow, cursorCol }.
+ * Pure function: does not modify state/agent.
  */
 export function renderFrame(state, agent, opts) {
   const cols = opts.cols || 80
@@ -145,7 +145,7 @@ export function renderFrame(state, agent, opts) {
   // ---- queue preview ----
   if (panels.queue) {
     const preview = sliceByWidth(state.queue[0].text, W - 20)
-    out.push(`${C.dim}❯ Queue: ${state.queue.length} pending${state.queue.length > 1 ? ` (next: ${preview}…)` : ` (next: ${preview})`} — Ctrl+D del${ansi.reset}${ansi.clearLine}`)
+    out.push(`${C.dim}❯ Queue: ${state.queue.length} pending${state.queue.length > 1 ? ` (next: ${preview}…)` : ` (next: ${preview})`} — Ctrl+D delete${ansi.reset}${ansi.clearLine}`)
   }
 
   // ---- input box ----
@@ -184,7 +184,7 @@ export function renderFrame(state, agent, opts) {
   return { frame, cursorRow, cursorCol }
 }
 
-// ---------------------------------------------------------- 内部实现
+// ---------------------------------------------------------- internal helpers
 
 /** Count conversation lines after sanitize + wrap (for scroll clamping). Pure. */
 export function countConvLines(state, cols) {
@@ -305,8 +305,8 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
   const ctxPct = Math.round((state.ctxCache.tokens / ctxThreshold) * 100)
   const ctxHint = ctxPct > 0
     ? ctxPct >= 80
-      ? ` │ ${ansi.reset}${C.warn}ctx ${ctxPct}%${ansi.reset}${ansi.dim}`
-      : ` │ ctx ${ctxPct}%`
+      ? ` │ ${ansi.reset}${C.warn}context ${ctxPct}%${ansi.reset}${ansi.dim}`
+      : ` │ context ${ctxPct}%`
     : ""
   const queueHint = state.queue.length > 0 ? ` │ queue: ${state.queue.length}` : ""
   return ` ${statusText}${taskHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`

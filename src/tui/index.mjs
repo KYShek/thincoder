@@ -1,19 +1,19 @@
 /**
- * tui.mjs — 裸 ANSI 终端 UI
- * 零依赖：raw mode 键盘输入、ANSI 转义渲染、自研宽字符换行。
- * 布局：header / 对话区 (可滚动）/ todo 面板 (有任务时）/ 输入框 / 状态栏。
+ * tui.mjs — bare ANSI terminal UI
+ * Zero dependencies: raw mode keyboard input, ANSI escape rendering, custom wide-char wrapping.
+ * Layout: header / conversation (scrollable) / todo panel (when tasks exist) / input box / status bar.
  *
- * 大型逻辑块已拆到独立模块：
- *   agent-turn.mjs    — agent 循环 + 回调构建
- *   key-handler.mjs   — 键盘事件分发
- *   startup.mjs       — 启动画面 + 会话恢复 + 后台索引
- *   interaction.mjs   — 权限审批 + 问答
- *   pickers.mjs       — 通用列表选择器 + 模型选择器
- *   wizard.mjs        — 首次配置向导
- *   slash-commands.mjs — 斜杠命令分发
+ * Large logic blocks extracted to independent modules:
+ *   agent-turn.mjs    — agent loop + callback construction
+ *   key-handler.mjs   — keyboard event dispatch
+ *   startup.mjs       — startup screen + session restore + background indexing
+ *   interaction.mjs   — permission approval + Q&A
+ *   pickers.mjs       — generic list picker + model picker
+ *   wizard.mjs        — first-launch config wizard
+ *   slash-commands.mjs — slash command dispatch
  *   config-helpers.mjs — persistRaw / syncProviderField / maskKey
- *   clipboard.mjs     — 剪贴板图片粘贴
- *   distill-cmd.mjs   — /distill 命令
+ *   clipboard.mjs     — clipboard image paste
+ *   distill-cmd.mjs   — /distill command
  */
 
 import { emitKeypressEvents } from "node:readline"
@@ -36,9 +36,9 @@ import { showStartup, backgroundIndex } from "./startup.mjs"
 import { createConfigHelpers } from "./config-helpers.mjs"
 
 /**
- * 启动 TUI，接管终端直到退出。
- * agent: createAgent 的返回值
- * opts: { projectDir?, team?, author? } —— /distill 写入 project/team 层时用
+ * Start the TUI, taking over the terminal until exit.
+ * agent: return value of createAgent
+ * opts: { projectDir?, team?, author? } — used by /distill when writing to project/team layers
  */
 export async function startTUI(agent, opts = {}) {
   if (!process.stdin.isTTY) {
@@ -48,43 +48,44 @@ export async function startTUI(agent, opts = {}) {
   const distillOpts = opts
 
   const state = {
-    lines: [], // 对话区行：{ text, color }
-    streaming: "", // current流式缓冲
-    input: [], // 输入缓冲区 (码点数组）
+    lines: [], // conversation lines: { text, color }
+    streaming: "", // current streaming buffer
+    input: [], // input buffer (codepoint array)
     cursor: 0,
     history: [],
     historyIndex: -1,
-    scroll: 0, // 从底部向上的滚动行数
+    scroll: 0, // scroll lines from bottom upward
     processing: false,
     controller: null, // AbortController for current agent run
     permission: null, // { name, args, resolve }
-    permissionPreview: [], // 权限审批的内容预览行 (渲染在输入框上方，不分隔）
-    question: null, // { text, options, resolve } — agent 的 question 工具回调
-    picker: null, // 模型选择器 { entries, lines, index, scroll, selectedLine }
-    wizard: null, // 首次Config向导 { step, index, scroll, selectedLine, fields, error, lines }
-    tasks: agent.tasks ?? [], // task 工具的任务列表 (状态栏显示进度）；会话恢复时直接带上，全完成自动收起
-    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }, // 累计 token 用量 (状态栏显示）
-    ctxCache: { len: -1, tokens: 0 }, // 上下文占用估算缓存 (estimateTokens 是 O(n)，history 变长才重算）
-    reasoning: "", // 思考流缓冲 (暗色展示）
-    completion: null, // Tab 补全状态 { candidates, index }
-    toolStreams: {}, // 各工具的实时输出 (按工具名隔离，并行工具互不串扰）
-    subTasks: {}, // 子 agent 面板：{ roleName: { role, text, done } }，每 role 一行，完成后标记 done 停留片刻
-    outputPanels: {}, // 通用工具输出面板：{ toolName: { text, done } } — 执行时流式显示，完成后收摘要
-    currentTool: null, // 正在执行的工具名 (状态栏显示）
-    processingStarted: 0, // 本轮处理开始时间 (状态栏计时）
+    permissionPreview: [], // content preview lines for permission approval (rendered above input box, without separation)
+    question: null, // { text, options, resolve } — agent question tool callback
+    picker: null, // model picker { entries, lines, index, scroll, selectedLine }
+    wizard: null, // first-launch config wizard { step, index, scroll, selectedLine, fields, error, lines }
+    tasks: agent.tasks ?? [], // task list from task tool (progress shown in status bar); carried over on session restore, auto-collapsed when all done
+    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }, // cumulative token usage (shown in status bar)
+    ctxCache: { len: -1, tokens: 0 }, // context utilization estimate cache (estimateTokens is O(n), only recompute when history grows)
+    reasoning: "", // thinking stream buffer (dimmed display)
+    completion: null, // Tab completion state { candidates, index }
+    toolStreams: {}, // per-tool live output (isolated by tool name, parallel tools don't interleave)
+    subTasks: {}, // sub-agent panel: { roleName: { role, text, done } }, one line per role, marked done briefly after completion
+    outputPanels: {}, // generic tool output panel: { toolName: { text, done } } — streamed live during execution, collapsed to summary on completion
+    currentTool: null, // currently executing tool name (shown in status bar)
+    processingStarted: 0, // current turn start time (status bar timer)
     status: "Ready",
-    queue: [], // 处理中排队的待执行消息：[{ text }]，处理完自动取下一条
+    queue: [], // queued messages while processing: [{ text }], auto-dequeued when current turn finishes
   }
 
-  // 恢复的会话如果所有任务completed，自动收起 todo 面板 (对齐运行时行为）
+  // On session restore, if all tasks are completed, auto-collapse the todo panel (match runtime behavior)
   if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
     state.tasks = []
   }
 
-  // 输入流先过一道滤网：鼠标序列 (滚轮）在这里拦截处理，剥净后才交给 keypress 解析，
-  // 防止序列残片 (如 "64;72;42M"）漏进输入框
+  // Input stream goes through a filter: mouse sequences (scroll wheel) are intercepted and handled here,
+  // stripped clean before passing to keypress parsing, preventing sequence fragments (e.g. "64;72;42M")
+  // from leaking into the input box
   const keyStream = new PassThrough()
-  let mousePending = "" // 跨 chunk 的不完整鼠标序列尾部
+  let mousePending = "" // incomplete mouse sequence tail spanning chunks
   let lastRenderedScroll = 0
   emitKeypressEvents(keyStream)
   process.stdin.setRawMode(true)
@@ -94,7 +95,7 @@ export async function startTUI(agent, opts = {}) {
     let text = mousePending + chunk.toString("utf8")
     mousePending = ""
 
-    // 滚轮：\x1b[<64;…M 上滚，\x1b[<65;…M 下滚 (每次 3 行）
+    // Scroll wheel: \x1b[<64;…M = scroll up, \x1b[<65;…M = scroll down (3 lines each)
     for (const m of text.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)) {
       if (Number(m[1]) === 64) {
         state.scroll += 3
@@ -103,7 +104,7 @@ export async function startTUI(agent, opts = {}) {
       }
     }
 
-    // 剥掉完整鼠标序列；不完整的尾部留到下一块数据再拼
+    // Strip complete mouse sequences; keep incomplete tail for reassembly with next chunk
     text = text.replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, "")
     const tail = text.match(/\x1b\[<[\d;]*$/)
     if (tail) {
@@ -122,18 +123,18 @@ export async function startTUI(agent, opts = {}) {
   const cleanup = () => {
     if (cleanedUp) return
     cleanedUp = true
-    // 退出前保存会话 (同步写）；先归档current到槽位，再落新——不丢
+    // Save session before exit (synchronous write); archive current to a slot first, then save new — never lose data
     try {
       archiveCurrent(agent.cwd)
       saveSession(agent, state.lines)
     } catch {
-      // 存失败不耽误退出
+      // Save failure shouldn't block exit
     }
-    // Off MCP stdio 子进程，不留孤儿
+    // Kill MCP stdio subprocesses, don't leave orphans
     try {
       closeAllMcp(agent)
     } catch {
-      // 关不掉就算了，进程马上退出
+      // Can't close? fine, process is exiting anyway
     }
     process.stdin.setRawMode(false)
     process.stdout.write(ansi.mouseOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
@@ -149,14 +150,14 @@ export async function startTUI(agent, opts = {}) {
     render()
   }
 
-  /** 消息块标签：空行 + 标签行。用户/助手消息之间留出呼吸空间 */
+  /** Message block label: blank line + label line. Breathing space between user/assistant messages */
   const pushLabel = (text, color) => {
     if (state.lines.length > 0) state.lines.push({ text: "", color: C.dim })
     state.lines.push({ text, color })
     render()
   }
 
-  // 每轮对话只打一次助手标签 (首个 token 或首个工具调用时）
+  // Only emit the assistant label once per turn (on first token or first tool call)
   let assistantLabeled = false
   const ensureAssistantLabel = () => {
     if (!assistantLabeled) {
@@ -165,9 +166,10 @@ export async function startTUI(agent, opts = {}) {
     }
   }
 
-  // ---------------------------------------------------------- 渲染
+  // ---------------------------------------------------------- Render
 
-  // 帧去重 + 流式限流：内容没变的帧不重写 (防闪屏）；token 洪流合并到 ~25fps
+  // Frame dedup + streaming rate limit: skip re-rendering unchanged frames (prevents flicker);
+  // merge token flood to ~25fps
   let lastFrame = ""
   let renderTimer = null
 
@@ -180,8 +182,8 @@ export async function startTUI(agent, opts = {}) {
   }
 
   function render() {
-    // 副作用：scroll 归位 + ctxCache 更新 + overlay scroll 归位
-    // (renderFrame 是纯函数，副作用集中在此)
+    // Side effects: reset scroll + update ctxCache + clamp overlay scroll
+    // (renderFrame is pure, side effects concentrated here)
     const dims = { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }
     const layout = computeLayout(state, dims)
     // clamp conversation scroll
@@ -206,9 +208,9 @@ export async function startTUI(agent, opts = {}) {
     })
     if (frame !== lastFrame) {
       lastFrame = frame
-      process.stdout.write(frame)
+      process.stdout.write(ansi.hideCursor + frame)
     }
-    // 光标：输入态定位到输入框内；权限确认/菜单态时隐藏
+    // Cursor: position inside input box when editing; hide during permission/menu mode
     if (state.permission || state.question || state.picker || state.wizard?.step === "provider") {
       process.stdout.write(ansi.hideCursor)
     } else {
@@ -218,7 +220,7 @@ export async function startTUI(agent, opts = {}) {
 
   process.stdout.on("resize", render)
 
-  // ---------------------------------------------------------- 提交
+  // ---------------------------------------------------------- Submit
 
   async function submit() {
     const text = state.input.join("").trim()
@@ -229,10 +231,11 @@ export async function startTUI(agent, opts = {}) {
     state.historyIndex = -1
     state.scroll = 0
 
-    // 斜杠Commands：本地处理，不进入 agent
+    // Slash commands: handled locally, don't enter agent loop
     if (text.startsWith("/")) {
       if (state.processing) {
-        // 处理中：只读命令（切换/查看/帮助）直接执行，有副作用的（清屏/新建/重建索引/提取）排队
+        // While processing: read-only commands (switch/view/help) execute directly;
+        // side-effect commands (clear/new/reindex/extract) are queued
         const cmd0 = text.split(/\s+/)[0]
         const ALIASES = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
         const resolved0 = ALIASES[cmd0] ?? cmd0
@@ -249,7 +252,7 @@ export async function startTUI(agent, opts = {}) {
       return
     }
 
-    // 处理中：入队等待，不立即执行
+    // While processing: queue for later, don't execute immediately
     if (state.processing) {
       state.queue.push({ text })
       pushLabel(`❯ You: (queued #${state.queue.length})`, ansi.bold + C.user)
@@ -261,15 +264,15 @@ export async function startTUI(agent, opts = {}) {
     await turn(text)
   }
 
-  // 交互原语：权限审批 + 问答输入，实现在 interaction.mjs
+  // Interaction primitives: permission approval + Q&A input, implemented in interaction.mjs
   const { askPermission, askQuestion } = createInteraction({
     agent, state, pushLine, pushLabel, render, summarize,
   })
 
-  // 剪贴板图片粘贴：实现在 clipboard.mjs
+  // Clipboard image paste: implemented in clipboard.mjs
   const pasteClipboardImage = () => pasteClipboardImageImpl({ agent, state, pushLine, render })
 
-  // agent 循环：实现在 agent-turn.mjs
+  // Agent loop: implemented in agent-turn.mjs
   const turnCtx = {
     agent, state, pushLine, pushLabel, render, scheduleRender, ensureAssistantLabel,
     askPermission, askQuestion, handleSlash: null, summarize,
@@ -278,17 +281,17 @@ export async function startTUI(agent, opts = {}) {
   }
   const turn = (text) => runAgentTurn(turnCtx, text)
 
-  // ---------------------------------------------------------- 斜杠Commands
+  // ---------------------------------------------------------- Slash Commands
 
-  // 配置辅助：实现在 config-helpers.mjs
+  // Config helpers: implemented in config-helpers.mjs
   const { persistRaw, syncProviderField, maskKey } = createConfigHelpers(agent)
 
-  // 模型选择器 + 通用 picker：实现在 pickers.mjs
+  // Model picker + generic picker: implemented in pickers.mjs
   const { openPicker, closePicker, renderPickerLines, openModelPicker, setProviderKey } = createPickers({
     agent, state, render, ansi, C, pushLine, pushLabel, persistRaw, askQuestion, maskKey,
   })
 
-  // 初始 Config 向导：实现在 wizard.mjs，通过 ctx 传入闭包依赖
+  // First-launch config wizard: implemented in wizard.mjs, closure deps passed via ctx
   const { startWizard, renderWizard, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems } = createWizard({
     agent, state, pushLine, pushLabel, render, persistRaw,
     openModelPicker: () => openModelPicker(),
@@ -297,7 +300,7 @@ export async function startTUI(agent, opts = {}) {
   // /distill: impl in distill-cmd.mjs, ctx-passed
   const runDistill = () => runDistillImpl({ agent, state, pushLine, render, askPermission, distillOpts })
 
-  // 斜杠命令分发、Tab 补全：实现在 slash-commands.mjs，通过 ctx 传入闭包依赖
+  // Slash command dispatch + Tab completion: implemented in slash-commands.mjs, closure deps passed via ctx
   const { handleSlash, completions, handleTab } = createSlashCommands({
     agent, state, distillOpts,
     pushLine, pushLabel, render,
@@ -308,12 +311,12 @@ export async function startTUI(agent, opts = {}) {
     runDistill,
     exit: () => { cleanup(); setTimeout(() => process.exit(0), 100) },
   })
-  // handleSlash 被 turnCtx 引用（循环依赖：submit → turn → handleSlash），在此回填
+  // handleSlash is referenced by turnCtx (circular dep: submit → turn → handleSlash), backfilled here
   turnCtx.handleSlash = handleSlash
 
-  // ---------------------------------------------------------- 键盘 / 鼠标
+  // ---------------------------------------------------------- Keyboard / Mouse
 
-  // keypress 挂在过滤后的 keyStream 上：鼠标序列已在上游滤网中处理并剥除
+  // keypress is attached to filtered keyStream: mouse sequences already intercepted and stripped upstream
   const onKeypress = createKeyHandler({
     agent, state, render, closePicker, renderPickerLines,
     handleSlash, handleTab, submit, pasteClipboardImage,
@@ -322,7 +325,7 @@ export async function startTUI(agent, opts = {}) {
   })
   keyStream.on("keypress", onKeypress)
 
-  // ---------------------------------------------------------- 启动画面 + 后台索引
+  // ---------------------------------------------------------- Startup screen + background indexing
 
   showStartup({ agent, state, opts, pushLine, pushLabel, render, startWizard })
   backgroundIndex({ agent, state, render })

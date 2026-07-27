@@ -1,8 +1,8 @@
 /**
- * checkpoint.mjs — 工作区快照与回滚
- * 快照 = git diff HEAD 补丁 + 未跟踪文件副本（尊重 .gitignore）。
- * 仅 git 仓库内可用。回滚前会先打新快照（回滚可逆）。
- * rewind 支持 path 参数按文件恢复（只还原指定文件）。
+ * checkpoint.mjs — workspace snapshot and rollback
+ * Snapshot = git diff HEAD patch + untracked file copies (respects .gitignore).
+ * Only available inside git repos. Rewind creates a new snapshot first (rewind is reversible).
+ * rewind supports a path parameter for per-file restore (restores only the specified file).
  */
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -10,6 +10,8 @@ import { existsSync, readFileSync } from "node:fs"
 import { cp, mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { configDir } from "../config.mjs"
+
+const CWD_HASH_LEN = 12
 
 const MAX_CHECKPOINTS = 20
 
@@ -23,11 +25,11 @@ function git(cwd, args, { allowFail = false } = {}) {
 }
 
 function checkpointRoot(cwd) {
-  const hash = createHash("sha1").update(cwd).digest("hex").slice(0, 12)
+  const hash = createHash("sha1").update(cwd).digest("hex").slice(0, CWD_HASH_LEN)
   return join(configDir, "checkpoints", hash)
 }
 
-/** 从 unified diff 提取改动过的跟踪文件列表 */
+/** Extract the list of tracked files changed from a unified diff */
 function trackedFilesFromPatch(patch) {
   if (!patch.trim()) return []
   const files = new Set()
@@ -35,9 +37,9 @@ function trackedFilesFromPatch(patch) {
   return [...files].sort()
 }
 
-/** 从 unified diff 提取单个文件的补丁块 */
+/** Extract a single file's patch hunks from a unified diff */
 function extractFileHunks(patch, filePath) {
-  // 按文件切分：每个文件块以 "diff --git" 开头
+  // Split by file: each file block starts with "diff --git"
   const sections = patch.split(/(?=^diff --git )/m)
   for (const sec of sections) {
     if (!sec.trim()) continue
@@ -48,35 +50,35 @@ function extractFileHunks(patch, filePath) {
   return ""
 }
 
-/** 当前目录是否 git 仓库 */
+/** Whether the current directory is a git repo */
 export function isGitRepo(cwd) {
   return git(cwd, ["rev-parse", "--is-inside-work-tree"], { allowFail: true }) === "true"
 }
 
 /**
- * 打快照。返回 { id, time, files } 或 null（非 git 仓库）。
+ * Create a snapshot. Returns { id, time, files } or null (non-git repo).
  */
 export async function createCheckpoint(cwd) {
   if (!isGitRepo(cwd)) return null
 
-  // 随机后缀：同一毫秒内两次快照的 id 不互撞（排序仍按时间戳前缀有序）
+  // Random suffix: prevents id collisions for two snapshots in the same millisecond (sorting stays ordered by timestamp prefix)
   const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6)
   const dir = join(checkpointRoot(cwd), id)
   await mkdir(join(dir, "untracked"), { recursive: true })
 
-  // 跟踪文件的改动 → 补丁
+  // Tracked file changes → patch
   const patch = git(cwd, ["diff", "HEAD", "--binary"], { allowFail: true }) ?? ""
   await writeFile(join(dir, "patch.diff"), patch, "utf8")
   const tracked = trackedFilesFromPatch(patch)
 
-  // 未跟踪文件（尊重 .gitignore）→ 原样复制
+  // Untracked files (respects .gitignore) → copy as-is
   const untrackedRaw = git(cwd, ["ls-files", "--others", "--exclude-standard"], { allowFail: true }) ?? ""
   const untracked = untrackedRaw ? untrackedRaw.split("\n").filter(Boolean) : []
   for (const rel of untracked) {
     const src = join(cwd, rel)
     const dst = join(dir, "untracked", rel)
     await mkdir(dirname(dst), { recursive: true })
-    await copyFile(src, dst).catch(() => {}) // 复制失败（socket/设备文件等）跳过
+    await copyFile(src, dst).catch(() => {}) // Copy failed (socket/device file etc.) — skip
   }
 
   await writeFile(join(dir, "meta.json"), JSON.stringify({
@@ -87,7 +89,7 @@ export async function createCheckpoint(cwd) {
   return { id, time: Date.now(), files: untracked.length + tracked.length, tracked, untracked }
 }
 
-/** 列出快照（新→旧），含文件变更概要 */
+/** List checkpoints (newest→oldest), with file change summary */
 export async function listCheckpoints(cwd) {
   const root = checkpointRoot(cwd)
   if (!existsSync(root)) return []
@@ -96,7 +98,7 @@ export async function listCheckpoints(cwd) {
   for (const id of ids) {
     try {
       const meta = JSON.parse(await readFile(join(root, id, "meta.json"), "utf8"))
-      // 兼容旧快照（无 tracked 字段）：从补丁文件提取
+      // Compat with old checkpoints (no tracked field): extract from patch file
       const tracked = meta.tracked ?? (() => {
         try {
           return trackedFilesFromPatch(readFileSync(join(root, id, "patch.diff"), "utf8"))
@@ -108,15 +110,15 @@ export async function listCheckpoints(cwd) {
         tracked,
       })
     } catch {
-      // 损坏的快照跳过
+      // Corrupted checkpoint — skip
     }
   }
   return out
 }
 
-// ---- 恢复核心 ----
+// ---- restore core ----
 
-/** 从快照目录完整恢复跟踪文件：reset 到 HEAD → apply 补丁 */
+/** Full restore of tracked files from a checkpoint: reset to HEAD → apply patch */
 async function fullRestoreTracked(cwd, dir) {
   git(cwd, ["restore", "--source=HEAD", "--staged", "--worktree", "."])
   const patch = await readFile(join(dir, "patch.diff"), "utf8")
@@ -126,7 +128,7 @@ async function fullRestoreTracked(cwd, dir) {
   return Boolean(patch.trim())
 }
 
-/** 从快照目录完整恢复未跟踪文件：删除新建的 → 还原快照时的 */
+/** Full restore of untracked files from a checkpoint: delete new ones → restore from snapshot */
 async function fullRestoreUntracked(cwd, dir, meta) {
   const nowUntracked = (git(cwd, ["ls-files", "--others", "--exclude-standard"], { allowFail: true }) ?? "")
     .split("\n")
@@ -152,9 +154,9 @@ async function fullRestoreUntracked(cwd, dir, meta) {
   return { deleted, restored }
 }
 
-/** 只恢复单个跟踪文件：checkout HEAD → 用该文件的补丁块 apply */
+/** Restore a single tracked file: checkout HEAD → apply that file's patch hunks */
 async function partialRestoreTracked(cwd, patchContent, filePath) {
-  // 先把文件重置到 HEAD 状态
+  // Reset the file to HEAD state first
   git(cwd, ["checkout", "HEAD", "--", filePath], { allowFail: true })
   const hunks = extractFileHunks(patchContent, filePath)
   if (!hunks) return false
@@ -168,7 +170,7 @@ async function partialRestoreTracked(cwd, patchContent, filePath) {
   }
 }
 
-/** 只恢复单个未跟踪文件 */
+/** Restore a single untracked file */
 async function partialRestoreUntracked(cwd, dir, filePath) {
   const src = join(dir, "untracked", filePath)
   if (!existsSync(src)) return false
@@ -177,16 +179,16 @@ async function partialRestoreUntracked(cwd, dir, filePath) {
   return true
 }
 
-// ---- 回滚 ----
+// ---- rewind ----
 
 /**
- * 回滚到指定快照（先把当前状态存成新快照，保证回滚可逆）。
+ * Rewind to a specific snapshot (saves current state as a new snapshot first, making rewind reversible).
  *
- * 选项：
- * - path: 只恢复这一个文件（跟踪或未跟踪均可）；不删别的文件。
- *   不传则做完整回滚（所有改动 → 快照时状态）。
+ * Options:
+ * - path: restore only this single file (tracked or untracked); other files are left untouched.
+ *   Omit for a full rewind (all changes → snapshot state).
  *
- * 返回摘要 { patchApplied, deleted?, restored? }，path 模式下含 { file, type }。
+ * Returns summary { patchApplied, deleted?, restored? }; in path mode includes { file, type }.
  */
 export async function rewind(cwd, id, { path } = {}) {
   const root = checkpointRoot(cwd)
@@ -195,12 +197,12 @@ export async function rewind(cwd, id, { path } = {}) {
   const meta = JSON.parse(await readFile(join(dir, "meta.json"), "utf8"))
   const patchContent = await readFile(join(dir, "patch.diff"), "utf8")
 
-  // 回滚也可逆：先给当前状态打快照
+  // Rewind is reversible: snapshot current state first
   const preRewindCp = await createCheckpoint(cwd)
 
-  // ---- 按文件恢复 ----
+  // ---- per-file restore ----
   if (path) {
-    // 判断是跟踪文件还是未跟踪文件
+    // Determine whether it's a tracked or untracked file
     const isTracked = meta.tracked?.includes(path) ?? extractFileHunks(patchContent, path) !== ""
     const inUntracked = (meta.untracked ?? []).includes(path)
 
@@ -219,20 +221,20 @@ export async function rewind(cwd, id, { path } = {}) {
     return { path, type: isTracked ? "tracked" : "untracked", restored: ok, patchApplied: false }
   }
 
-  // ---- 完整回滚 ----
+  // ---- full rewind ----
   try {
     const patchApplied = await fullRestoreTracked(cwd, dir)
     const { deleted, restored } = await fullRestoreUntracked(cwd, dir, meta)
     return { deleted, restored, patchApplied }
   } catch (e) {
-    // git apply 失败：工作区可能已被 restore 清成 HEAD。
-    // 用 pre-rewind 快照恢复现场，保证回滚失败不会丢数据
+    // git apply failed: working tree may have been reset to HEAD by restore.
+    // Restore from pre-rewind snapshot to ensure no data is lost on rewind failure
     const preDir = join(root, preRewindCp.id)
     try {
       await fullRestoreTracked(cwd, preDir)
       await fullRestoreUntracked(cwd, preDir, JSON.parse(await readFile(join(preDir, "meta.json"), "utf8")))
     } catch {
-      // 双重失败：pre-rewind 也可能损坏，不再尝试
+      // Double failure: pre-rewind may also be corrupt, stop trying
     }
     throw new Error(
       `Rewind to ${id} failed: ${e.message}. ` +
@@ -241,13 +243,13 @@ export async function rewind(cwd, id, { path } = {}) {
   }
 }
 
-// ---- 查看 ----
+// ---- view ----
 
 /**
- * 查看快照中某个文件的内容（不修改工作区）。
- * 跟踪文件：通过 checkout HEAD + apply 补丁块临时还原后读取，读完后恢复原文件。
- * 未跟踪文件：直接从快照目录读取副本。
- * 返回文件内容字符串。
+ * View a file's content from a checkpoint (does not modify the working tree).
+ * Tracked files: temporarily restore via checkout HEAD + apply patch hunks, read, then restore original.
+ * Untracked files: read the copy directly from the checkpoint directory.
+ * Returns the file content string.
  */
 export async function catFile(cwd, id, filePath) {
   const root = checkpointRoot(cwd)
@@ -263,14 +265,14 @@ export async function catFile(cwd, id, filePath) {
     throw new Error(`file "${filePath}" not in checkpoint ${id}`)
   }
 
-  // 未跟踪文件：直接读副本
+  // Untracked file: read the copy directly
   if (inUntracked && !isTracked) {
     const src = join(dir, "untracked", filePath)
     if (!existsSync(src)) throw new Error(`untracked file "${filePath}" copy missing in checkpoint`)
     return await readFile(src, "utf8")
   }
 
-  // 跟踪文件：临时还原 → 读取 → 恢复现场
+  // Tracked file: temporarily restore → read → restore working tree
   const abs = join(cwd, filePath)
   const existed = existsSync(abs)
   let saved = null
@@ -290,7 +292,7 @@ export async function catFile(cwd, id, filePath) {
     }
     return await readFile(abs, "utf8")
   } finally {
-    // 恢复工作区原状态
+    // Restore original working tree state
     if (existed) {
       await writeFile(abs, saved, "utf8")
     } else {
@@ -299,7 +301,7 @@ export async function catFile(cwd, id, filePath) {
   }
 }
 
-/** 只留最近 MAX_CHECKPOINTS 个 */
+/** Keep only the most recent MAX_CHECKPOINTS */
 async function pruneCheckpoints(cwd) {
   const root = checkpointRoot(cwd)
   const ids = (await readdir(root)).sort()

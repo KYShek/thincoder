@@ -13,14 +13,11 @@ import {
   insideGitRepo,
   globToRegex
 } from "./shared.mjs";
-import { spawn } from "node:child_process";
-import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { readdir } from "node:fs/promises";
-import { stat, lstat } from "node:fs/promises";
+import { spawn, execFileSync } from "node:child_process";
+import { readFile, readdir, stat, lstat } from "node:fs/promises";
 import { join } from "node:path";
 
-/** 子进程环境变量白名单：只透传安全变量，隔离 API key 等敏感信息 */
+/** Child process environment variable whitelist: only pass through safe variables, isolate sensitive info like API keys */
 const SAFE_ENV_KEYS = new Set([
   "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
   "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL",
@@ -29,6 +26,152 @@ const SAFE_ENV_KEYS = new Set([
   "PYTHONIOENCODING", "GIT_EDITOR", "EDITOR", "VISUAL",
   "GIT_PAGER", "PAGER", "TERM",
 ])
+
+/** Maximum buffer size per stream (stdout / stderr) before truncation */
+const MAX_STREAM_BUF = 2_000_000
+
+// ====================================================================
+// bash — command execution with safety gates
+// ====================================================================
+
+/**
+ * Pre-execution safety checks for bash commands.
+ * Three layers: file redirection → destructive commands → destructive git ops with uncommitted changes.
+ * Throws with actionable guidance on failure.
+ */
+function checkBashSafety(command, cwd) {
+  if (hasFileRedirection(command)) {
+    throw new Error("File redirection via bash is not allowed — use the write/edit/insert_after tools instead")
+  }
+  if (shellSegments(command).some(isDestructiveCommand)) {
+    throw new Error(
+      "Destructive command blocked — use specific tools or confirm with the user first. " +
+      "(If work was already destroyed, recover from auto-snapshot: checkpoint action=list then action=rewind.)"
+    )
+  }
+  if (shellSegments(command).some(isDestructiveGitSegment)) {
+    if (!insideGitRepo(cwd)) {
+      throw new Error(`Refusing destructive git command: not a git repository: ${cwd}`)
+    }
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim()
+    if (status) {
+      throw new Error(
+        `Refusing destructive git command: uncommitted changes exist.\n` +
+        `First create a checkpoint (action=create) to protect current work, then commit or stash before the destructive operation.\n` +
+        `(If uncommitted work was already lost, recover from the latest auto-snapshot: checkpoint action=list, then action=rewind.)\n\n${status}`
+      )
+    }
+  }
+}
+
+/**
+ * Build a sanitized environment for the child process.
+ * Whitelists safe variables, forces non-interactive defaults (EDITOR/PAGER/TERM),
+ * and sets PYTHONIOENCODING on Windows to override GBK default for Python scripts.
+ */
+function buildBashEnv() {
+  const winCmd = process.platform === "win32"
+  return {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => SAFE_ENV_KEYS.has(k))
+    ),
+    GIT_EDITOR: "true",
+    EDITOR: "true",
+    VISUAL: "true",
+    GIT_PAGER: "cat",
+    PAGER: "cat",
+    TERM: "dumb",
+    ...(winCmd ? { PYTHONIOENCODING: "utf-8" } : {}),
+  }
+}
+
+/**
+ * Platform-aware process tree kill.
+ * POSIX: kill process group (spawned with detached=true).
+ * Windows: taskkill /T to reach grandchildren (npm test's subprocesses, etc.).
+ */
+function killProcessTree(child) {
+  if (process.platform === "win32") {
+    try { execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }) } catch {}
+  } else {
+    try { process.kill(-child.pid, "SIGKILL") } catch {}
+    try { child.kill("SIGKILL") } catch {} // fallback: kill directly if group kill fails
+  }
+}
+
+/**
+ * Run a bash command: spawn, stream stdout/stderr with buffering and decoding,
+ * enforce timeout and signal abort, return formatted result.
+ *
+ * Returns a promise that resolves to the formatted output string (stdout + stderr + status + truncation note).
+ */
+function runBash(command, cwd, { timeout, signal, onOutput }) {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: buildBashEnv(),
+    })
+
+    const killTree = () => killProcessTree(child)
+
+    // Separate decoders for stdout / stderr (same encoding in practice, but separate
+    // collection is cleaner and lets the model locate errors via stderr quickly)
+    const outDecoder = makeDecoder()
+    const errDecoder = makeDecoder()
+    let outBuf = ""
+    let errBuf = ""
+    let truncatedNote = ""
+
+    child.stdout.on("data", (d) => {
+      const s = sanitizeOutput(outDecoder(d))
+      if (s) {
+        onOutput?.(s)
+        if (outBuf.length < MAX_STREAM_BUF) outBuf += s
+        else if (!truncatedNote) truncatedNote =
+          "\n[... output exceeded 2MB, remainder discarded — redirect to a file if you need the full output]"
+      }
+    })
+
+    child.stderr.on("data", (d) => {
+      const s = sanitizeOutput(errDecoder(d))
+      if (errBuf.length < MAX_STREAM_BUF) errBuf += s
+    })
+
+    const timer = setTimeout(killTree, timeout)
+    if (signal) signal.addEventListener("abort", killTree, { once: true })
+
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      resolve(truncate(`Command failed: ${error.message}\n[stdout]:\n${outBuf || "(empty)"}`))
+    })
+
+    child.on("close", (code, exitSignal) => {
+      clearTimeout(timer)
+      // Flush decoder tails (trailing multi-byte sequences that incomplete buffers left pending)
+      outBuf += sanitizeOutput(outDecoder(Buffer.alloc(0), true))
+      errBuf += sanitizeOutput(errDecoder(Buffer.alloc(0), true))
+
+      const status = exitSignal
+        ? `killed: ${signal?.aborted ? "user interrupted" : "timeout"}`
+        : `exit code ${code}`
+
+      const parts = [`[stdout]:\n${outBuf.trim() || "(empty)"}`]
+      if (errBuf.trim()) parts.push(`[stderr]:\n${errBuf.trim()}`)
+      parts.push(`(${status})`)
+      resolve(truncate(parts.join("\n\n") + truncatedNote))
+    })
+  })
+}
+
+// ====================================================================
+// tool definitions
+// ====================================================================
 
 export const bashTool = {
   name: "bash",
@@ -42,111 +185,13 @@ export const bashTool = {
     required: ["command"],
   },
   readonly: false,
+  outputPanel: true, // stream stdout/stderr to panel during execution, collapse to summary on completion
   async execute(args, ctx) {
-    // 安全预检：禁止 shell 重定向（> >> <）——应改用 write/edit/insert_after 工具
-    if (hasFileRedirection(args.command)) {
-      throw new Error("File redirection via bash is not allowed — use the write/edit/insert_after tools instead")
-    }
-    // 安全预检：破坏性非 git 命令（rm -rf / DROP TABLE 等）直接拒绝
-    if (shellSegments(args.command).some(isDestructiveCommand)) {
-      throw new Error("Destructive command blocked — use specific tools or confirm with the user first")
-    }
-    // 安全预检：销毁性 git 操作先检查未提交改动，有则拒绝——防一键清掉几小时工作
-    if (shellSegments(args.command).some(isDestructiveGitSegment)) {
-      if (!insideGitRepo(ctx.cwd)) {
-        throw new Error(`Refusing destructive git command: not a git repository: ${ctx.cwd}`)
-      }
-      const status = execFileSync("git", ["status", "--porcelain"], {
-        cwd: ctx.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
-      }).trim()
-      if (status) {
-        throw new Error(
-          `Refusing destructive git command: uncommitted changes exist. Commit or stash first.\n` +
-          `(If uncommitted work was already lost, the checkpoint tool can restore the auto-snapshot: action=list, then action=rewind.)\n\n${status}`
-        )
-      }
-    }
-
-    return new Promise((resolve) => {
-      // detached: 让子进程成为进程组组长，超时/中断时才能整树杀掉（POSIX 用负 pid 组杀，
-      // Windows 用 taskkill /T）——只 kill 壳进程会把孙进程（如 npm test）留在后台继续跑
-      const killTree = () => {
-        if (process.platform === "win32") {
-          try { execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }) } catch {}
-        } else {
-          try { process.kill(-child.pid, "SIGKILL") } catch {}
-          try { child.kill("SIGKILL") } catch {} // 组杀失败时兜底杀本体
-        }
-      }
-      // Windows 中文系统默认代码页是 GBK (CP936)，cmd.exe 重定向写文件时用 ANSI 代码页，
-      // chcp 65001 也改不了重定向的编码。bash 工具写含 CJK 的文件会产生 GBK——
-      // 提示词层已禁止用 bash 写文件（用 write/edit 工具替代），这里设 PYTHONIOENCODING
-      // 覆盖 Python 脚本的 stdout 编码（Python 是唯一可能正确响应环境变量的子进程）
-      const winCmd = process.platform === "win32"
-      const child = spawn(args.command, {
-        cwd: ctx.cwd,
-        shell: true,
-        windowsHide: true,
-        detached: process.platform !== "win32",
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...Object.fromEntries(
-            Object.entries(process.env).filter(([k]) => SAFE_ENV_KEYS.has(k))
-          ),
-          GIT_EDITOR: "true",
-          EDITOR: "true",
-          VISUAL: "true",
-          GIT_PAGER: "cat",
-          PAGER: "cat",
-          TERM: "dumb",
-          ...(winCmd ? { PYTHONIOENCODING: "utf-8" } : {}),
-        },
-      })
-      // stdout / stderr 各自独立解码（同进程通常同编码，但分开收集更干净，
-      // 且允许模型按 stderr 快速定位错误）
-      const outDecoder = makeDecoder()
-      const errDecoder = makeDecoder()
-      let outBuf = ""
-      let errBuf = ""
-      let truncatedNote = ""
-
-      const onStdout = (d) => {
-        const s = sanitizeOutput(outDecoder(d))
-        if (s) {
-          ctx.onOutput?.(s)
-          if (outBuf.length < 2_000_000) outBuf += s
-          else if (!truncatedNote) truncatedNote = "\n[... output exceeded 2MB, remainder discarded]"
-        }
-      }
-      const onStderr = (d) => {
-        const s = sanitizeOutput(errDecoder(d)) // 始终解码，防 pending 无限累积
-        if (errBuf.length < 2_000_000) errBuf += s
-      }
-
-      child.stdout.on("data", onStdout)
-      child.stderr.on("data", onStderr)
-
-      const timer = setTimeout(killTree, args.timeout ?? BASH_TIMEOUT_MS)
-      if (ctx.signal) {
-        ctx.signal.addEventListener("abort", killTree, { once: true })
-      }
-      child.on("error", (error) => {
-        clearTimeout(timer)
-        resolve(truncate(`Command failed: ${error.message}\n[stdout]:\n${outBuf || "(empty)"}`))
-      })
-      child.on("close", (code, signal) => {
-        clearTimeout(timer)
-        // 冲刷解码器尾部
-        outBuf += sanitizeOutput(outDecoder(Buffer.alloc(0), true))
-        errBuf += sanitizeOutput(errDecoder(Buffer.alloc(0), true))
-        const status = signal
-          ? `killed: ${ctx.signal?.aborted ? "user interrupted" : "timeout"}`
-          : `exit code ${code}`
-        const parts = [`[stdout]:\n${outBuf.trim() || "(empty)"}`]
-        if (errBuf.trim()) parts.push(`[stderr]:\n${errBuf.trim()}`)
-        parts.push(`(${status})`)
-        resolve(truncate(parts.join("\n\n") + truncatedNote))
-      })
+    checkBashSafety(args.command, ctx.cwd)
+    return runBash(args.command, ctx.cwd, {
+      timeout: args.timeout ?? BASH_TIMEOUT_MS,
+      signal: ctx.signal,
+      onOutput: ctx.onOutput,
     })
   },
 }
@@ -180,7 +225,7 @@ export const globTool = {
   },
 }
 
-/** 递归遍历文件，产出相对路径（跳过 IGNORED_DIRS） */
+/** Recursively traverse files, yield relative paths (skip IGNORED_DIRS) */
 async function* walkFiles(dir, rel = "") {
   let entries
   try {

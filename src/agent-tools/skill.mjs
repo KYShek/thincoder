@@ -2,9 +2,9 @@ import { loadSkills, formatSkillListing, readSkill } from "../skills.mjs"
 import { escapeXml } from "../agent.mjs"
 
 /**
- * skill 工具：按需加载项目技能文件（.thincoder/skills/*.md）。
- * 加载后技能内容以 <skill-loaded> 包裹写入对话，供后续参考。
- * 列出所有可用技能用 action="list"。
+ * skill tool: load project skill files on demand (.thincoder/skills/*.md).
+ * After loading, skill content is injected into the conversation wrapped in <skill-loaded> for subsequent reference.
+ * Use action="list" to see all available skills.
  */
 export const skillTool = {
   name: "skill",
@@ -26,8 +26,8 @@ export const skillTool = {
       return skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")
     }
     if (!args.name) return "Error: skill name required for 'load' action."
-    // 去重：history 里已有同名 <skill-loaded> 块就直接遵循它，不重复展开（历史即账本；
-    // 被压缩掉后这里自然查不到，会重新加载——正确行为）
+    // Dedup: skip reloading if history already contains an <skill-loaded> block with the same name
+    // (history is the ledger; if it got compacted away we naturally won't find it here — correct behavior)
     if (ctx.agent.history?.some((m) => typeof m.content === "string" && m.content.includes(`<skill-loaded name="${args.name}"`))) {
       return `Skill "${args.name}" is already loaded in this conversation — follow the instructions in the existing <skill-loaded> block above. Do not reload it.`
     }
@@ -36,7 +36,7 @@ export const skillTool = {
       const available = skills.map((s) => s.name).join(", ")
       return `Error: skill "${args.name}" not found. Available: ${available || "(none)"}`
     }
-    // 注入 skill 内容到 history（下一条 user 消息）
+    // Inject skill content into history (will appear as the next user message)
     ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
     ctx.agent._pendingReminders.push(
       `<skill-loaded name="${args.name}" source=".thincoder/skills/${args.name}.md">\n${escapeXml(content)}\n</skill-loaded>\n\nFollow the skill's instructions above for the current task.`

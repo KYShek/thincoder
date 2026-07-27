@@ -1,7 +1,7 @@
 /**
- * recent_changes 工具：列出本轮 agent 触碰过的文件（write/edit/insert_after/delete）。
- * 比 git status 更精确——只看本会话的变更，不关心 git 追踪状态。
- * 帮助模型在长任务中回顾自己改了什么。
+ * recent_changes tool: list files touched by this agent run (write/edit/insert_after/delete).
+ * More precise than git status — only looks at this session's changes, independent of git tracking.
+ * Helps the model recall what it already modified during long tasks.
  */
 export const recentChangesTool = {
   name: "recent_changes",

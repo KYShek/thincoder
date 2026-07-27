@@ -1,7 +1,7 @@
 import { listSlots, switchToSlot, applySession } from "../session.mjs"
 import { ansi, C } from "./ansi.mjs"
 
-/** /session 命令：列出/切换归档会话槽位。
+/** /session command: list/switch archived session slots.
  *  ctx: { agent, state, openPicker, pushLine, pushLabel, render } */
 export async function handleSessionCommand(ctx) {
   const { agent, state, openPicker, pushLine, pushLabel, render } = ctx

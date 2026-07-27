@@ -4,12 +4,13 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
 /**
- * verify 工具：完成前的自检。调用时会：
- * 1. git diff --stat — 变更文件列表
- * 2. node --check — 语法检查所有变更的 .mjs/.js 文件
- * 3. npm test — 仅在 full=true 时运行项目测试
- * 4. task 列表 + 自检清单
- * 默认只做语法检查（快），full=true 时才跑全量测试。Agent 不应该在 verify 通过前说"完成"。修复-验证循环最多 MAX_VERIFY_RETRIES 轮。
+ * verify tool: pre-completion self-check. When called:
+ * 1. git diff --stat — changed file list
+ * 2. node --check — syntax check all changed .mjs/.js files
+ * 3. npm test — run project tests only when full=true
+ * 4. task list + self-review checklist
+ * Default does syntax checks only (fast); full=true runs the full test suite.
+ * Agent must not say "done" before verify passes. Fix-verify loop at most MAX_VERIFY_RETRIES rounds.
  */
 export const verifyTool = {
   name: "verify",
@@ -29,14 +30,14 @@ export const verifyTool = {
     lines.push("=== VERIFICATION REPORT ===")
     lines.push("")
 
-    // 1. Git diff — 找出变更文件
+    // 1. Git diff — find changed files
     let changedFiles = []
     try {
       const diff = execSync("git diff --stat", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 })
       if (diff.trim()) {
         lines.push("Changed files (git diff --stat):")
         lines.push(diff.trim())
-        // 提取变更文件路径
+        // extract changed file paths
         const nameOnly = execSync("git diff --name-only", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 })
         changedFiles = nameOnly.trim().split("\n").filter(Boolean)
       } else {
@@ -46,7 +47,7 @@ export const verifyTool = {
       lines.push("Changed files: (not a git repo or git unavailable)")
     }
 
-    // 2. 语法检查：对所有变更的 .mjs/.js 跑 node --check（跳过已删除的文件）
+    // 2. Syntax check: run node --check on all changed .mjs/.js files (skip deleted files)
     let syntaxFailed = false
     const jsFiles = changedFiles.filter((f) => /\.(m?js)$/i.test(f))
     if (jsFiles.length > 0) {
@@ -54,7 +55,7 @@ export const verifyTool = {
       lines.push("Syntax check (node --check):")
       for (const f of jsFiles) {
         const abs = join(cwd, f)
-        if (!existsSync(abs)) continue // 已删除的文件跳过
+        if (!existsSync(abs)) continue // skip deleted files
         try {
           execSync(`node --check "${f}"`, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 })
           lines.push(`  ✓ ${f}`)
@@ -68,7 +69,7 @@ export const verifyTool = {
       if (!syntaxFailed) lines.push("  All syntax checks passed.")
     }
 
-    // 3. 运行项目测试（仅 full=true 时）
+    // 3. Run project tests (only when full=true)
     if (args.full) {
       try {
         const pkgPath = join(cwd, "package.json")
@@ -84,7 +85,7 @@ export const verifyTool = {
               lines.push(tail || "(tests completed)")
               lines.push("")
               lines.push("✓ Tests passed.")
-              ctx.agent._verifyPassed = !syntaxFailed // 语法挂了即使测试侥幸过也不算通过
+              ctx.agent._verifyPassed = !syntaxFailed // even if tests happen to pass, syntax failure still counts as fail
             } catch (e) {
               const output = e.stdout ? (e.stdout + (e.stderr ? "\n" + e.stderr : "")) : e.message
               const tail = output.split("\n").slice(-15).join("\n")
@@ -103,7 +104,7 @@ export const verifyTool = {
         lines.push("Tests: (unable to run — no package.json or npm unavailable)")
       }
     } else {
-      // 快速模式：跳过测试，但提示可以跑完整校验
+      // Quick mode: skip tests but hint that full verification is available
       const pkgPath = join(cwd, "package.json")
       if (existsSync(pkgPath)) {
         try {
@@ -114,10 +115,10 @@ export const verifyTool = {
           }
         } catch { /* ignore */ }
       }
-      ctx.agent._verifyPassed = !syntaxFailed // quick 模式：语法失败不能算通过
+      ctx.agent._verifyPassed = !syntaxFailed // quick mode: syntax failure must not count as pass
     }
 
-    // 4. Task 列表
+    // 4. Task list
     lines.push("")
     if (ctx.agent.tasks.length === 0) {
       lines.push("Task list: (no tasks tracked)")
@@ -151,9 +152,9 @@ export const verifyTool = {
 }
 
 /**
- * 用 spawn 运行 npm test，无 maxBuffer 限制。
- * 测试输出通过 ctx.callbacks.onToolOutput 流式透传（TUI 可实时显示进度）。
- * 成功返回 { stdout, stderr }；非零退出码抛错（带 stdout/stderr 供调用方提取 tail）。
+ * Run npm test via spawn, no maxBuffer limit.
+ * Test output is streamed through ctx.callbacks.onToolOutput (TUI can display progress in real time).
+ * On success returns { stdout, stderr }; on non-zero exit throws (with stdout/stderr for caller to extract tail).
  */
 function runTestSuite(cwd, ctx) {
   return new Promise((resolve, reject) => {

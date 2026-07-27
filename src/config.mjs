@@ -1,8 +1,8 @@
 /**
- * config.mjs — 配置加载与保存
- * 多 provider 结构：providers[] + activeProvider
- * 配置文件：~/.thincoder/config.json
- * API key 可用环境变量兜底（未在 providers 中配置时）。
+ * config.mjs — configuration loading and saving
+ * Multi-provider structure: providers[] + activeProvider
+ * Config file: ~/.thincoder/config.json
+ * API key can fall back to environment variables (when not configured in providers).
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -12,7 +12,7 @@ import { join } from "node:path"
 export const configDir = join(homedir(), ".thincoder")
 export const configPath = join(configDir, "config.json")
 
-/** 内置提供商预设：/provider add <预设名>、首次启动向导共用 */
+/** Built-in provider presets: shared by /provider add <preset> and first-run wizard */
 export const PROVIDER_PRESETS = {
   deepseek: { baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 393216, desc: "DeepSeek" },
   kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "max", maxTokens: 131072, desc: "Kimi / Moonshot" },
@@ -21,7 +21,7 @@ export const PROVIDER_PRESETS = {
   minimax:  { baseURL: "https://api.minimax.chat/v1", chatPath: "/text/chatcompletion_v2", model: "MiniMax-M3", maxTokens: 131072, desc: "MiniMax" },
 }
 
-// 默认 provider 跟 deepseek 预设保持一致（去掉 desc 展示字段）
+// Default provider matches deepseek preset (strip the desc display field)
 const { desc: _, ...deepseekPreset } = PROVIDER_PRESETS.deepseek
 
 const DEFAULTS = {
@@ -29,6 +29,7 @@ const DEFAULTS = {
   activeProvider: "deepseek",
   agent: {
     maxTurns: 100,
+    subagentTurns: 100,
     compactThreshold: 100000,
   },
   memory: {
@@ -46,60 +47,60 @@ const DEFAULTS = {
 }
 
 /**
- * 已知模型的能力规格表（前缀匹配，长的在前）。
- * 用于压缩阈值推导、截断续写协议选择、能力感知优化。
+ * Known model capability spec table (prefix match, longer first).
+ * Used for compaction threshold derivation, continuation protocol selection, and capability-aware optimization.
  *
- * context:           上下文窗口（tokens）
- * maxOutput:         最大输出 tokens（默认 context）
- * thinking:          是否支持思考/推理模式
- * partialMode:       Kimi/Qwen Partial Mode 截断续写（assistant 消息带 partial:true）
- * prefixMode:        DeepSeek Prefix Completion 截断续写（走 /beta 端点，带 prefix:true）
- * multimodal:        是否多模态（支持图片/视觉输入）
- * cacheMode:         上下文缓存方式："auto"=自动/"prompt"=需显式/"none"=不支持
- * thinkApi:          思考模式 API 类型："type"=thinking.type 字段 / "effort"=reasoning_effort 字段
- * reasoningEcho:     reasoning_content 跨轮回传策略："required"=必须回传(缺失报错)/"optional"=回传可选(默认不回传)
- * reasoningEffortEnum: reasoning_effort 合法枚举值（未声明则不校验，原样透传）
- * tempRange:         temperature 合法范围 [min, max]（未声明则不裁剪）
+ * context:           context window (tokens)
+ * maxOutput:         max output tokens (defaults to context)
+ * thinking:          whether thinking/reasoning mode is supported
+ * partialMode:       Kimi/Qwen Partial Mode truncation continuation (assistant message with partial:true)
+ * prefixMode:        DeepSeek Prefix Completion truncation continuation (uses /beta endpoint, with prefix:true)
+ * multimodal:        whether multimodal (image/vision input supported)
+ * cacheMode:         context caching mode: "auto"=automatic / "prompt"=needs explicit / "none"=unsupported
+ * thinkApi:          thinking API type: "type"=thinking.type field / "effort"=reasoning_effort field
+ * reasoningEcho:     reasoning_content cross-turn echo strategy: "required"=must echo (error if missing) / "optional"=echo optional (default: don't echo)
+ * reasoningEffortEnum: valid reasoning_effort enum values (if undeclared, no validation — passed through as-is)
+ * tempRange:         valid temperature range [min, max] (if undeclared, no clamping)
  */
 const MODEL_SPECS = [
-  // DeepSeek V4 系列
+  // DeepSeek V4 series
   ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   ["deepseek-v4-flash", { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   ["deepseek-reasoner", { context: 256_000,   maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   ["deepseek-chat",     { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
-  // Kimi 系列
+  // Kimi series
   ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt", thinkApi: "effort", reasoningEcho: "required", reasoningEffortEnum: ["low", "high", "max"] }],
   ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none" }],
   ["moonshot",          { context: 128_000,   maxOutput: 32_000,  thinking: false, cacheMode: "none" }],
-  // GLM 系列
+  // GLM series
   ["glm-5.2",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type", reasoningEcho: "optional", reasoningEffortEnum: ["max", "xhigh", "high", "medium", "low", "minimal", "none"], tempRange: [0, 1] }],
   ["glm-5",             { context: 1_000_000, maxOutput: 128_000, thinking: true,  cacheMode: "auto", thinkApi: "type", reasoningEcho: "optional", reasoningEffortEnum: ["max", "xhigh", "high", "medium", "low", "minimal", "none"], tempRange: [0, 1] }],
   ["glm-4",             { context: 128_000,   maxOutput: 32_000,  thinking: true,  cacheMode: "auto", thinkApi: "type", reasoningEcho: "optional", tempRange: [0, 1] }],
-  // GPT 系列
+  // GPT series
   ["gpt-4.1",           { context: 1_000_000, maxOutput: 128_000, thinking: false, cacheMode: "prompt" }],
   ["gpt-4o",            { context: 128_000,   maxOutput: 16_000,  thinking: false, multimodal: true, cacheMode: "prompt" }],
-  // Qwen 系列
+  // Qwen series
   ["qwen3.8-max-preview", { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", reasoningEffortEnum: ["xhigh", "medium", "low"], tempRange: [0, 2] }],
   ["qwen3.7-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
   ["qwen3.8-max",       { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
   ["qwen-max",          { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
   ["qwen-plus",         { context: 1_000_000, maxOutput: 32_000,  thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
   ["qwen",              { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
-  // MiniMax 系列
+  // MiniMax series
   ["MiniMax-M3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
   ["minimax-m3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
   ["minimax-m1",        { context: 256_000,   maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
 ]
 const DEFAULT_SPEC = { context: 128_000, maxOutput: 32_000, cacheMode: "none" }
-// 窗口利用率上限：0.8（DeepSeek 内部即全窗口；压缩本身要花一次 LLM 调用，过早压缩是纯浪费。
-// 留 20% 余量给压缩后的尾部增长与输出 token）
-// 但 1M 窗口模型按 0.8 算 = 80 万 token，历史涨到那么大才压缩会打爆 TPM 预算、
-// 压缩请求本身也可能 429。加 cap：不超过 maxOutput 的 8 倍（128K×8≈100万→实际仍偏大但合理），
-// 不超过 30 万（大窗口模型的合理工作上限，再大缓存命中率下降）
+// Window utilization cap: 0.8 (DeepSeek internally uses full window; compaction itself costs an LLM call, premature compaction is pure waste.
+// Reserve 20% headroom for post-compaction tail growth and output tokens)
+// But for 1M-window models, 0.8 = 800K tokens — waiting until history grows that large would blow the TPM budget,
+// and the compaction request itself might 429. Add caps: no more than 8× maxOutput (128K×8≈1M → still large but reasonable),
+// no more than 300K (reasonable working ceiling for large-window models; beyond that cache hit rates drop)
 const COMPACT_RATIO = 0.8
 const COMPACT_CAP_TOKENS = 300_000
 
-/** 按模型名前缀查规格（大小写不敏感），未知模型给保守默认 */
+/** Look up spec by model name prefix (case-insensitive), conservative default for unknown models */
 export function specForModel(model) {
   const m = (model ?? "").toLowerCase()
   for (const [prefix, spec] of [...MODEL_SPECS].sort((a,b) => b[0].length - a[0].length)) {
@@ -108,24 +109,25 @@ export function specForModel(model) {
   return DEFAULT_SPEC
 }
 
+/** Return the context window size for a given model name */
 export function contextWindowForModel(model) {
   return specForModel(model).context
 }
 
-/** 推导压缩阈值；explicit 为配置文件中显式设置的值（优先），否则按模型自动算 */
+/** Derive compaction threshold; explicit is the value explicitly set in config file (takes priority), otherwise auto-computed from model */
 export function resolveCompactThreshold(explicit, model) {
   if (explicit != null) return { value: explicit, auto: false }
   const spec = specForModel(model)
   const ratioBased = Math.floor(spec.context * COMPACT_RATIO)
-  // 大窗口模型（1M）按比例算出来太大，用 cap 限制——宁可早压缩也别让历史涨到打爆 TPM
+  // Large-window models (1M) produce too-large ratio-based values; cap them — better to compact early than let history grow until it blows the TPM budget
   const value = Math.min(ratioBased, COMPACT_CAP_TOKENS)
   return { value, auto: true }
 }
 
 /**
- * 从 providers[] 中按 name 查找。
- * name 非空但找不到时抛错——activeProvider 打错字静默落到第一个 provider，会拿错 key 打错端点。
- * name 为空时返回第一个。
+ * Find provider by name in providers[].
+ * Throws if name is non-empty but not found — a typo in activeProvider silently falling to the first provider would use the wrong key on the wrong endpoint.
+ * Returns the first provider when name is empty.
  */
 export function findProvider(providers, name) {
   if (name) {
@@ -138,9 +140,9 @@ export function findProvider(providers, name) {
 }
 
 /**
- * 加载配置。
- * 环境变量优先级：THINCODER_ACTIVE_PROVIDER > 配置文件 activeProvider
- * THINCODER_API_KEY / THINCODER_BASE_URL / THINCODER_MODEL 覆盖当前激活 provider 的对应字段
+ * Load configuration.
+ * Env var priority: THINCODER_ACTIVE_PROVIDER > config file activeProvider
+ * THINCODER_API_KEY / THINCODER_BASE_URL / THINCODER_MODEL override the current active provider's corresponding fields
  */
 export function loadConfig() {
   let config = {}
@@ -162,29 +164,29 @@ export function loadConfig() {
     embedding: { ...DEFAULTS.embedding, ...config.embedding },
   }
 
-  // baseURL 尾斜杠归一化（防拼出 //chat/completions）
+  // Normalize baseURL trailing slash (prevents //chat/completions)
   for (const p of merged.providers) {
     if (p.baseURL) p.baseURL = p.baseURL.replace(/\/+$/, "")
   }
 
-  // 环境变量覆盖 activeProvider
+  // Env var overrides activeProvider
   if (process.env.THINCODER_ACTIVE_PROVIDER) {
     merged.activeProvider = process.env.THINCODER_ACTIVE_PROVIDER
   }
 
-  // 获取当前激活的 provider
+  // Get the currently active provider
   const active = findProvider(merged.providers, merged.activeProvider)
 
-  // 构建运行时 provider 对象（供 agent.provider 使用）
+  // Build runtime provider object (for agent.provider usage)
   const runtimeProvider = { ...active }
 
-  // 环境变量覆盖当前激活 provider 的字段
+  // Env vars override current active provider's fields
   if (process.env.THINCODER_API_KEY) runtimeProvider.apiKey = process.env.THINCODER_API_KEY
   if (process.env.THINCODER_BASE_URL) runtimeProvider.baseURL = process.env.THINCODER_BASE_URL
   if (process.env.THINCODER_MODEL) runtimeProvider.model = process.env.THINCODER_MODEL
 
-  // apiKey 还可用环境变量兜底（当 providers 里没配 key 时）
-  // 提供商专用的环境变量只对同名 provider 生效，避免 key 串到错误的端点
+  // apiKey also falls back to env vars (when providers doesn't include a key)
+  // Provider-specific env vars only apply to the matching provider name, preventing keys from leaking to wrong endpoints
   if (!runtimeProvider.apiKey?.trim()) {
     const envMap = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }
     const keyVar = envMap[merged.activeProvider]
@@ -196,13 +198,13 @@ export function loadConfig() {
     merged.embedding.apiKey = process.env.SILICONFLOW_API_KEY || process.env.THINCODER_EMBEDDING_API_KEY
   }
 
-  // 压缩阈值跟模型走
+  // Compaction threshold follows the model
   const explicitThreshold = config.agent?.compactThreshold
   const { value, auto } = resolveCompactThreshold(explicitThreshold, runtimeProvider.model)
   merged.agent.compactThreshold = value
   merged.agent.compactThresholdAuto = auto
 
-  // 回写到 merged 方便上层使用
+  // Write back to merged for convenient access by upper layers
   merged.provider = runtimeProvider
   merged.providersList = merged.providers
 
@@ -210,12 +212,12 @@ export function loadConfig() {
 }
 
 /**
- * 保存配置。保留 providers 列表结构和 activeProvider 指针。
- * providers[i].apiKey 仅在显式传入时才写入（不覆盖环境变量兜底的 key）
+ * Save configuration. Preserves providers list structure and activeProvider pointer.
+ * providers[i].apiKey is only written when explicitly passed in (does not overwrite env-var-fallback keys).
  */
 export function saveConfig(config) {
   mkdirSync(configDir, { recursive: true })
-  // 0600：config.json 含 API key，不能世界可读（POSIX；Windows 下 chmod 尽力而为）
+  // 0600: config.json contains API keys, must not be world-readable (POSIX; chmod is best-effort on Windows)
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 })
-  try { chmodSync(configPath, 0o600) } catch { /* Windows 上可能失败，忽略 */ }
+  try { chmodSync(configPath, 0o600) } catch { /* may fail on Windows, ignore */ }
 }
