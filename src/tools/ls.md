@@ -5,5 +5,5 @@ Parameters:
 
 Notes:
 - Shows first 500 entries
-- Directories are prefixed with `/` and listed before files
+- Directories are suffixed with `/` and listed before files
 - Use this for a quick overview; use glob when you have a specific file pattern in mind

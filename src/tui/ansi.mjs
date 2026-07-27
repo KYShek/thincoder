@@ -26,7 +26,7 @@ export const C = {
   user: ansi.fg(4),
   assistant: ansi.fg(2),
   text: ansi.fg(7),
-  reason: `${ESC}[2m${ESC}[3m`,
+  reason: `${ESC}[2m`,
   tool: ansi.fg(6),
   error: ansi.fg(1),
   dim: ansi.gray,

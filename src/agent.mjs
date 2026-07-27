@@ -134,7 +134,11 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
 
     if (response.toolCalls.length === 0) {
       if (!response.content) {
-        throw new Error("LLM returned empty response (likely reasoning exhausted or output truncated). Try lowering reasoning effort if this persists (use /think in TUI or set reasoningEffort in config).")
+        throw new Error(
+          "LLM returned empty response (likely reasoning exhausted or output truncated). " +
+          "Try lowering reasoning effort if this persists (/think in TUI). " +
+          `Provider: ${agent.provider.model}`
+        )
       }
       if (depth === 0 && agent._mutatedThisRun && !agent._verifiedThisRun && guardPushbacks < MAX_VERIFY_PUSHBACKS) {
         guardPushbacks++

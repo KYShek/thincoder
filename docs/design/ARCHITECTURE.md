@@ -1,7 +1,7 @@
 # ThinCoder 架构设计
 
 > 依据：REQUIREMENTS.md（需求已定稿）。本文档定义 v1 的模块划分、接口与开发顺序。
-> 约束：纯 mjs、无构建、Node >= 22、零 npm 依赖（仅 Node 标准库）。
+> 约束：纯 mjs、无构建、Node >= 24、零 npm 依赖（仅 Node 标准库）。
 
 ## 设计原则
 
@@ -18,32 +18,85 @@
 thincoder/
 ├── package.json          # type: module, bin 入口, engines: node >= 24
 ├── bin/
-│   └── thincoder.mjs     # 可执行入口（#!/usr/bin/env node），解析 argv，分发命令
+│   ├── thincoder.mjs     # 可执行入口（#!/usr/bin/env node），解析 argv，分发命令
+│   └── thincoder.cjs     # CommonJS shim（npm bin 入口）
 ├── src/
-│   ├── agent.mjs         # Agent 主循环 + plan/goal/verify/task/subagent
-│   ├── tui.mjs           # 裸 ANSI 终端 UI + 斜杠命令 + 选择器
-│   ├── tools.mjs         # 工具定义与执行（read/write/edit/bash/glob/grep/…）
-│   ├── provider.mjs      # LLM 调用（fetch, OpenAI 兼容, 流式, TPM/重试）
-│   ├── context.mjs       # 消息历史管理 + 上下文压缩
-│   ├── memory.mjs        # 三层记忆（personal/project/team）+ FTS5 + 向量
-│   ├── config.mjs        # 配置加载与校验 + provider 预设
+│   ├── agent.mjs         # Agent 主循环 + 提醒注入 + 完成守卫 + 修复-验证循环 + 增量索引
+│   ├── agent/            # agent 循环辅助
+│   │   ├── dispatch.mjs  # 两段式工具调度
+│   │   ├── setup.mjs     # 系统提示词组装
+│   │   └── helpers.mjs   # 工具函数与常量
+│   ├── agent-tools/      # 自律工具（task/plan/goal/verify/subagent/skill/recent_changes）
+│   ├── agent-tools.mjs   # 自律工具注册入口
+│   ├── provider/         # LLM 调用
+│   │   ├── core.mjs      # SSE 流式 + reasoning_content + usage
+│   │   ├── rate.mjs      # TPM/RPM 闸门
+│   │   └── index.mjs     # 入口（chat / listModels / createProvider）
+│   ├── tui/              # 裸 ANSI TUI（~24 个模块）
+│   │   ├── index.mjs     # startTUI + render 副作用
+│   │   ├── layout.mjs    # 声明式面板布局引擎
+│   │   ├── render.mjs    # 绘制原语（charWidth / wrapText / formatTables / sanitize）
+│   │   ├── render-frame.mjs  # 纯帧渲染器
+│   │   ├── ansi.mjs      # ANSI 常量
+│   │   ├── agent-turn.mjs    # agent 循环 + 回调构造
+│   │   ├── key-handler.mjs   # 键盘事件分发
+│   │   ├── startup.mjs       # 启动画面 + 会话恢复 + 后台索引
+│   │   ├── interaction.mjs   # 权限审批 + Q&A
+│   │   ├── pickers.mjs       # 通用列表选择器 + 模型选择器
+│   │   ├── wizard.mjs        # 首次启动配置向导
+│   │   ├── slash-commands.mjs # 斜杠命令分发 + Tab 补全
+│   │   ├── cmd-*.mjs         # 各命令实现（17 个）
+│   │   ├── config-helpers.mjs # 配置持久化辅助
+│   │   └── clipboard.mjs     # 剪贴板图片粘贴
+│   ├── tui.mjs           # 重导出 shim → src/tui/index.mjs
+│   ├── tools/            # 工具系统（20+ 文件/网络/git 工具）
+│   │   ├── index.mjs     # builtinTools 注册
+│   │   ├── file.mjs      # read / write / edit / insert_after / read_image
+│   │   ├── system.mjs    # bash / glob / grep / ls
+│   │   ├── git.mjs       # git_diff / git_status / git_log / question / checkpoint
+│   │   ├── web.mjs       # websearch / fetch
+│   │   ├── patch.mjs     # apply_patch / syntax_check / delete
+│   │   ├── shared.mjs    # 工具共享工具函数
+│   │   ├── repomap.mjs   # 依赖大纲（repo_outline 工具）
+│   │   ├── repomap-parse.mjs # import/export 解析 + 依赖图
+│   │   └── *.md          # 工具描述（19 个）
+│   ├── tools.mjs         # 重导出 shim → src/tools/index.mjs
+│   ├── context.mjs       # 上下文压缩（关键决策保存 + task/plan 回注）
+│   ├── memory/           # 三层记忆
+│   │   ├── schema.mjs    # 常量 / DDL
+│   │   ├── core.mjs      # CRUD + 检索
+│   │   ├── code-index.mjs + code-sync.mjs  # 代码块索引
+│   │   └── docs.mjs      # 文档块索引
+│   ├── memory.mjs        # 重导出 shim
 │   ├── session.mjs       # 会话持久化（5 槽位轮转）
-│   ├── mcp.mjs           # MCP client（stdio + HTTP + WebSocket）
-│   ├── repomap.mjs       # 依赖大纲生成（repo_outline 工具）
-│   ├── checkpoint.mjs    # git 存档点（快照 → 回滚）
+│   ├── embedding.mjs     # 向量 embedding（SiliconFlow bge-m3）
+│   ├── mcp/              # MCP 客户端（stdio / HTTP / WebSocket）
+│   ├── mcp.mjs           # MCP 入口
+│   ├── config.mjs        # 配置加载 + provider 预设管理
+│   ├── git/              # checkpoint.mjs（git 存档点）+ gitmem.mjs（Team 层同步）
 │   ├── skills.mjs        # 项目技能加载
-│   ├── distill.mjs       # 会话知识提取
 │   ├── markdown.mjs      # frontmatter 解析（零依赖）
-│   ├── embedding.mjs     # embedding 调用（OpenAI 兼容 /v1/embeddings）
-│   ├── gitmem.mjs        # Team 层 git 同步
-│   └── tools/            # 工具描述（.md）
+│   ├── distill.mjs       # 会话知识提取
+│   ├── prompts/          # 提示词文本
+│   │   ├── system.md     # 核心规则（主/子通用）
+│   │   ├── discipline.md # 编码/测试纪律
+│   │   ├── main.md       # 主 agent 专属条款（subagent/goal/verify/skill/plan）
+│   │   ├── explore.md / coder.md / plan.md  # 子 agent 角色 overlay
+│   └── cli/              # CLI 命令（distill / memory / permission / wizard）
 ├── test/
-│   └── *.test.mjs        # node:test 原生测试，113 条
-└── design/
-    └── *.md              # REQUIREMENTS / ARCHITECTURE 设计文档
+│   ├── agent.test.mjs    # agent 循环端到端（mock LLM server）
+│   ├── memory.test.mjs   # 记忆 CRUD + 检索
+│   ├── tools.test.mjs    # 工具测试
+│   └── tui.test.mjs      # TUI 纯函数与布局
+└── docs/design/          # 设计文档
+    ├── REQUIREMENTS.md
+    ├── ARCHITECTURE.md
+    ├── ARCHITECTURE-v2.md
+    ├── EVALUATION.md
+    └── PHILOSOPHY.md
 ```
 
-总源文件 ~16 个 `.mjs`。测试用 Node 内置 `node:test` + `node:assert`，不引 vitest。
+总源文件 ~82 个 `.mjs` + 19 个 `.md` 工具描述。测试用 Node 内置 `node:test` + `node:assert`，不引 vitest。
 
 ## 模块接口
 
@@ -85,7 +138,7 @@ export function toOpenAISchema(tool)     // 转成 OpenAI tools 参数格式
 ```
 
 关键决策：
-- `bash` 工具有超时（默认 2 分钟）和输出截断（防上下文爆炸）
+- `bash` 工具有超时（默认 120 秒）和输出截断（防上下文爆炸）
 - `edit` 用 old_string/new_string 精确替换（参照主流实践，可靠）
 - 危险操作（写文件、bash）在 TUI 层做权限确认，tools 层只做执行——关注点分离
 
@@ -106,7 +159,7 @@ export function createAgent({ provider, tools, context, memory, config })
 2. 调 provider.chat（带 tools schema）
 3. 无 toolCalls → 流式输出，结束
 4. 有 toolCalls → 按"两段式"执行（见下）→ 结果回喂 context → 回到 2
-5. 循环上限（默认 50 轮）防失控；上下文超阈值时先压缩再继续
+5. 循环上限（默认 100 轮）防失控；上下文超阈值时先压缩再继续
 
 **工具执行：两段式并行（已确认 ✅，调研自三个榜样）**
 
@@ -218,7 +271,7 @@ export function saveConfig(config)
 // ~/.thincoder/config.json
 {
   "provider": { "baseURL": "https://api.deepseek.com/v1", "apiKey": "...", "model": "deepseek-chat" },
-  "agent": { "maxTurns": 50, "compactThreshold": 100000 },
+  "agent": { "maxTurns": 100, "compactThreshold": 100000 },
   "memory": { "dbPath": "~/.thincoder/memory.db" }
 }
 ```
@@ -231,7 +284,7 @@ apiKey 也可走环境变量（`THINCODER_API_KEY` 或 provider 惯用变量）�
 export async function startTUI(agent)   // 主入口，接管终端直到退出
 ```
 
-自研范围（目标 ~500 行以内）：
+自研范围（~24 个模块，约 3,000 行）：
 - raw mode 输入：按键解析（可打印字符、方向键、Ctrl 组合、粘贴）
 - 渲染：对话区（流式追加）+ 输入区 + 状态栏，全屏重绘走 alternate buffer
 - 宽字符：CJK/emoji 宽度计算（`String.prototype.codePointAt` + 简单 EastAsian 表，不引 wcwidth 依赖）
