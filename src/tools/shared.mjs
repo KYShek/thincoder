@@ -245,9 +245,13 @@ export function htmlToText(html) {
     .trim()
 }
 
-/** 执行 git 命令 */
+/** 执行 git 命令。maxBuffer 10MB 防大 diff/log 溢出；溢出时返回截断的部分输出而非空。 */
 export function runGit(cwd, cmdArgs) {
   try {
-    return execFileSync("git", cmdArgs, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/\r/g, "")
-  } catch { return "" }
+    return execFileSync("git", cmdArgs, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/\r/g, "")
+  } catch (e) {
+    // ERR_CHILD_PROCESS_STDIO_MAXBUFFER 时 e.stdout 含部分输出，截取前 200 行返回
+    if (e.stdout) return String(e.stdout).trim().replace(/\r/g, "").split("\n").slice(0, 200).join("\n")
+    return ""
+  }
 }

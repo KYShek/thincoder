@@ -28,7 +28,8 @@ function rateKey(provider) {
   return `${base}|${provider.apiKey ?? ""}`
 }
 
-/** 粗估文本 token 数 */
+/** 粗估文本 token 数。
+ *  ASCII 按 ~4 字符/token；非 ASCII（CJK/emoji）按 ~1 字符/token（保守，实测 BPE 1.5-2.5 字/token）。 */
 export function estimateText(s) {
   let nonAscii = 0
   for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) nonAscii++
@@ -82,7 +83,7 @@ export async function rateGate(provider, estimated, onWait, signal) {
     waitMs = Math.max(waitMs, 50)
     onWait?.({ phase: "gate", seconds: Math.ceil(waitMs / 1000) })
     await _rateHooks.sleep(waitMs)
-    if (signal?.aborted) return
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
   }
 }
 

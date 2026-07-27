@@ -52,7 +52,7 @@ export async function search(memory, query, { limit = 5 } = {}) {
   const rows = memory.db.prepare(`
     SELECT 'personal:' || id AS uid, embedding FROM entries WHERE embedding IS NOT NULL
     UNION ALL
-    SELECT layer || ':' || path AS uid, embedding FROM files WHERE embedding IS NOT NULL ${vecFilter}
+    SELECT layer || ':' || COALESCE(origin, '') || ':' || path AS uid, embedding FROM files WHERE embedding IS NOT NULL ${vecFilter}
   `).all(...vecParams)
   const vecList = rows
     .map((r) => ({ id: r.uid, score: cosine(qvec, fromBlob(r.embedding)) }))
@@ -91,26 +91,33 @@ export function ftsSearch(memory, ftsQuery, limit) {
     FROM files_fts JOIN files f ON f.rowid = files_fts.rowid
     WHERE files_fts MATCH ? ${originFilter}
     ORDER BY rank LIMIT ?
-  `).all(...originParams).map((r) => ({ ...r, id: `${r.layer}:${r.path}` }))
+  `).all(...originParams).map((r) => ({ ...r, id: `${r.layer}:${r.origin ?? ""}:${r.path}` }))
 
   return [...personal, ...files].sort((a, b) => a.rank - b.rank).slice(0, limit)
 }
 
-/** 按统一 id 取完整条目（personal:<n> / project:<path> / team:<path>）
+/** 按统一 id 取完整条目（personal:<n> / project:<origin>:<path> / team:<origin>:<path>）
  *  注意：v9 起 files 表 PK 为 (layer, origin, path)，同一 layer+path 可能跨多个 origin。
  *  project 层优先返回 projectOrigin 命中的行，team 层取任意一行（跨团队仓库同名时取首条）。 */
 export function fetchEntry(memory, uid) {
   const [layer, ...rest] = uid.split(":")
-  const key = rest.join(":")
   if (layer === "personal") {
-    const r = memory.db.prepare(`SELECT id, type, title, content, tags FROM entries WHERE id = ?`).get(Number(key))
+    const r = memory.db.prepare(`SELECT id, type, title, content, tags FROM entries WHERE id = ?`).get(Number(rest[0]))
     return r ? { ...r, layer, id: uid } : null
   }
+  // rest = [origin, ...pathParts]；origin 可能为空字符串（旧格式兼容）
+  const origin = rest[0] ?? ""
+  const path = rest.slice(1).join(":")
   if (layer === "project" && memory.projectOrigin) {
-    const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND origin = ? AND path = ?`).get(layer, memory.projectOrigin, key)
+    const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND origin = ? AND path = ?`).get(layer, origin || memory.projectOrigin, path)
     if (r) return { ...r, layer, id: uid }
   }
-  const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND path = ?`).get(layer, key)
+  // team 层或 project 兜底：按 origin+path 查，origin 为空时退化为只按 path（兼容旧 UID）
+  if (origin) {
+    const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND origin = ? AND path = ?`).get(layer, origin, path)
+    if (r) return { ...r, layer, id: uid }
+  }
+  const r = memory.db.prepare(`SELECT type, title, content, tags, author FROM files WHERE layer = ? AND path = ?`).get(layer, path || rest.join(":"))
   return r ? { ...r, layer, id: uid } : null
 }
 
@@ -122,10 +129,15 @@ export async function ensureEmbeddings(memory) {
   const modelKey = memory.embedder.model
   const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'embedding_model'`).get()?.value
   if (stored !== modelKey) {
+    // 统一失效三个表 + 三个 meta key，防维度不匹配的陈旧向量残留
     memory.db.prepare(`UPDATE entries SET embedding = NULL`).run()
     memory.db.prepare(`UPDATE files SET embedding = NULL`).run()
-    memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('embedding_model', ?)
-      ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(modelKey)
+    memory.db.prepare(`UPDATE code_chunks SET embedding = NULL`).run()
+    memory.db.prepare(`UPDATE doc_chunks SET embedding = NULL`).run()
+    const upsert = memory.db.prepare(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`)
+    upsert.run("embedding_model", modelKey)
+    upsert.run("code_embedding_model", modelKey)
+    upsert.run("doc_embedding_model", modelKey)
   }
 
   const pendingEntries = memory.db.prepare(`SELECT id, title, content FROM entries WHERE embedding IS NULL LIMIT 256`).all()

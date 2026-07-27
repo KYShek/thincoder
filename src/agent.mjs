@@ -87,12 +87,15 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       try {
         if (await compressIfNeeded(agent, threshold)) {
           agent._compressFailures = 0
+          recentCallSigs.length = 0 // 压缩后历史重建，停滞检测计数器清零
           callbacks.onCompress?.()
           if (agent.autoApprove && !agent.history.some((m) => m.content === AUTO_REMINDER)) {
             agent.history.push({ role: "user", content: AUTO_REMINDER })
           }
         }
-      } catch {
+      } catch (compressError) {
+        // AbortError 不能吞：用户取消必须传播
+        if (compressError?.name === "AbortError" || signal?.aborted) throw compressError
         agent._compressFailures = (agent._compressFailures ?? 0) + 1
         if (agent._compressFailures >= COMPRESS_FAILURE_LIMIT) {
           agent._compressFailures = 0
@@ -157,6 +160,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       agent.history.push({ role: "assistant", content: response.content })
       return response.content
     }
+
+    // abort 在 chat 完成后、提交 history 前：不提交半截 turn
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
 
     agent.history.push({
       role: "assistant",

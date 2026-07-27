@@ -47,7 +47,8 @@ export async function extractCandidates(provider, transcript) {
   const res = await chat(provider, {
     messages: [{ role: "user", content: DISTILL_PROMPT + transcript }],
   })
-  const match = res.content.match(/\[[\s\S]*\]/)
+  // 非贪婪匹配第一个 JSON 数组（贪婪 [\s\S]* 会跨多个数组把中间文本也吃进去）
+  const match = res.content.match(/\[[\s\S]*?\]/)
   if (!match) return []
   try {
     const parsed = JSON.parse(match[0])

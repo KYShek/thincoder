@@ -21,14 +21,20 @@ export function sessionPath(cwd) {
 function slotPath(cwd, n) { return sessionPath(cwd) + "." + n }
 function manifestPath(cwd) { return sessionPath(cwd) + ".manifest" }
 
-/** 原子写：先写临时文件再替换，防写入中途崩溃留下截断的 JSON 丢整个会话。
- *  不用 renameSync：Windows rename 目标已存在抛 EPERM */
+/** 原子写：先写临时文件再 rename 替换，防写入中途崩溃留下截断的 JSON 丢整个会话。
+ *  rename 在 POSIX 上原子；Windows 上目标已存在时 Node 24 用 MoveFileExW+REPLACE_EXISTING 也能原子替换。
+ *  某些旧 Windows 文件系统可能抛 EPERM，重试一次。 */
 function writeSessionFile(p, data) {
   mkdirSync(dirname(p), { recursive: true })
   const tmp = `${p}.tmp`
   writeFileSync(tmp, JSON.stringify(data), "utf8")
-  try { unlinkSync(p) } catch { /* 旧文件不存在就算了 */ }
-  renameSync(tmp, p)
+  try {
+    renameSync(tmp, p)
+  } catch {
+    // Windows EPERM 兜底：删目标后重试（极罕见，仅旧 NTFS/网络盘）
+    try { unlinkSync(p) } catch {}
+    renameSync(tmp, p)
+  }
 }
 
 // ========== 槽位管理 ==========
@@ -52,7 +58,8 @@ export function archiveCurrent(cwd, { exclude } = {}) {
   const m = loadManifest(cwd)
 
   let slot
-  const entries = Object.entries(m.slots)
+  // 只计数字 key 的槽位，排除 _currentName 等遗留非数字 key
+  const entries = Object.entries(m.slots).filter(([n]) => /^\d+$/.test(n))
   if (entries.length < MAX_SLOTS) {
     slot = 1
     while (m.slots[slot]) slot++
@@ -175,6 +182,12 @@ export function applySession(agent, data) {
   agent.goal = data.goal ?? null
   agent._pendingReminders = data.pendingReminders ?? []
   agent._sessionStart = data.sessionStart ?? null
+  // 重置轮次计数器：切换会话后不应继承旧会话的停滞/压缩状态
+  agent._turnsSinceTaskUpdate = 0
+  agent._turnsInPlanMode = 0
+  agent._compressFailures = 0
+  agent._verifyRetries = 0
+  agent._verifyPassed = false
   if (data.activeProvider && data.activeProvider !== agent.activeProvider) {
     const p = agent.providers?.find((pr) => pr.name === data.activeProvider)
     if (p) {

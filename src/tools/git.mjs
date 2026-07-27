@@ -93,7 +93,7 @@ export const gitLogTool = {
   },
   readonly: true,
   execute(args, ctx) {
-    const n = args.count ?? 10
+    const n = Math.min(Math.max(1, args.count ?? 10), 200)
     const isOneline = args.oneline
     const cmdArgs = isOneline
       ? ["log", "-" + n, "--oneline"]

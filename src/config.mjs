@@ -190,9 +190,6 @@ export function loadConfig() {
     const keyVar = envMap[merged.activeProvider]
     if (keyVar && process.env[keyVar]) runtimeProvider.apiKey = process.env[keyVar]
   }
-  if (!runtimeProvider.apiKey) {
-    runtimeProvider.apiKey = process.env.THINCODER_API_KEY
-  }
 
   // embedding apiKey
   if (!merged.embedding.apiKey) {

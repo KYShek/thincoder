@@ -129,14 +129,24 @@ export const applyPatchTool = {
         planned.push({ abs, path: f.path, content: lines.join("\n"), isNew: false })
       }
     }
-    // 多文件原子写：先全部写 .tmp，全部成功后再 rename——任一写失败不影响已落盘的文件
-    const { rename } = await import("node:fs/promises")
-    for (const p of planned) {
-      await mkdir(dirname(p.abs), { recursive: true })
-      await writeFile(p.abs + ".thincoder-tmp", p.content, "utf8")
-    }
-    for (const p of planned) {
-      await rename(p.abs + ".thincoder-tmp", p.abs)
+    // 多文件写：先全部写 .tmp，全部成功后再 rename——任一写失败清理已写的 .tmp 不影响已落盘的文件
+    const { rename, unlink } = await import("node:fs/promises")
+    const written = []
+    try {
+      for (const p of planned) {
+        await mkdir(dirname(p.abs), { recursive: true })
+        await writeFile(p.abs + ".thincoder-tmp", p.content, "utf8")
+        written.push(p.abs)
+      }
+      for (const p of planned) {
+        await rename(p.abs + ".thincoder-tmp", p.abs)
+      }
+    } catch (renameError) {
+      // rename 阶段失败：清理残留 .tmp 文件
+      for (const abs of written) {
+        try { await unlink(abs + ".thincoder-tmp") } catch {}
+      }
+      throw renameError
     }
     const summary = planned.map((p) => `  ${p.isNew ? "created " : "modified"} ${p.path}`).join("\n")
     const syntaxResults = planned.map((p) => {

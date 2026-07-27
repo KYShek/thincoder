@@ -202,15 +202,18 @@ const OVERSIZE_CONTENT_LIMIT = 8_000
  * 不动 reasoning_content（DeepSeek/Kimi 回传协议）与 tool_calls 配对结构，无协议 400 风险。
  * 只在 compressIfNeeded 判定超阈值后调用。返回是否有消息被截断。
  */
-export function shrinkOversized(agent) {
+export function shrinkOversized(agent, limit = OVERSIZE_CONTENT_LIMIT) {
   let shrunk = false
   for (const m of agent.history) {
     if ((m.role !== "user" && m.role !== "tool") || typeof m.content !== "string") continue
-    if (m.content.length <= OVERSIZE_CONTENT_LIMIT) continue
+    if (m.content.length <= limit) continue
+    // 截断保留首尾，中间换桩说明；keepHead/keepTail 按比例但不超过 limit 的 50%/25%
+    const keepHead = Math.min(Math.floor(limit * 0.5), 4000)
+    const keepTail = Math.min(Math.floor(limit * 0.25), 2000)
     m.content =
-      m.content.slice(0, 4_000) +
-      `\n[... ${m.content.length - 6_000} chars truncated — single message too large for context window ...]\n` +
-      m.content.slice(-2_000)
+      m.content.slice(0, keepHead) +
+      `\n[... ${m.content.length - keepHead - keepTail} chars truncated — single message too large for context window ...]\n` +
+      m.content.slice(-keepTail)
     shrunk = true
   }
   if (shrunk) {

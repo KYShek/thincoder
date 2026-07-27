@@ -87,8 +87,8 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
     result.content += continued.content
     result.reasoning += continued.reasoning ?? ""
     for (const tc of continued.toolCalls ?? []) {
-      if (tc.index == null) { result.toolCalls = continued.toolCalls; break }
-      const s = (result.toolCalls[tc.index] ??= { id: "", name: "", arguments: "" })
+      const idx = tc.index ?? result.toolCalls.length
+      const s = (result.toolCalls[idx] ??= { id: "", name: "", arguments: "" })
       if (tc.id) s.id = tc.id
       s.name += tc.name ?? ""
       s.arguments += tc.arguments ?? ""
@@ -138,7 +138,7 @@ async function requestWithRetry(provider, body, signal, onWait) {
           Authorization: `Bearer ${provider.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal,
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
       })
     } catch (error) {
       if (error.name === "AbortError") throw error
@@ -233,5 +233,7 @@ async function readSSE(response, { onToken, onReasoning }) {
 }
 
 function betaBaseURL(baseURL) {
-  return baseURL.replace(/\/v1$/, "/beta")
+  // DeepSeek prefix 续写走 /beta 端点；只处理 /v1 后缀，缺 /v1 时追加 /beta
+  if (/\/v1$/.test(baseURL)) return baseURL.replace(/\/v1$/, "/beta")
+  return baseURL.endsWith("/") ? baseURL + "beta" : baseURL + "/beta"
 }

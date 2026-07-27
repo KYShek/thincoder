@@ -34,11 +34,14 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
     }
 
     if (!tool.readonly) {
-      const allowed = callbacks.onPermissionRequest
-        ? await callbacks.onPermissionRequest(toolCall.name, args)
-        : false
+      // autoApprove 短路：agent 已标记自动批准时不再询问
+      const allowed = agent.autoApprove
+        ? true
+        : callbacks.onPermissionRequest
+          ? await callbacks.onPermissionRequest(toolCall.name, args)
+          : false
       if (!allowed) {
-        prepared.push({ toolCall, tool, denied: true })
+        prepared.push({ toolCall, tool, denied: true, reason: callbacks.onPermissionRequest ? "denied by user" : "no permission handler" })
         continue
       }
     }
