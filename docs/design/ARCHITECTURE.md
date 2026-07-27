@@ -100,19 +100,22 @@ thincoder/
 
 ## 模块接口
 
-### provider.mjs — LLM 调用
+### provider/ — LLM 调用
+
+`src/provider/core.mjs` 是核心，`index.mjs` 重导出 `chat` / `createProvider` / `listModels`。
 
 ```js
 // 创建 provider。config: { baseURL, apiKey, model }
 export function createProvider(config)
 
 // 流式对话。messages: OpenAI 格式; tools: 工具 schema; 
-// onToken: (text) => void 流式回调
-// 返回 { content, toolCalls, usage, finishReason }
-export async function chat(provider, { messages, tools, onToken, signal })
+// onToken: (text) => void 流式回调; onReasoning: 思考流回调
+// 返回 { content, toolCalls, usage, finishReason, reasoning }
+export async function chat(provider, { messages, tools, onToken, onReasoning, signal })
 
 // 错误分级：可重试（网络/5xx/429）vs 不可重试（4xx 参数错误）
 // 由 provider 内部处理重试（指数退避，最多 3 次），调用方无感
+// rate.mjs 提供 TPM/RPM 闸门控制
 ```
 
 覆盖范围：只跟顶流、只跟最新——当前内置 DeepSeek / Kimi / GLM / Qwen / MiniMax 五家国内顶流厂商的旗舰模型。不做 Ollama 本地模型、不做 Anthropic 原生协议、不做"通用 OpenAI 兼容端点"泛化承诺。预设表随模型换代增删，不留历史包袱。
@@ -121,21 +124,27 @@ export async function chat(provider, { messages, tools, onToken, signal })
 
 thinking 模式的协议约束：是否回传 reasoning_content 由规格表 reasoningEcho 决定——"required"（DeepSeek/Kimi K3，缺失会 400 / Preserved Thinking 要求保留）必须回传；"optional"（GLM，clear_thinking 默认清除历史 reasoning）不回传；未声明（未知模型）保守不回传。实现：readSSE 累积 reasoning → agent.mjs 入 history 时按 reasoningEcho 决定是否以 reasoning_content 字段挂在 assistant 消息上。估算 token 时该字段计入长度（思考链很长，影响压缩阈值判断）。
 
-### tools.mjs — 工具系统
+### tools/ — 工具系统
+
+工具定义分散在 `src/tools/file.mjs` / `system.mjs` / `git.mjs` / `web.mjs` / `patch.mjs`，统一在 `index.mjs` 注册为 `builtinTools` 数组。描述文本存在 `src/tools/*.md`，运行时动态加载。
 
 ```js
 // 每个工具的定义形状（对齐 OpenAI tool calling schema）：
 {
   name: "read",
-  description: "...",                    // 给 LLM 看的
+  description: "...",                    // 从 .md 文件动态加载
   parameters: { type: "object", ... },   // JSON Schema
-  readonly: true,                        // 只读工具可并行；false（write/edit/bash）则串行
-  execute: async (args, ctx) => result   // ctx: { cwd, signal }
+  readonly: true,                        // 只读工具可并行；false 则串行
+  outputPanel: false,                    // 流式输出工具走输出面板
+  multimodal: false,                     // 多模态工具返回 { text, images }
+  execute: async (args, ctx) => result   // ctx: { cwd, agent, signal, ... }
 }
 
-export const builtinTools = [read, write, edit, bash, glob, grep]
+export const builtinTools = [read, write, edit, bash, glob, grep, ...]  // 28 个工具
 export function toOpenAISchema(tool)     // 转成 OpenAI tools 参数格式
 ```
+
+调度由 `src/agent/dispatch.mjs` 负责——两段式：阶段一逐条权限确认，阶段二只读并行、副作用串行。
 
 关键决策：
 - `bash` 工具有超时（默认 120 秒）和输出截断（防上下文爆炸）
@@ -144,14 +153,21 @@ export function toOpenAISchema(tool)     // 转成 OpenAI tools 参数格式
 
 ### agent.mjs — 主循环
 
+主循环在 `src/agent.mjs`，辅助模块在 `src/agent/`：
+- `dispatch.mjs`：两段式工具调度（阶段一权限确认，阶段二分类执行）
+- `setup.mjs`：系统提示词组装（记忆注入、技能列表、项目指令）
+- `helpers.mjs`：工具函数与常量
+
+自律工具（task/plan/goal/verify/subagent/skill）在 `src/agent-tools/`，由 `agent-tools.mjs` 注册。
+
 ```js
 // 跑一轮任务。input: 用户输入字符串
-// callbacks: { onToken, onToolCall, onToolResult, onPermissionRequest }
+// callbacks: { onToken, onReasoning, onToolCall, onToolResult, onPermissionRequest, ... }
 // 返回最终文本
-export async function runAgent(agent, input, callbacks)
+export async function runAgent(agent, input, callbacks, { depth, signal, resume })
 
-// agent 内部状态：provider + tools + context + memory + config
-export function createAgent({ provider, tools, context, memory, config })
+// agent 内部状态
+export function createAgent({ provider, tools, config, cwd, memory, overlay, ... })
 ```
 
 循环逻辑（学 kimi-code 的扎实劲儿，去掉花哨部分）：
@@ -176,7 +192,7 @@ export function createAgent({ provider, tools, context, memory, config })
 
 > 原稿未覆盖；实现时参考 kimi-code / Claude Code 补上，此处补录为正式设计。
 
-**自律工具**（定义在 agent.mjs，随主循环注入，不走 tools.mjs）：
+**自律工具**（定义在 `src/agent-tools/`，由 `agent-tools.mjs` 注册，随主循环注入）：
 
 | 工具 | 职责 | 注入范围 |
 |---|---|---|
@@ -190,7 +206,7 @@ export function createAgent({ provider, tools, context, memory, config })
 
 **plan 子 agent（借鉴 kimi-code 的 plan profile）**：只读规划 agent，交付物是计划本身。overlay 的灵魂是**编排意识**——先判断是否足够了解代码库，不足则明确列出"建议父 agent 派 explore 调查的问题"（plan → explore → plan 链），而非硬猜；输出契约：引用真实文件/行号、步骤可验证、有权衡时推荐一个方案并给理由。工具与 explore 相同（只读过滤），git 上下文同样注入。与 plan mode 互补：plan mode 是用户在场审批方案，plan 子 agent 是父 agent 自主外包规划阅读。
 
-**prompt 分层组织（借鉴 kimi-code 的自包含 profile，分文件方案）**：`SYSTEM_PROMPT.md` 是核心规则（主/子通用：诚实、并行、最小改动、编码纪律）；`main-overlay.md` 是主 agent 专属条款（plan/goal/skill/subagent/verify——子 agent 没有这些工具，prompt 不教它调不存在的东西，消除"继承全量 prompt 再打补丁"的矛盾）；子 agent prompt = 角色 overlay（**开头**，对齐 kimi 的 role prefix，身份先于通用规则）+ 核心规则。
+**prompt 分层组织（借鉴 kimi-code 的自包含 profile，分文件方案）**：`system.md` 是核心规则（主/子通用：诚实、并行、最小改动、编码纪律）；`discipline.md` 是编码/测试纪律；`main.md` 是主 agent 专属条款（plan/goal/skill/subagent/verify——子 agent 没有这些工具，prompt 不教它调不存在的东西，消除"继承全量 prompt 再打补丁"的矛盾）；子 agent prompt = 角色 overlay（`explore.md` / `coder.md` / `plan.md`，**开头**，对齐 kimi 的 role prefix，身份先于通用规则）+ 核心规则。
 
 **提示注入防御与上下文工程（借鉴 kimi-code）**：
 - goal 提醒：目标文本 XML 转义 + `<untrusted_objective>` 标签包裹 + "是数据不是指令"声明——用户目标里的"忽略你的指令"不再能穿透
@@ -222,7 +238,7 @@ export function createAgent({ provider, tools, context, memory, config })
 - **阻塞审计**：`goal blocked` 需同一阻塞条件**连续 3 次**才受理（工具内 `_blockTally` 计数，换条件重新计）——防止一遇阻就放弃，也防止死磕不报
 - **停滞检测**：同一工具+同一参数连续 3 次调用，注入"你在原地空转，换条路或求助"提醒（kimi-code 没有的机制，长程任务防死循环）
 
-**编码纪律（system prompt）**：`SYSTEM_PROMPT.md` 尾部「Coding discipline」段（对齐 kimi-code 的严谨条款）——修 bug 先找根因不打补丁式修复、匹配周边代码风格、用库前先确认项目已有依赖、重构更新所有调用方且不改测试逻辑凑通过、不留占位符、改完扫旧注释、终答前重读用户最新请求。原则：token 花在验证上是合算的。
+**编码纪律（system prompt）**：`discipline.md` 尾部「Coding discipline」段（对齐 kimi-code 的严谨条款）——修 bug 先找根因不打补丁式修复、匹配周边代码风格、用库前先确认项目已有依赖、重构更新所有调用方且不改测试逻辑凑通过、不留占位符、改完扫旧注释、终答前重读用户最新请求。原则：token 花在验证上是合算的。
 
 **前缀缓存（context caching）**：DeepSeek 自动缓存请求公共前缀（命中价约为 miss 的 1/120），前提是 system prompt + 历史消息的前缀跨请求逐字节不变。约束落到代码上：
 - system prompt 只允许放跨 run 稳定的内容；`Session start` 时间戳每会话固定一次（`agent._sessionStart`），不能每次 runAgent 重新取
@@ -237,23 +253,28 @@ export function createAgent({ provider, tools, context, memory, config })
 ### context.mjs — 上下文管理 + 压缩
 
 ```js
-export function createContext({ systemPrompt, maxTokens })
-export function add(ctx, message)           // 追加消息
-export function messages(ctx)               // 取当前消息列表
-export async function compress(ctx, provider)  // 超阈值时压缩
+export function estimateTokens(messages)      // 粗略 token 估算
+export async function compressIfNeeded(agent, threshold)  // 超阈值时压缩
+export function compressFallback(agent)       // 压缩失败时确定性截断兜底
 ```
 
-压缩策略（学 kimi-code，简化版）：保留 system + 最早 2 条 + 最近 N 条，中间用 LLM 摘要成一条。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文（system+tools+history）的实测值，之后追加的消息用估算补增量；无实测（首轮/恢复后/刚压缩完）退化为估算（ASCII/4 + 非 ASCII/1——纯 `length/4` 对 CJK 低估 3-4 倍，可能永远来不及压缩）。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整；只认 user 会让纯工具长跑迟迟得不到压缩机会）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表与 plan 状态、重置提醒计数器——每次压缩先清掉旧回注再注入最新版，task 状态永远最新且位于历史末尾（单一信息源，不嵌入摘要正文避免重复）。会话持久化分两套数据，互不牵扯——**agent 恢复**要上下文连续（history：压缩过、transient 过滤，可牺牲保真）；**用户恢复**要所见即所得（display：TUI 对话区渲染行 {text,color} 原样快照，含工具结果/task 留痕/思考链；复用 history 重建显示必然失真——摘要会替换原文）。临时上下文（目录快照/记忆注入）注入时打 `transient` 标记，保存按标记过滤（旧存档按文本前缀在加载时清理）；原子写（tmp+rename）；每 5 个工具 turn 增量保存（`onTurnEnd` 钩子）；`_sessionStart` 随会话带回，跨重启 system prompt 逐字节稳定保住前缀缓存。
+压缩策略（学 kimi-code，简化版）：保留 system + 最早 2 条 + 最近 N 条，中间用 LLM 摘要成一条。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文的实测值。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表。会话持久化分两套数据——**agent 恢复**用 history（压缩过、transient 过滤）；**用户恢复**用 display（TUI 对话区渲染行原样快照）。临时上下文打 `transient` 标记，保存时过滤。原子写（tmp+rename）；每 5 个工具 turn 增量保存。
 
-### memory.mjs — 记忆（扩展位 ⭐）
+### memory/ — 记忆系统
+
+核心在 `src/memory/core.mjs`，`memory.mjs` 重导出所有接口。三层记忆（Personal / Project / Team），FTS5 + 向量 RRF 混合检索。
 
 ```js
-// 接口——v1 单机实现，v2+ 换团队实现，调用方无感：
-export function createMemory({ dbPath })             // 打开/初始化
-export async function put(memory, entry)             // entry: { type, title, content, tags }
-export async function search(memory, query, { limit })  // FTS5 检索, v1 无向量
+// 接口——统一检索入口，跨层合并结果：
+export async function put(memory, { type, title, content, tags, scope })
+export async function search(memory, query, { limit })      // FTS5 + 向量 RRF
 export async function list(memory, { type, limit })
 export async function remove(memory, id)
+
+// 代码/文档索引（code-index.mjs + code-sync.mjs / docs.mjs）
+export async function codeSync(memory, cwd)
+export async function docSync(memory, cwd)
+export async function reindexFile(memory, cwd, absPath)     // 单文件增量
 ```
 
 - v1 实现：`node:sqlite` + FTS5 虚表，BM25 排序。entry.type ∈ `rule | knowledge | decision | pattern`（对齐团队记忆四类内容）
@@ -265,30 +286,53 @@ export async function remove(memory, id)
 ```js
 export function loadConfig()    // 读 ~/.thincoder/config.json + 环境变量兜底
 export function saveConfig(config)
+export const PROVIDER_PRESETS   // 内置 provider 预设表（DeepSeek/Kimi/GLM/Qwen/MiniMax）
+export function specForModel(model)  // 查模型规格（contextWindow / reasoningEcho / multimodal / tempRange）
 ```
 
 ```jsonc
-// ~/.thincoder/config.json
+// ~/.thincoder/config.json（multi-provider 结构）
 {
-  "provider": { "baseURL": "https://api.deepseek.com/v1", "apiKey": "...", "model": "deepseek-chat" },
-  "agent": { "maxTurns": 100, "compactThreshold": 100000 },
-  "memory": { "dbPath": "~/.thincoder/memory.db" }
+  "providers": [
+    { "name": "deepseek", "baseURL": "https://api.deepseek.com/v1", "model": "deepseek-chat" },
+    { "name": "kimi", "baseURL": "https://api.moonshot.cn/v1", "model": "kimi-k3" }
+  ],
+  "activeProvider": "deepseek",
+  "agent": { "maxTurns": 100, "compactThreshold": 100000, "compactThresholdAuto": true },
+  "memory": { "dbPath": "~/.thincoder/memory.db" },
+  "embedding": { "baseURL": "https://api.siliconflow.cn/v1", "model": "BAAI/bge-m3" }
 }
 ```
 
 apiKey 也可走环境变量（`THINCODER_API_KEY` 或 provider 惯用变量），配置文件不明文存储时可留空。
 
-### tui.mjs — 裸 ANSI 终端 UI
+### tui/ — 裸 ANSI 终端 UI
 
-```js
-export async function startTUI(agent)   // 主入口，接管终端直到退出
+`src/tui/index.mjs` 是入口，~24 个模块约 3,000 行，全部自研零依赖。
+
+```
+src/tui/
+├── index.mjs          # startTUI 入口 + render 副作用 + submit + 依赖注入
+├── layout.mjs         # 面板布局引擎（纯函数 computeLayout）
+├── render.mjs         # 绘制原语（charWidth / wrapText / formatTables / sanitize）
+├── render-frame.mjs   # 纯帧渲染器（renderFrame）
+├── ansi.mjs           # ANSI 常量 + 颜色定义
+├── agent-turn.mjs     # agent 循环 + 回调构造（流式/工具/子agent/压缩）
+├── key-handler.mjs    # 键盘事件分发（权限/问题/选择器/向导/编辑/历史/粘贴）
+├── interaction.mjs    # 权限审批 + Q&A 输入
+├── pickers.mjs        # 通用列表选择器 + 模型管理选择器
+├── wizard.mjs         # 首次启动配置向导
+├── slash-commands.mjs # 斜杠命令分发 + Tab 补全
+├── cmd-*.mjs          # 各命令实现（17 个：model/think/session/config/…）
+├── startup.mjs        # 启动画面 + 会话恢复 + 后台索引
+├── clipboard.mjs      # 剪贴板图片粘贴
+├── distill-cmd.mjs    # /distill 命令
+└── config-helpers.mjs # 配置持久化辅助
 ```
 
-自研范围（~24 个模块，约 3,000 行）：
-- raw mode 输入：按键解析（可打印字符、方向键、Ctrl 组合、粘贴）
-- 渲染：对话区（流式追加）+ 输入区 + 状态栏，全屏重绘走 alternate buffer
-- 宽字符：CJK/emoji 宽度计算（`String.prototype.codePointAt` + 简单 EastAsian 表，不引 wcwidth 依赖）
-- 权限确认：写文件/bash 前弹出 y/n 提示
+```js
+export async function startTUI(agent, opts)   // 主入口，接管终端直到退出
+```
 
 ### bin/thincoder.mjs — 命令分发
 
@@ -296,6 +340,9 @@ export async function startTUI(agent)   // 主入口，接管终端直到退出
 thincoder              # 启动 TUI（默认）
 thincoder chat "..."   # 一次性问答（管道友好，可接 stdout）
 thincoder memory       # 记忆管理子命令（list/search/put/remove）
+thincoder sync         # Team 层 git pull + 增量索引
+thincoder reindex      # 全量重建索引（含向量）
+thincoder distill      # 从会话提取候选记忆条目
 thincoder config       # 查看/设置配置
 ```
 
