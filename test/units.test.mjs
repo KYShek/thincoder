@@ -116,6 +116,38 @@ test("tools: write / read / edit / glob / grep", async () => {
   }
 })
 
+
+test("globToRegex: **跨目录 / * 段内 / ? 单字符 / 精确匹配", async () => {
+  const { globToRegex } = await import("../src/tools/shared.mjs")
+  // **/*.txt：匹配任意深度的 .txt 文件（含根目录、多层子目录）
+  const re1 = globToRegex("**/*.txt")
+  assert.ok(re1.test("a.txt"), "**/*.txt should match root file")
+  assert.ok(re1.test("sub/a.txt"), "**/*.txt should match one-level deep")
+  assert.ok(re1.test("deep/nested/a.txt"), "**/*.txt should match multi-level deep")
+  assert.ok(!re1.test("a.txt.bak"), "**/*.txt should not match wrong extension")
+
+  // ** 单独使用：匹配任意路径（跨目录）
+  const re2 = globToRegex("src/**")
+  assert.ok(re2.test("src/a.mjs"), "src/** should match file in src/")
+  assert.ok(re2.test("src/deep/nested/a.mjs"), "src/** should match deeply nested file")
+  assert.ok(!re2.test("test/a.mjs"), "src/** should not match outside src/")
+
+  // * 段内通配（不跨 /）
+  const re3 = globToRegex("*.mjs")
+  assert.ok(re3.test("a.mjs"), "*.mjs should match root file")
+  assert.ok(!re3.test("sub/a.mjs"), "*.mjs should not match subdirectory file")
+
+  // ? 单字符
+  const re4 = globToRegex("a?.mjs")
+  assert.ok(re4.test("ab.mjs"), "a?.mjs should match ab.mjs")
+  assert.ok(!re4.test("abc.mjs"), "a?.mjs should not match abc.mjs")
+
+  // 精确匹配
+  const re5 = globToRegex("exact.mjs")
+  assert.ok(re5.test("exact.mjs"), "exact match")
+  assert.ok(!re5.test("notexact.mjs"), "no false positive")
+})
+
 test("tools: apply_patch 多文件原子应用 / 新建文件 / 失败不落盘", async () => {
   const dir = mkdtempSync(join(tmpdir(), "thincoder-patch-"))
   const ctx = { cwd: dir }

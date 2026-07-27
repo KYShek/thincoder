@@ -16,8 +16,8 @@ export const configPath = join(configDir, "config.json")
 export const PROVIDER_PRESETS = {
   deepseek: { baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 393216, desc: "DeepSeek" },
   kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "max", maxTokens: 131072, desc: "Kimi / Moonshot" },
-  glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 131072, desc: "智谱 GLM" },
-  qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", maxTokens: 131072, desc: "通义千问" },
+  glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 131072, desc: "Zhipu GLM" },
+  qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", maxTokens: 131072, desc: "Qwen / Alibaba" },
   minimax:  { baseURL: "https://api.minimax.chat/v1", chatPath: "/text/chatcompletion_v2", model: "MiniMax-M3", maxTokens: 131072, desc: "MiniMax" },
 }
 
@@ -131,8 +131,8 @@ export function findProvider(providers, name) {
   if (name) {
     const found = providers.find((p) => p.name === name)
     if (found) return found
-    const available = providers.map((p) => p.name).join(", ") || "(空)"
-    throw new Error(`activeProvider "${name}" 不在 providers 列表中（可用: ${available}），请检查配置是否打错字: ${configPath}`)
+    const available = providers.map((p) => p.name).join(", ") || "(empty)"
+    throw new Error(`activeProvider "${name}" not in providers list (available: ${available}); check for a typo in: ${configPath}`)
   }
   return providers[0] ?? { name: "default", baseURL: "", model: "" }
 }
@@ -148,7 +148,7 @@ export function loadConfig() {
     try {
       config = JSON.parse(readFileSync(configPath, "utf8"))
     } catch (error) {
-      throw new Error(`配置文件不是合法 JSON，请检查或删除: ${configPath}\n  ${error.message}`)
+      throw new Error(`Config file is not valid JSON, check or delete it: ${configPath}\n  ${error.message}`)
     }
   }
 

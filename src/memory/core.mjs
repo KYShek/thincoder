@@ -38,9 +38,15 @@ export async function search(memory, query, { limit = 5 } = {}) {
   if (!memory.embedder) return ftsList.slice(0, limit)
 
   // ---- 向量通道 ----
-  try { await ensureEmbeddings(memory) } catch { return ftsList.slice(0, limit) }
+  try { await ensureEmbeddings(memory) } catch (e) {
+    console.error(`[memory] embedding ensure failed, falling back to FTS-only: ${e.message}`)
+    return ftsList.slice(0, limit)
+  }
   let qvec
-  try { [qvec] = await embed(memory.embedder, [query]) } catch { return ftsList.slice(0, limit) }
+  try { [qvec] = await embed(memory.embedder, [query]) } catch (e) {
+    console.error(`[memory] query embedding failed, falling back to FTS-only: ${e.message}`)
+    return ftsList.slice(0, limit)
+  }
   const vecFilter = memory.projectOrigin ? `AND (layer = 'team' OR origin = ?)` : ""
   const vecParams = memory.projectOrigin ? [memory.projectOrigin] : []
   const rows = memory.db.prepare(`
@@ -184,7 +190,8 @@ export async function syncDir(memory, { layer, dir }) {
     if (!isNew && old === mtimeMs) continue
     try {
       await indexMarkdownFile(memory, { layer, dir, filename, mtimeMs })
-    } catch {
+    } catch (e) {
+      console.error(`[memory] skip ${layer}/${filename}: ${e.message}`)
       skipped++
       indexed.delete(filename)
       continue

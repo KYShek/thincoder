@@ -196,9 +196,15 @@ export async function codeSearch(memory, query, { limit = 5 } = {}) {
 
   if (!memory.embedder) return ftsList.slice(0, limit)
 
-  try { await ensureEmbeddings(memory) } catch { return ftsList.slice(0, limit) }
+  try { await ensureEmbeddings(memory) } catch (e) {
+    console.error(`[code] embedding ensure failed, falling back to FTS-only: ${e.message}`)
+    return ftsList.slice(0, limit)
+  }
   let qvec
-  try { [qvec] = await embed(memory.embedder, [query]) } catch { return ftsList.slice(0, limit) }
+  try { [qvec] = await embed(memory.embedder, [query]) } catch (e) {
+    console.error(`[code] query embedding failed, falling back to FTS-only: ${e.message}`)
+    return ftsList.slice(0, limit)
+  }
   const rows = memory.db.prepare(`SELECT rowid, embedding FROM code_chunks WHERE embedding IS NOT NULL ${vecOriginFilter}`).all(...originParams)
   const vecList = rows
     .map((r) => ({ rowid: r.rowid, score: cosine(qvec, fromBlob(r.embedding)) }))

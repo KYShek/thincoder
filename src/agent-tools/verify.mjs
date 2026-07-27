@@ -1,5 +1,5 @@
 import { repairHistory, listWorkDir } from "../agent.mjs"
-import { execSync } from "node:child_process"
+import { execSync, spawn } from "node:child_process"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
@@ -78,14 +78,14 @@ export const verifyTool = {
             lines.push("")
             lines.push(`Tests (${testCmd}):`)
             try {
-              const result = execSync(`npm test`, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120000 })
-              const tail = result.split("\n").slice(-8).join("\n")
+              const result = await runTestSuite(cwd, ctx)
+              const tail = result.stdout.split("\n").slice(-8).join("\n")
               lines.push(tail || "(tests completed)")
               lines.push("")
               lines.push("✓ Tests passed.")
               ctx.agent._verifyPassed = !syntaxFailed // 语法挂了即使测试侥幸过也不算通过
             } catch (e) {
-              const output = ((e.stdout || "") + (e.stderr || "")).toString()
+              const output = e.stdout ? (e.stdout + (e.stderr ? "\n" + e.stderr : "")) : e.message
               const tail = output.split("\n").slice(-15).join("\n")
               lines.push(tail || "(no output)")
               lines.push("")
@@ -148,3 +148,51 @@ export const verifyTool = {
     return lines.join("\n")
   },
 }
+
+/**
+ * 用 spawn 运行 npm test，无 maxBuffer 限制。
+ * 测试输出通过 ctx.callbacks.onToolOutput 流式透传（TUI 可实时显示进度）。
+ * 成功返回 { stdout, stderr }；非零退出码抛错（带 stdout/stderr 供调用方提取 tail）。
+ */
+function runTestSuite(cwd, ctx) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("npm", ["test"], {
+      cwd, shell: true, stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, FORCE_COLOR: "0" },
+    })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (d) => {
+      const s = d.toString()
+      stdout += s
+      ctx.callbacks?.onToolOutput?.("verify", s)
+    })
+    child.stderr.on("data", (d) => {
+      const s = d.toString()
+      stderr += s
+      ctx.callbacks?.onToolOutput?.("verify", s)
+    })
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      const err = new Error("Tests timed out after 120s")
+      err.stdout = stdout
+      err.stderr = stderr
+      reject(err)
+    }, 120000)
+    child.on("error", (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve({ stdout, stderr })
+      else {
+        const err = new Error(`Tests exited with code ${code}`)
+        err.stdout = stdout
+        err.stderr = stderr
+        reject(err)
+      }
+    })
+  })
+}
+

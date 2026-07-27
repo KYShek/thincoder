@@ -80,17 +80,24 @@ export function makeDecoder() {
   }
 }
 
-/** 单文件 git diff，失败静默返回空 */
+/** 单文件 git diff，失败静默返回空。大 diff 超 maxBuffer 时截断而非吞掉 */
 export function gitDiffOne(cwd, abs) {
   try {
     const diff = execFileSync("git", ["--no-pager", "diff", "--no-color", "--", abs], {
-      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024 * 1024,
+      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 10 * 1024 * 1024,
     }).trim()
     if (!diff) return ""
     const lines = diff.split("\n")
     if (lines.length <= 200) return diff
     return lines.slice(0, 200).join("\n") + `\n... (${lines.length - 200} more diff lines)`
-  } catch { return "" }
+  } catch (e) {
+    // maxBuffer 溢出时 e.stdout 含已收集的部分；其他错误（非 git 仓库等）返回空
+    if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && e.stdout) {
+      const lines = e.stdout.toString().split("\n")
+      return lines.slice(0, 200).join("\n") + `\n... (diff too large, showing first 200 of more lines)`
+    }
+    return ""
+  }
 }
 
 /** 文件变更后自动语法检查 */

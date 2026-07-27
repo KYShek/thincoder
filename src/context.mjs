@@ -6,13 +6,7 @@
  */
 
 import { chat } from "./provider/index.mjs"
-
-/** 粗估一段文本的 token 数：ASCII 约 4 字符 1 token，CJK 等非 ASCII 约 1 字符 1 token */
-function estimateText(s) {
-  let nonAscii = 0
-  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) nonAscii++
-  return Math.ceil((s.length - nonAscii) / 4) + nonAscii
-}
+import { estimateText } from "./provider/rate.mjs"
 
 /** 粗估一组消息的 token 数（正文 + 思考链 + tool_calls 参数） */
 export function estimateTokens(messages) {

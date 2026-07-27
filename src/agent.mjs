@@ -210,7 +210,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
                 await _reindexFile(agent.memory, agent.cwd, abs)
               }
             }
-          } catch { /* 索引失败不阻塞 agent */ }
+          } catch (e) { /* 索引失败不阻塞 agent，但记录到 stderr 便于诊断 */
+            console.error(`[reindexFile] failed for ${toolCall.name}: ${e.message}`)
+          }
         }
       }
     }
