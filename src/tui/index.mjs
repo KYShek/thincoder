@@ -381,6 +381,51 @@ export async function startTUI(agent, opts = {}) {
 
   showStartup({ agent, state, opts, pushLine, pushLabel, render, startWizard })
   backgroundIndex({ agent, state, render })
+
+  // Check for updates (non-blocking, after startup screen)
+  ;(async () => {
+    try {
+      const { readFileSync } = await import("node:fs")
+      const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"))
+      const { checkForUpdate } = await import("../upgrade.mjs")
+      const result = await checkForUpdate(pkg.version)
+      if (result?.newer) {
+        // Defer: if wizard is still active, just show a dim line
+        if (state.wizard) {
+          pushLine(`Tip: thincoder ${result.latest} is available (run /upgrade later or restart)`, C.dim)
+          render()
+        } else {
+          openPicker({
+            title: `Update available: ${result.local} → ${result.latest}`,
+            entries: [
+              { type: "header", text: `thincoder ${result.latest} is available (current: ${result.local})` },
+              { type: "item", text: "Upgrade now", action: "upgrade" },
+              { type: "item", text: "Later", action: "later" },
+            ],
+            onSelect: async (sel) => {
+              if (sel.action === "upgrade") {
+                pushLabel(`❯ Upgrade`, ansi.bold + C.tool)
+                pushLine(`Upgrading to ${result.latest}...`, C.tool)
+                const { exec } = await import("node:child_process")
+                const cp = exec("npm install -g thincoder@latest", { windowsHide: true })
+                let stdout = ""
+                cp.stdout?.on("data", (d) => { stdout += d })
+                cp.stderr?.on("data", (d) => { stdout += d })
+                cp.on("close", (code) => {
+                  if (code === 0) {
+                    pushLine(`✓ Upgraded to ${result.latest}. Restart to apply.`, C.tool)
+                  } else {
+                    pushLine(`✗ Upgrade failed (exit ${code}). Run \`thincoder upgrade\` manually.`, C.error)
+                  }
+                  render()
+                })
+              }
+            },
+          })
+        }
+      }
+    } catch { /* network error or timeout — silently skip */ }
+  })()
 }
 
 function summarize(obj) {

@@ -65,21 +65,6 @@ function exitSoon(code) {
   setTimeout(() => process.exit(code), 100)
 }
 
-/** Semantic version comparison: a<b returns -1, equal 0, a>b returns 1; non-numeric segments compare as strings */
-function compareVersions(a, b) {
-  const pa = String(a).split("."), pb = String(b).split(".")
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const xa = pa[i] ?? "0", xb = pb[i] ?? "0"
-    const na = Number(xa), nb = Number(xb)
-    if (!Number.isNaN(na) && !Number.isNaN(nb)) {
-      if (na !== nb) return na < nb ? -1 : 1
-    } else if (xa !== xb) {
-      return xa < xb ? -1 : 1
-    }
-  }
-  return 0
-}
-
 switch (command) {
   case "chat": {
     const auto = args.includes("--auto")
@@ -270,21 +255,20 @@ switch (command) {
   case "upgrade": {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
     const local = pkg.version
-    const { execSync } = await import("node:child_process")
-    let remote
-    try {
-      remote = execSync("npm view thincoder version", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
-    } catch {
+    const { checkForUpdate } = await import("../src/upgrade.mjs")
+    const result = await checkForUpdate(local)
+    if (!result) {
       console.error("[upgrade] Unable to query npm registry — check your network connection and that npm is installed")
       exitSoon(1)
       break
     }
-    if (compareVersions(local, remote) >= 0) {
+    if (!result.newer) {
       console.log(`ThinCoder ${local} is already the latest.`)
     } else {
-      console.log(`Upgrading: ${local} → ${remote}`)
+      console.log(`Upgrading: ${local} → ${result.latest}`)
+      const { execSync } = await import("node:child_process")
       execSync("npm install -g thincoder@latest", { stdio: "inherit" })
-      console.log(`Upgraded to ${remote}`)
+      console.log(`Upgraded to ${result.latest}`)
     }
     break
   }
