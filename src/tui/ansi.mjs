@@ -15,6 +15,8 @@ export const ansi = {
   bracketedPasteOff: `${ESC}[?2004l`,
   home: `${ESC}[H`,
   clearLine: `${ESC}[K`,
+  clearToEnd: `${ESC}[J`,
+  clearScreen: `${ESC}[2J`,
   reset: `${ESC}[0m`,
   dim: `${ESC}[2m`,
   bold: `${ESC}[1m`,

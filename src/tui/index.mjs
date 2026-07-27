@@ -260,13 +260,14 @@ export async function startTUI(agent, opts = {}) {
     })
     if (frame !== lastFrame) {
       lastFrame = frame
-      process.stdout.write(ansi.hideCursor + frame)
-    }
-    // Cursor: position inside input box when editing; hide during permission/menu mode
-    if (state.permission || state.question || state.picker || state.wizard?.step === "provider") {
-      process.stdout.write(ansi.hideCursor)
-    } else {
-      process.stdout.write(`${"\x1b"}[${cursorRow};${cursorCol}H${ansi.showCursor}`)
+      // Single write: home + hide cursor + frame + clear-tail + cursor position — prevents flicker
+      let out = ansi.home + ansi.hideCursor + frame + ansi.clearToEnd
+      if (state.permission || state.question || state.picker || state.wizard?.step === "provider") {
+        out += ansi.hideCursor
+      } else {
+        out += `\x1b[${cursorRow};${cursorCol}H${ansi.showCursor}`
+      }
+      process.stdout.write(out)
     }
   }
 
