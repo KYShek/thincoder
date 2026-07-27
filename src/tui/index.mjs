@@ -20,6 +20,9 @@ import { renderFrame } from "./render-frame.mjs"
 import { SLASH_COMMANDS, createSlashCommands } from "./slash-commands.mjs"
 import { createWizard } from "./wizard.mjs"
 import { createPickers } from "./pickers.mjs"
+import { runDistillCmd } from "./distill-cmd.mjs"
+import { createInteraction } from "./interaction.mjs"
+import { pasteClipboardImage as pasteClipboardImageImpl } from "./clipboard.mjs"
 
 /**
  * 启动 TUI，接管终端直到退出。
@@ -223,6 +226,15 @@ export async function startTUI(agent, opts = {}) {
 
     await runAgentTurn(text)
   }
+
+
+  // 交互原语：权限审批 + 问答输入，实现在 interaction.mjs
+  const { askPermission, askQuestion } = createInteraction({
+    agent, state, pushLine, pushLabel, render, summarize,
+  })
+
+  // 剪贴板图片粘贴：实现在 clipboard.mjs
+  const pasteClipboardImage = () => pasteClipboardImageImpl({ agent, state, pushLine, render })
 
   /** 执行一轮 agent 对话（从 submit 或队列取出调用） */
   async function runAgentTurn(text) {
@@ -442,118 +454,6 @@ export async function startTUI(agent, opts = {}) {
     }
   }
 
-  function askPermission(name, args) {
-    // auto 模式：完全授权，不再询问
-    if (agent.autoApprove) {
-      pushLine(`  [auto] ${name} ${summarize(args)}`, C.warn)
-      return Promise.resolve(true)
-    }
-    // 预览内容存到 permissionPreview，渲染在输入框上方紧挨"Allow?"提示
-    state.permissionPreview = formatPermission(name, args)
-    return new Promise((resolve) => {
-      state.permission = { name, args, resolve }
-      state.status = `Waiting: ${name}`
-      render()
-    })
-  }
-
-  /** 权限请求的关键信息 (按工具定制），返回行数组。name 可能带子 agent 前缀 ("coder/bash"），取基名匹配 */
-  function formatPermission(name, args) {
-    const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(${s.length} chars total)` : s)
-    const base = name.includes("/") ? name.split("/").pop() : name
-    if (base === "bash") return cap(args.command ?? "").split("\n")
-    if (base === "write") {
-      // 批准写文件必须看得到要写什么：路径 + 内容预览
-      return [`${args.path} (write ${(args.content ?? "").length} chars)`, ...cap(args.content ?? "", 1000).split("\n")]
-    }
-    if (base === "edit") {
-      // 简易 diff：- 旧内容 / + 新内容
-      return [
-        `${args.path}`,
-        ...cap(args.old_string ?? "", 500).split("\n").map((l) => `- ${l}`),
-        "  ↓",
-        ...cap(args.new_string ?? "", 500).split("\n").map((l) => `+ ${l}`),
-      ]
-    }
-    if (base === "apply_patch") {
-      // 补丁本身就是可读的 diff，直接预览
-      return cap(args.patch ?? "", 1500).split("\n")
-    }
-    if (base === "delete") return [`${args.path}${args.force ? " (force: also delete tracked files)" : ""}`]
-    if (base === "subagent") return cap(args.task ?? "", 500).split("\n")
-    if (base === "memory_put") return [`[${args.type ?? ""}] ${args.title ?? ""}`, ...cap(args.content ?? "", 500).split("\n")]
-    return [cap(summarize(args), 300)]
-  }
-
-  function askQuestion(text, options = []) {
-    // 一次只能问一个：question 是只读工具走并行通道，同批第二个直接驳回，
-    // 否则后到的会覆盖 state.question，先到的 Promise 永远悬挂 (agent 死等）
-    if (state.question) {
-      return Promise.resolve("(error: another question is pending; ask one at a time and wait for the answer)")
-    }
-    if (!options.length) {
-      // 自由文本：打开输入态让用户打字，Enter 提交
-      pushLabel(`❯ Question`, ansi.bold + C.tool)
-      for (const line of text.split("\n")) pushLine(`  ${line}`, C.text)
-      return new Promise((resolve) => {
-        state.question = { text, options: [], resolve }
-        state.status = "Waiting for answer..."
-        render()
-      })
-    }
-    // 选项模式：输入框内显示列表，方向键选，Enter 确认
-    pushLabel(`❯ Question`, ansi.bold + C.tool)
-    for (const line of text.split("\n")) pushLine(`  ${line}`, C.text)
-    return new Promise((resolve) => {
-      state.question = { text, options, selected: 0, resolve }
-      state.status = "Waiting for choice..."
-      render()
-    })
-  }
-
-  /** Ctrl+V / Alt+V：读取剪贴板图片 → 写入工作目录临时文件 → 输入框插入 read_image 命令 */
-  async function pasteClipboardImage(agent) {
-    const { execFile } = await import("node:child_process")
-    const { mkdir, stat, unlink } = await import("node:fs/promises")
-    const { join } = await import("node:path")
-
-    const run = (cmd, args) => new Promise((resolve, reject) => {
-      execFile(cmd, args, { timeout: 10000 }, (err, stdout) => { if (err) reject(err); else resolve(stdout) })
-    })
-
-    const dest = join(agent.cwd, `.thincoder-paste-${Date.now()}.png`)
-    const isWin = process.platform === "win32"
-    const isMac = process.platform === "darwin"
-
-    try {
-      if (isWin) {
-        const psScript = `Add-Type -AssemblyName System.Windows.Forms; if ([System.Windows.Forms.Clipboard]::ContainsImage()) { [System.Windows.Forms.Clipboard]::GetImage().Save('${dest.replace(/\\/g, "\\\\")}', [System.Drawing.Imaging.ImageFormat]::Png); exit 0 } else { exit 1 }`
-        await run("powershell", ["-NoProfile", "-Command", psScript])
-      } else if (isMac) {
-        const script = `try; set f to (POSIX file "${dest}"); set img to the clipboard as «class PNGf»; set fd to open for access f with write permission; write img to fd; close access fd; end try`
-        await run("osascript", ["-e", script])
-      } else {
-        await run("bash", ["-c", `xclip -selection clipboard -t image/png -o > "${dest}" 2>/dev/null || { which wl-paste >/dev/null 2>&1 && wl-paste -t image/png > "${dest}" 2>/dev/null; } || exit 1`])
-      }
-    } catch {
-      pushLine("Clipboard does not contain an image, or clipboard access failed", C.dim)
-      try { await unlink(dest) } catch {}
-      return
-    }
-
-    const st = await stat(dest).catch(() => null)
-    if (!st || st.size === 0) {
-      pushLine("Clipboard does not contain an image, or clipboard access failed", C.dim)
-      try { await unlink(dest) } catch {}
-      return
-    }
-
-    const cmd = `read_image ${dest}`
-    state.input.splice(state.cursor, 0, ...[...cmd])
-    state.cursor += cmd.length
-    pushLine(`[image pasted → ${dest}]`, C.tool)
-    render()
-  }
 
   // ---------------------------------------------------------- 斜杠Commands
 
@@ -604,46 +504,8 @@ export async function startTUI(agent, opts = {}) {
     exit: () => { cleanup(); setTimeout(() => process.exit(0), 100) },
   })
 
-  /** /distill：从current会话提取候选，逐条 y/n 确认后入库 */
-  async function runDistill() {
-    if (agent.history.length === 0) {
-      pushLine("[distill] Current session is empty, nothing to extract", C.dim)
-      return
-    }
-    state.processing = true
-    state.status = "Distilling..."
-    render()
-    try {
-      const { extractCandidates, historyToTranscript, saveCandidate } = await import("../distill.mjs")
-      pushLine("[distill] Analyzing session...", C.tool)
-      const candidates = await extractCandidates(agent.provider, historyToTranscript(agent.history))
-      if (candidates.length === 0) {
-        pushLine("[distill] No knowledge worth saving from this session", C.dim)
-        return
-      }
-      let saved = 0
-      for (const c of candidates) {
-        pushLine(`── Candidate [${c.type}] ${c.title} (scope: ${c.scope ?? "personal"})`, C.warn)
-        for (const line of c.content.split("\n").slice(0, 6)) pushLine(`   ${line}`, C.dim)
-        if (c.type === "rule") pushLine("   (rule  type — consider writing manually; press y to extract)", C.warn)
-        const accept = await askPermission("distill-save", { title: c.title })
-        if (!accept) {
-          pushLine("   skipped", C.dim)
-          continue
-        }
-        const where = await saveCandidate(agent.memory, c, distillOpts)
-        pushLine(`   saved -> ${where}`, C.tool)
-        saved++
-      }
-      pushLine(`[distill] Done: saved ${saved}/${candidates.length} item(s)`, C.tool)
-    } catch (error) {
-      pushLine(`[distill] error: ${error.message}`, C.error)
-    } finally {
-      state.processing = false
-      state.status = "Ready"
-      render()
-    }
-  }
+  /** /distill: impl in distill-cmd.mjs, ctx-passed */
+  const runDistill = () => runDistillCmd({ agent, state, pushLine, render, askPermission, distillOpts })
 
   // ---------------------------------------------------------- 键盘 / 鼠标
 

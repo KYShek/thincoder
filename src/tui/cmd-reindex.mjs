@@ -1,0 +1,44 @@
+import { C } from "./ansi.mjs"
+
+/** /reindex 命令：重建记忆索引（files + code_chunks + doc_chunks）。
+ *  ctx: { agent, distillOpts, pushLine } */
+export async function handleReindexCommand(ctx) {
+  const { agent, distillOpts, pushLine } = ctx
+  const { syncDir, codeSync, docSync } = await import("../memory.mjs")
+  pushLine("[reindex] Rebuilding index...", C.tool)
+  agent.memory.db.prepare("DELETE FROM files").run()
+  agent.memory.db.prepare("DELETE FROM code_chunks").run()
+  agent.memory.db.prepare("DELETE FROM doc_chunks").run()
+  let total = 0
+  if (distillOpts.projectDir) {
+    const s = await syncDir(agent.memory, { layer: "project", dir: distillOpts.projectDir })
+    total += s.added
+    pushLine(`  project: +${s.added} ~${s.updated} -${s.removed}`, C.dim)
+  }
+  if (distillOpts.team?.dir) {
+    const s = await syncDir(agent.memory, { layer: "team", dir: distillOpts.team.dir })
+    total += s.added
+    pushLine(`  team: +${s.added} ~${s.updated} -${s.removed}`, C.dim)
+  }
+  // 重建代码索引和文档索引并行（读写不同表，WAL 支持）
+  pushLine(`  [code+doc] Rebuilding indexes...`, C.tool)
+  const [cr, dr] = await Promise.all([
+    codeSync(agent.memory, agent.cwd, {
+      onProgress: (p) => {
+        if (p.phase === "index" && p.current % 20 === 0) {
+          pushLine(`    code: ${p.current}/${p.total}`, C.dim)
+        }
+      },
+    }),
+    docSync(agent.memory, agent.cwd, {
+      onProgress: (p) => {
+        if (p.phase === "index" && p.current % 5 === 0) {
+          pushLine(`    doc: ${p.current}/${p.total}`, C.dim)
+        }
+      },
+    }),
+  ])
+  pushLine(`  code: ${cr.total} files, +${cr.updated} ~${cr.skipped} -${cr.removed}`, C.dim)
+  pushLine(`  doc: ${dr.total} files, +${dr.updated} ~${dr.skipped} -${dr.removed}`, C.dim)
+  pushLine(`[reindex] Done, ${total} entries total. Vectors will be lazily generated on next search.`, C.tool)
+}

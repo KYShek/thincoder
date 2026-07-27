@@ -10,15 +10,16 @@
  *   thincoder --help          显示帮助
  */
 
-import { existsSync, readFileSync } from "node:fs"
-import { createInterface } from "node:readline"
-import { execSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { createAgent, runAgent } from "../src/agent.mjs"
-import { loadConfig, saveConfig, configDir, configPath, PROVIDER_PRESETS } from "../src/config.mjs"
-import { createMemory, memoryTools, put, remove, search, list, syncDir, codeSearchTool, docSearchTool } from "../src/memory.mjs"
-import { repoOutlineTool } from "../src/tools/repomap.mjs"
-import { builtinTools } from "../src/tools/index.mjs"
+import { runAgent } from "../src/agent.mjs"
+import { loadConfig, configPath } from "../src/config.mjs"
+import { createMemory, syncDir } from "../src/memory.mjs"
+import { makeAgent, teamConfig, gitAuthor } from "../src/cli/make-agent.mjs"
+import { memoryCommand } from "../src/cli/memory-command.mjs"
+import { setupWizard } from "../src/cli/setup-wizard.mjs"
+import { summarize, askPermission } from "../src/cli/permission.mjs"
+import { distillCommand } from "../src/cli/distill-command.mjs"
 
 const [command, ...args] = process.argv.slice(2)
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
@@ -64,82 +65,19 @@ function exitSoon(code) {
   setTimeout(() => process.exit(code), 100)
 }
 
-/** 组装一个带记忆的 agent（同步各层索引后返回） */
-async function makeAgent() {
-  const config = loadConfig()
-  const provider = config.provider
-  const providers = config.providersList
-  const memory = createMemory({ dbPath: config.memory.dbPath })
-  // 向量检索：配了 embedding 就启用（惰性生成向量，首次搜索时补算）
-  if (config.embedding?.apiKey) {
-    const { createEmbedder } = await import("../src/embedding.mjs")
-    memory.embedder = createEmbedder(config.embedding)
-  }
-  const cwd = process.cwd()
-  // code/doc 索引按 origin（项目根目录）隔离：检索只查本项目
-  memory.codeOrigin = cwd
-  // Project 层：启动时同步 .thincoder/memory/ 目录到索引（有就同步，没有就跳过）
-  if (config.memory.projectDir) {
-    memory.projectOrigin = join(cwd, config.memory.projectDir)
-    await syncDir(memory, { layer: "project", dir: memory.projectOrigin })
-  }
-  // Team 层（可选）：首次自动 clone；启动只索引本地目录，拉取远端走显式 thincoder sync
-  const team = teamConfig(config)
-  if (team) {
-    const { ensureClone } = await import("../src/git/gitmem.mjs")
-    await ensureClone(team)
-    await syncDir(memory, { layer: "team", dir: team.dir })
-  }
-  const baseTools = [...builtinTools, ...memoryTools(memory, { cwd, projectDir: config.memory.projectDir, author: gitAuthor(), team }), codeSearchTool(memory), docSearchTool(memory), repoOutlineTool(memory.db, cwd)]
-
-  // MCP servers：并行连接（一个死 server 不会拖住启动），失败的收集警告（TUI 下 stderr 不可见，通过 agent 对象传递）
-  const mcpServers = config.mcp?.servers ?? []
-  let mcpTools = []
-  const mcpWarnings = []
-  if (mcpServers.length) {
-    const { connectMcpServer } = await import("../src/mcp.mjs")
-    const results = await Promise.allSettled(mcpServers.map((srv) => connectMcpServer(srv)))
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i]
-      if (r.status === "fulfilled") {
-        mcpTools = mcpTools.concat(r.value)
-      } else {
-        const srv = mcpServers[i]
-        const msg = `MCP server "${srv.name ?? srv.command}" failed to connect: ${r.reason?.message ?? r.reason}`
-        console.error(`[mcp] ${msg}`)
-        mcpWarnings.push(msg)
-      }
+/** 语义化版本比较：a<b 返回 -1，相等 0，a>b 返回 1；非数字段按字符串比 */
+function compareVersions(a, b) {
+  const pa = String(a).split("."), pb = String(b).split(".")
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const xa = pa[i] ?? "0", xb = pb[i] ?? "0"
+    const na = Number(xa), nb = Number(xb)
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) {
+      if (na !== nb) return na < nb ? -1 : 1
+    } else if (xa !== xb) {
+      return xa < xb ? -1 : 1
     }
   }
-
-  const agent = createAgent({
-    provider,
-    tools: [...baseTools, ...mcpTools],
-    config,
-    cwd,
-    memory,
-  })
-  agent.providers = providers
-  agent.activeProvider = config.activeProvider
-  agent._mcpWarnings = mcpWarnings
-  return agent
-}
-
-/** 读取 team 配置并补全默认目录；未配置返回 null */
-function teamConfig(config) {
-  const team = config.memory?.team
-  if (!team?.repo) return null
-  const name = team.name ?? "default"
-  return { name, repo: team.repo, dir: team.dir ?? join(configDir, "teams", name) }
-}
-
-/** 条目作者：git config user.name 兜底 unknown */
-function gitAuthor() {
-  try {
-    return execSync("git config user.name", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown"
-  } catch {
-    return "unknown"
-  }
+  return 0
 }
 
 switch (command) {
@@ -233,7 +171,8 @@ switch (command) {
     if (config.memory.projectDir) {
       memory.projectOrigin = join(process.cwd(), config.memory.projectDir)
     }
-    await memoryCommand(memory, args)
+    const code = await memoryCommand(memory, args)
+    if (code) exitSoon(code)
     break
   }
 
@@ -262,78 +201,8 @@ switch (command) {
   }
 
   case "distill": {
-    const flags = {}
-    const positional = []
-    for (const a of args) {
-      const m = a.match(/^--([\w-]+)(?:=(.*))?$/)
-      if (m) flags[m[1]] = m[2] ?? true
-      else positional.push(a)
-    }
-    const file = positional[0]
-    if (!file) {
-      console.error("Usage: thincoder distill <transcript-file> [--yes] [--scope=personal|project|team]")
-      exitSoon(1)
-      break
-    }
-    const { readFile } = await import("node:fs/promises")
-    const transcript = await readFile(file, "utf8")
-
-    const config = loadConfig()
-    let provider = config.provider
-    if (!provider.apiKey) {
-      if (!process.stdin.isTTY) {
-        console.error(noKeyMessage())
-        exitSoon(1)
-        break
-      }
-      provider = await setupWizard()
-      if (!provider) {
-        exitSoon(1)
-        break
-      }
-    }
-    const memory = createMemory({ dbPath: config.memory.dbPath })
-    const team = teamConfig(config)
-    const { extractCandidates, saveCandidate } = await import("../src/distill.mjs")
-
-    console.error("[distill] extracting candidates...")
-    let candidates
-    try {
-      candidates = await extractCandidates(provider, transcript)
-    } catch (error) {
-      console.error(`[distill] ${error.message}`)
-      exitSoon(1)
-      break
-    }
-    if (candidates.length === 0) {
-      console.log("No distillable knowledge found in this session.")
-      break
-    }
-
-    const opts = {
-      projectDir: config.memory.projectDir ? join(process.cwd(), config.memory.projectDir) : null,
-      team,
-      author: gitAuthor(),
-    }
-    let saved = 0
-    for (const c of candidates) {
-      if (flags.scope) c.scope = flags.scope
-      console.log(`\n--- candidate ---`)
-      console.log(`[${c.type}] ${c.title}  (scope: ${c.scope})`)
-      console.log(c.content)
-      if (c.type === "rule") {
-        console.log("(rule 类知识通常建议手动撰写；确认提取吗？)")
-      }
-      const accept = flags.yes ? true : await askPermission("distill-save", { title: c.title })
-      if (!accept) {
-        console.log("skipped")
-        continue
-      }
-      const where = await saveCandidate(memory, c, opts)
-      console.log(`saved -> ${where}`)
-      saved++
-    }
-    console.log(`\nDistilled ${saved}/${candidates.length} entries.`)
+    const code = await distillCommand(args, exitSoon)
+    if (code) exitSoon(code)
     break
   }
 
@@ -401,6 +270,7 @@ switch (command) {
   case "upgrade": {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
     const local = pkg.version
+    const { execSync } = await import("node:child_process")
     let remote
     try {
       remote = execSync("npm view thincoder version", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
@@ -435,194 +305,5 @@ switch (command) {
     console.error(`Unknown command: ${command}\n`)
     process.stdout.write(USAGE)
     exitSoon(1)
-  }
-}
-
-// ---------------------------------------------------------------- memory 子命令
-
-async function memoryCommand(memory, args) {
-  const [sub, ...rest] = args
-
-  const flags = {}
-  const positional = []
-  for (const a of rest) {
-    const m = a.match(/^--([\w-]+)=(.*)$/)
-    if (m) flags[m[1]] = m[2]
-    else positional.push(a)
-  }
-
-  switch (sub) {
-    case "list": {
-      const entries = await list(memory, { type: flags.type })
-      printEntries(entries)
-      break
-    }
-    case "search": {
-      const query = positional.join(" ")
-      if (!query) {
-        console.error("Usage: thincoder memory search <query>")
-        exitSoon(1)
-        break
-      }
-      printEntries(await search(memory, query, { limit: 10 }))
-      break
-    }
-    case "put": {
-      if (!flags.type || !flags.title || !flags.content) {
-        console.error("Usage: thincoder memory put --type=<rule|knowledge|decision|pattern> --title=<t> --content=<c> [--tags=<t>]")
-        exitSoon(1)
-        break
-      }
-      const id = await put(memory, { type: flags.type, title: flags.title, content: flags.content, tags: flags.tags ?? "" })
-      console.log(`Saved (id=${id})`)
-      break
-    }
-    case "remove": {
-      const id = Number(positional[0])
-      if (!id) {
-        console.error("Usage: thincoder memory remove <id>")
-        exitSoon(1)
-        break
-      }
-      console.log((await remove(memory, id)) ? `Removed #${id}` : `No entry #${id}`)
-      break
-    }
-    default:
-      console.error("Usage: thincoder memory <list|search|put|remove>")
-      exitSoon(1)
-  }
-}
-
-function printEntries(entries) {
-  if (entries.length === 0) {
-    console.log("(no entries)")
-    return
-  }
-  for (const e of entries) {
-    console.log(`#${e.id} [${e.type}] ${e.title}${e.tags ? `  (${e.tags})` : ""}`)
-    console.log(`  ${e.content.split("\n")[0].slice(0, 100)}`)
-  }
-}
-
-// ---------------------------------------------------------------- 工具函数
-
-function summarize(toolArgs) {
-  const s = JSON.stringify(toolArgs)
-  return s.length > 120 ? s.slice(0, 120) + "..." : s
-}
-
-/** 语义化版本比较：a<b 返回 -1，相等 0，a>b 返回 1；非数字段按字符串比 */
-function compareVersions(a, b) {
-  const pa = String(a).split("."), pb = String(b).split(".")
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const xa = pa[i] ?? "0", xb = pb[i] ?? "0"
-    const na = Number(xa), nb = Number(xb)
-    if (!Number.isNaN(na) && !Number.isNaN(nb)) {
-      if (na !== nb) return na < nb ? -1 : 1
-    } else if (xa !== xb) {
-      return xa < xb ? -1 : 1
-    }
-  }
-  return 0
-}
-
-/** 权限请求的关键信息（按工具定制），与 TUI 的 formatPermission 对齐。name 可能带子 agent 前缀（"coder/bash"），取基名匹配 */
-function formatPermission(name, args) {
-  const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(共 ${s.length} 字符)` : s)
-  const base = name.includes("/") ? name.split("/").pop() : name
-  if (base === "bash") return cap(args.command ?? "")
-  if (base === "write") return `${args.path}（写入 ${(args.content ?? "").length} 字符）\n${cap(args.content ?? "", 1000)}`
-  if (base === "edit") {
-    const oldLines = cap(args.old_string ?? "", 500).split("\n").map((l) => `- ${l}`).join("\n")
-    const newLines = cap(args.new_string ?? "", 500).split("\n").map((l) => `+ ${l}`).join("\n")
-    return `${args.path}\n${oldLines}\n  ↓\n${newLines}`
-  }
-  if (base === "delete") return `${args.path}${args.force ? "（force：跟踪文件也删）" : ""}`
-  if (base === "subagent") return cap(args.task ?? "", 500)
-  if (base === "memory_put") return `[${args.type ?? ""}] ${args.title ?? ""}\n${cap(args.content ?? "", 500)}`
-  return cap(summarize(args), 300)
-}
-
-/** 权限确认：TTY 下交互询问 y/n；非交互环境默认拒绝（安全优先） */
-async function askPermission(name, toolArgs) {
-  if (!process.stdin.isTTY) {
-    console.error(`\n[deny] ${name} (non-interactive, side-effect tools require a TTY)`)
-    return false
-  }
-  const rl = createInterface({ input: process.stdin, output: process.stderr })
-  try {
-    const answer = await new Promise((resolve) => {
-      rl.question(`\n[allow?] ${name}\n${formatPermission(name, toolArgs)}\n(y/N) `, resolve)
-    })
-    return answer.trim().toLowerCase() === "y"
-  } finally {
-    rl.close()
-  }
-}
-
-/** 首次使用（TTY 下的 chat/distill）：问答式配置一个 provider 并落盘，返回运行时 provider；取消返回 null */
-async function setupWizard() {
-  // 自带缓冲的提问器：rl.question 在输入被管道/快速粘贴时会丢行（问题注册前 line 已到达）
-  const rl = createInterface({ input: process.stdin, terminal: false })
-  const buffered = []
-  let waiter = null
-  rl.on("line", (line) => {
-    if (waiter) {
-      const w = waiter
-      waiter = null
-      w(line)
-    } else {
-      buffered.push(line)
-    }
-  })
-  const ask = (q) =>
-    new Promise((resolve) => {
-      process.stderr.write(q)
-      if (buffered.length) resolve(buffered.shift())
-      else waiter = resolve
-    })
-  try {
-    const presets = Object.entries(PROVIDER_PRESETS)
-    console.error("首次使用，先配置一个模型提供商：")
-    presets.forEach(([n, p], i) => console.error(`  ${i + 1}. ${n.padEnd(10)} ${p.desc}`))
-    console.error(`  ${presets.length + 1}. 自定义端点`)
-    const choice = Number((await ask(`选择 [1-${presets.length + 1}]: `)).trim())
-    let name, baseURL, model
-    if (choice === presets.length + 1) {
-      name = (await ask("名称（如 my-openai）: ")).trim()
-      baseURL = (await ask("baseURL（如 https://api.openai.com/v1）: ")).trim().replace(/\/+$/, "")
-      model = (await ask("模型（如 gpt-4o）: ")).trim()
-      if (!name || !/^https?:\/\//.test(baseURL) || !model) {
-        console.error("输入不完整或 baseURL 不合法，已取消")
-        return null
-      }
-    } else if (choice >= 1 && choice <= presets.length) {
-      name = presets[choice - 1][0]
-      baseURL = presets[choice - 1][1].baseURL
-      model = presets[choice - 1][1].model
-    } else {
-      console.error("无效选择，已取消")
-      return null
-    }
-    const apiKey = (await ask(`${name} 的 API key: `)).trim()
-    if (!apiKey) {
-      console.error("key 不能为空，已取消")
-      return null
-    }
-    const embedKey = (await ask("可选：embedding API key（SiliconFlow，向量检索用；回车跳过）: ")).trim()
-    const raw = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {}
-    const providers = raw.providers?.length ? raw.providers : []
-    const existing = providers.find((p) => p.name === name)
-    if (existing) Object.assign(existing, { baseURL, model, apiKey })
-    else providers.push({ name, baseURL, model, apiKey })
-    raw.providers = providers
-    raw.activeProvider = name
-    if (embedKey) raw.embedding = { ...(raw.embedding ?? {}), apiKey: embedKey }
-    saveConfig(raw)
-    console.error(`配置完成：${name} / ${model}（已写入 ${configPath}）`)
-    console.error(embedKey ? "向量检索已启用\n" : "（未配 embedding key：记忆为纯文本检索，之后在 config.json 的 embedding.apiKey 补上即可开启向量检索）\n")
-    return { name, baseURL, model, apiKey }
-  } finally {
-    rl.close()
   }
 }
