@@ -140,6 +140,7 @@ export const checkpointTool = {
     properties: {
       action: { type: "string", enum: ["list", "create", "rewind"], description: "list snapshots / create one now / restore a snapshot by id" },
       id: { type: "string", description: "Snapshot id (required for rewind)" },
+      path: { type: "string", description: "Restore only this single file from the checkpoint (tracked or untracked). Other files are left untouched." },
     },
     required: ["action"],
   },
@@ -149,17 +150,25 @@ export const checkpointTool = {
     if (!isGitRepo(ctx.cwd)) throw new Error("Not a git repository — checkpoints unavailable")
     if (args.action === "create") {
       const cp = await createCheckpoint(ctx.cwd)
-      return `Checkpoint ${cp.id} created (${cp.files} file(s) captured)`
+      return `Checkpoint ${cp.id} created (${cp.files} file(s): ${cp.tracked.length} tracked, ${cp.untracked.length} untracked)`
     }
     if (args.action === "rewind") {
       if (!args.id) throw new Error("id is required for rewind — use action=list to see snapshot ids")
-      const s = await rewind(ctx.cwd, args.id)
-      return `Rewound to checkpoint ${args.id}: patch ${s.patchApplied ? "applied" : "(empty)"}, ${s.restored} untracked file(s) restored, ${s.deleted} file(s) deleted.\n(The pre-rewind state was snapshotted first — you can rewind again to go back.)`
+      const s = await rewind(ctx.cwd, args.id, { path: args.path })
+      if (args.path) {
+        return `Restored "${args.path}" (${s.type}) from checkpoint ${args.id}.\n(The pre-rewind state was snapshotted first — you can rewind again to go back.)`
+      }
+      return `Rewound to checkpoint ${args.id}: patch ${s.patchApplied ? "applied" : "(empty)"}, ${s.restored ?? 0} untracked file(s) restored, ${s.deleted ?? 0} file(s) deleted.\n(The pre-rewind state was snapshotted first — you can rewind again to go back.)`
     }
     if (args.action === "list") {
       const cps = await listCheckpoints(ctx.cwd)
       if (cps.length === 0) return "(no checkpoints yet — one is auto-created before each user task)"
-      return cps.map((c) => `${c.id}  ${new Date(c.time).toISOString()}  ${c.untracked} untracked file(s)`).join("\n")
+      return cps.map((c) => {
+        const parts = [`${c.id}  ${new Date(c.time).toISOString()}`]
+        if (c.tracked.length) parts.push(`${c.tracked.length} tracked: ${c.tracked.join(", ")}`)
+        if (c.untracked.length) parts.push(`${c.untracked.length} untracked: ${c.untracked.join(", ")}`)
+        return parts.join("  ")
+      }).join("\n")
     }
     throw new Error(`Unknown action: ${args.action}`)
   },
