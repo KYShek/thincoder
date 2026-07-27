@@ -244,7 +244,7 @@ async function* walkFiles(dir, rel = "") {
   }
 }
 
-/** glob 转正则：**\/ 匹配零或多级目录，** 跨目录，* 段内，? 段内单字符 */
+/** Glob to regex: **\/ matches zero or more directory levels, ** crosses directories, * within segment, ? single char within segment */
 
 // ---------------------------------------------------------------- grep
 
@@ -271,17 +271,17 @@ export const grepTool = {
     const after = Math.max(0, Math.floor(args.after ?? 0))
     const wantCtx = before > 0 || after > 0
     const hits = [] // { file, line(1-based), text }
-    const fileLines = new Map() // file -> string[]（仅 wantCtx 时缓存）
+    const fileLines = new Map() // file -> string[] (cached only when context lines requested)
 
     async function search(file) {
       let content
       try {
-        // 大文件保护：超 10MB 跳过，防 OOM
+        // Large file guard: skip files over 10MB to prevent OOM
         const fst = await stat(file)
         if (fst.size > 10_000_000) return
         content = await readFile(file, "utf8")
       } catch {
-        return // 不可读文件跳过；二进制会被按 utf8 读入并照常搜索（可能产生乱码匹配）
+        return // Skip unreadable files; binary files will be read as UTF-8 and searched (may produce garbled matches)
       }
       const lines = content.split("\n")
       if (wantCtx) fileLines.set(file, lines)
@@ -295,7 +295,7 @@ export const grepTool = {
 
     async function walk(target) {
       if (hits.length >= 200) return
-      // 用 lstat 不跟随符号链接——防 ./evil → /etc 时 grep 读遍 /etc
+      // Use lstat to avoid following symlinks — prevents ./evil → /etc from making grep scan the entire system
       let s
       try { s = await lstat(target) } catch { return }
       if (!s.isDirectory()) {
@@ -317,12 +317,12 @@ export const grepTool = {
     await walk(base)
     if (hits.length === 0) return "(no matches)"
 
-    // 无上下文：保持原 path:line: content 格式
+    // No context: keep original path:line: content format
     if (!wantCtx) {
       return truncate(hits.map((h) => `${h.file}:${h.line}: ${h.text}`).join("\n"))
     }
 
-    // 带上下文：匹配行用 ':'，上下文行用 '-'（同 ripgrep）；同文件相邻区间去重合并
+    // With context: matching lines use ':', context lines use '-' (like ripgrep); overlapping ranges in same file are merged and de-duplicated
     const fileMatched = new Map() // file -> Set<line>
     for (const h of hits) {
       if (!fileMatched.has(h.file)) fileMatched.set(h.file, new Set())

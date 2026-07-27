@@ -58,7 +58,7 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
         ? "Error: plan mode is active — only read-only tools are allowed. Exit plan mode first."
         : item.reason === "denied by user"
           ? "Error: permission denied by user"
-          : "Error: no permission handler configured — cannot execute this tool"
+          : "Error: no permission handler configured — this tool requires user approval but the current context doesn't support interaction (e.g. subagent or non-TUI mode)"
       return { ...item, result: reason, ok: false }
     }
     try {

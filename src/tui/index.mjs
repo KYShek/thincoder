@@ -89,11 +89,63 @@ export async function startTUI(agent, opts = {}) {
   let lastRenderedScroll = 0
   emitKeypressEvents(keyStream)
   process.stdin.setRawMode(true)
-  process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn)
+  process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn + ansi.bracketedPasteOn)
+
+  const utf8Decoder = new TextDecoder("utf-8", { fatal: false })
+
+  let pasteMode = false
+  let pasteAccum = ""
 
   process.stdin.on("data", (chunk) => {
-    let text = mousePending + chunk.toString("utf8")
+    let text = mousePending + utf8Decoder.decode(chunk, { stream: true })
     mousePending = ""
+
+    // Bracketed paste: terminal wraps pasted text in \x1b[200~ ... \x1b[201~
+    // Insert pasted content directly into state.input to avoid slow char-by-char keypress render
+    if (pasteMode) {
+      const endIdx = text.indexOf("\x1b[201~")
+      if (endIdx >= 0) {
+        pasteAccum += text.slice(0, endIdx)
+        pasteMode = false
+        const pasted = pasteAccum.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "  ")
+        pasteAccum = ""
+        if (pasted) {
+          const chars = [...pasted]
+          state.input.splice(state.cursor, 0, ...chars)
+          state.cursor += chars.length
+          render()
+        }
+        text = text.slice(endIdx + 6)
+      } else {
+        pasteAccum += text
+        return
+      }
+    }
+
+    // Check for paste start (may appear mid-chunk alongside other input)
+    const pasteStartIdx = text.indexOf("\x1b[200~")
+    if (pasteStartIdx >= 0) {
+      const before = text.slice(0, pasteStartIdx)
+      const after = text.slice(pasteStartIdx + 6)
+      const endIdx = after.indexOf("\x1b[201~")
+      if (endIdx >= 0) {
+        // Paste begin and end in the same chunk: insert pasted content directly
+        const pasted = after.slice(0, endIdx).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "  ")
+        if (pasted) {
+          const chars = [...pasted]
+          state.input.splice(state.cursor, 0, ...chars)
+          state.cursor += chars.length
+          render()
+        }
+        text = before + after.slice(endIdx + 6)
+      } else {
+        // Paste spans multiple chunks: write prefix, enter paste mode
+        if (before) keyStream.write(before)
+        pasteMode = true
+        pasteAccum = after
+        return
+      }
+    }
 
     // Scroll wheel: \x1b[<64;…M = scroll up, \x1b[<65;…M = scroll down (3 lines each)
     for (const m of text.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)) {
@@ -137,7 +189,7 @@ export async function startTUI(agent, opts = {}) {
       // Can't close? fine, process is exiting anyway
     }
     process.stdin.setRawMode(false)
-    process.stdout.write(ansi.mouseOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
+    process.stdout.write(ansi.mouseOff + ansi.bracketedPasteOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
   }
   process.on("exit", cleanup)
 

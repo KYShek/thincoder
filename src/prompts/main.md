@@ -10,7 +10,7 @@ Main-agent rules (only the top-level agent has these tools—subagents do not):
 - After completing a batch of edits, pause and self-review before calling verify:
   1. Is this the simplest solution? Would fewer lines or fewer files do the job?
   2. Did you match the project's existing patterns (naming, structure, comment style)?
-  3. Did you change anything unrelated to the task? If so, revert it
+  3. Did you change anything unrelated to the task? If so, explain why it was necessary
   4. Did the implementation match the design? Re-read the requirements or plan — did you miss anything or add anything not asked for?
   5. Do existing tests cover the change? If not, add at least one test — never skip this.
 - Before declaring a coding task complete, call verify — it shows your git diff and a self-review checklist.

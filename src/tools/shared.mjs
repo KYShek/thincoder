@@ -3,7 +3,7 @@
  * Imported by tools/file.mjs / system.mjs / web.mjs / git.mjs
  */
 
-import { spawn, execFileSync } from "node:child_process"
+import { spawn, execFileSync, execFile } from "node:child_process"
 import { readFileSync, existsSync, realpathSync } from "node:fs"
 import { dirname, join, resolve, relative, isAbsolute, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -106,10 +106,23 @@ export function gitDiffOne(cwd, abs) {
 }
 
 /** Auto syntax check after file modification */
-export function autoSyntaxCheck(abs) {
+export async function autoSyntaxCheck(abs) {
   if (!/\.(m?js)$/i.test(abs)) return ""
   try {
-    execFileSync("node", ["--check", abs], { stdio: ["ignore", "pipe", "pipe"], timeout: SYNTAX_CHECK_TIMEOUT })
+    await new Promise((resolve, reject) => {
+      const child = execFile("node", ["--check", abs], { timeout: SYNTAX_CHECK_TIMEOUT, stdio: ["ignore", "pipe", "pipe"] })
+      let stderr = ""
+      child.stderr.on("data", (d) => { stderr += d.toString() })
+      child.on("error", reject)
+      child.on("close", (code) => {
+        if (code === 0) resolve()
+        else {
+          const err = new Error(stderr.trim() || `node --check exited with code ${code}`)
+          err.stderr = stderr
+          reject(err)
+        }
+      })
+    })
     return "\nSyntax: OK"
   } catch (e) {
     const err = (e.stderr || e.stdout || e.message || "").toString().split("\n").slice(0, 3).join("\n")

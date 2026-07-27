@@ -154,6 +154,9 @@ export function renderFrame(state, agent, opts) {
   if (title === " Input " && isMultimodal) {
     const hint = platform === "win32" ? " Alt+V paste " : " Ctrl+V paste "
     topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 4 - stringWidth(title) - stringWidth(hint)))}${hint}─╮`
+  } else if (title === " Input ") {
+    const hint = " Ctrl+U clear "
+    topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 4 - stringWidth(title) - stringWidth(hint)))}${hint}─╮`
   } else {
     topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 3 - stringWidth(title)))}╮`
   }

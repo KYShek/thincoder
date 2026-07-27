@@ -13,12 +13,12 @@ export async function runAgentTurn(ctx, text) {
   pushLabel(`❯ You:`, ansi.bold + C.user)
   pushLine(text, C.text)
 
-  // 任务开始前自动打存档点 (git 仓库内；失败静默，不挡任务）
+  // Auto-checkpoint before task (git repo only; failure is silent, doesn't block the task)
   try {
     const { createCheckpoint } = await import("../git/checkpoint.mjs")
     await createCheckpoint(agent.cwd)
   } catch {
-    // 存档失败不影响任务
+    // Checkpoint failure doesn't block the task
   }
 
   ctx.assistantLabeled = false
@@ -30,7 +30,7 @@ export async function runAgentTurn(ctx, text) {
   state.currentTool = null
   state.processingStarted = Date.now()
   state.controller = new AbortController()
-  // 处理中每秒刷新一次状态栏 (运行计时）
+  // Refresh status bar every second during processing (elapsed timer)
   const ticker = setInterval(() => {
     if (state.processing) render()
   }, 1000)
@@ -49,7 +49,7 @@ export async function runAgentTurn(ctx, text) {
 
   const callbacks = {
     onToken: (t) => {
-      // 子 agent 流式输出：前缀格式 role#id/ → 提取 id，更新对应 subTask 的流式文本
+      // Subagent streaming: prefix format role#id/ → extract id, update subTask streaming text
       const subMatch = t.match(/^(\w+)#(\d+)\//)
       if (subMatch) {
         const key = `${subMatch[1]}#${subMatch[2]}`
@@ -69,7 +69,7 @@ export async function runAgentTurn(ctx, text) {
       scheduleRender()
     },
     onReasoning: (t) => {
-      // 子 agent 的思考 token 同样带 role#id/ 前缀，进 subTasks 面板
+      // Subagent reasoning tokens also carry role#id/ prefix, go into subTasks panel
       const subMatch = t.match(/^(\w+)#(\d+)\//)
       if (subMatch) {
         const key = `${subMatch[1]}#${subMatch[2]}`
@@ -84,7 +84,7 @@ export async function runAgentTurn(ctx, text) {
       scheduleRender()
     },
     onToolCall: (name, args) => {
-      // 子 agent 工具调用：前缀 role#id/toolName → 更新对应 subTask 的当前工具
+      // Subagent tool call: prefix role#id/toolName → update subTask current tool
       const subMatch = name.match(/^(\w+)#(\d+)\//)
       if (subMatch) {
         const key = `${subMatch[1]}#${subMatch[2]}`
@@ -105,7 +105,7 @@ export async function runAgentTurn(ctx, text) {
     },
     onToolResult: (name, result) => {
       state.currentTool = null
-      // 子 agent 结束：标记最早创建的 running subTask 为 done
+      // Subagent complete: mark earliest running subTask as done
       const isSubagent = name === "subagent"
       if (isSubagent) {
         const running = Object.entries(state.subTasks)
@@ -116,12 +116,12 @@ export async function runAgentTurn(ctx, text) {
           state.subTasks[key].done = true
           state.subTasks[key].tool = null
         }
-        // 子 agent 报告摘要 (最多 8 行）直接展示在对话区
+        // Subagent report preview (max 8 lines) displayed directly in conversation
         const lines = result.split("\n")
         const preview = lines.slice(0, 8).map((l) => l.slice(0, 120)).join("\n")
         if (preview) pushLine(preview, C.dim)
         if (lines.length > 8) pushLine(`  ... (${lines.length - 8} more lines)`, C.dim)
-        // 3 秒后清除面板中 done 的条目
+        // Clear done entries from panel after 3 seconds
         setTimeout(() => {
           for (const key of Object.keys(state.subTasks)) {
             if (state.subTasks[key].done) delete state.subTasks[key]
@@ -132,12 +132,12 @@ export async function runAgentTurn(ctx, text) {
       const stream = state.toolStreams[name]
       const panel = state.outputPanels[name]
       if (panel) {
-        // 有输出面板的工具：面板收成完成态，对话区只留摘要
+        // Tool with output panel: mark panel as done, conversation gets only summary
         panel.done = true
         delete state.toolStreams[name]
         const summary = formatPanelSummary(name, result)
         if (summary) pushLine(`  ${summary}`, C.dim)
-        // 3 秒后清除面板
+        // Clear panel after 3 seconds
         setTimeout(() => {
           delete state.outputPanels[name]
           if (state.processing) render()
@@ -180,7 +180,7 @@ export async function runAgentTurn(ctx, text) {
       state.tokens.cacheHit += usage.prompt_cache_hit_tokens ?? 0
       state.tokens.cacheMiss += usage.prompt_cache_miss_tokens ?? 0
     },
-    // 节流等待 (主动闸门 / 429 退避）：状态栏明示，防用户以为卡死
+    // Throttle wait (active gate / 429 backoff): show in status bar so user knows it's not frozen
     onWait: ({ phase, seconds }) => {
       state.status = phase === "gate" ? `TPM throttle wait ~${seconds}s` : `Rate-limited 429, retry in ${seconds}s`
       render()
@@ -188,12 +188,12 @@ export async function runAgentTurn(ctx, text) {
     onTaskUpdate: (items) => {
       state.tasks = items
       const done = items.filter((i) => i.status === "done").length
-      // 留痕带上current任务标题：回看历史时知道进行到哪一项
+      // Leave trace with current task title: reviewing history shows what was in progress
       const current = items.find((i) => i.status === "in_progress")
       pushLine(`  [task] ${done}/${items.length}${current ? ` ▶ ${current.title}` : ""}`, C.dim)
       render()
     },
-    // 增量保存：每 5 个工具 turn 落一次盘，中途崩溃丢失窗口从一整轮缩到几轮
+    // Incremental save: flush to disk every 5 tool turns — mid-crash loss window shrinks from an entire round to a few turns
     onTurnEnd: (() => {
       let n = 0
       return () => {
@@ -207,7 +207,7 @@ export async function runAgentTurn(ctx, text) {
     try {
       await runAgent(agent, text, callbacks, { signal: state.controller.signal, resume })
       flushStream()
-      break // 正常完成，退出循环
+      break // Normal completion, exit loop
     } catch (error) {
       flushStream()
       if (error.name === "AbortError" || state.controller?.signal.aborted) {
@@ -217,7 +217,7 @@ export async function runAgentTurn(ctx, text) {
       if (error instanceof ContinueError) {
         pushLabel(`❯ Continue`, ansi.bold + C.warn)
         pushLine(`Ran ${error.turn} turns (limit ${error.turn}). Continue?`, C.warn)
-        // 暂停询问：复用 permission 机制
+        // Pause to ask: reuse permission mechanism
         const willContinue = await new Promise((resolve) => {
           state.permission = {
             name: "continue",
@@ -233,7 +233,7 @@ export async function runAgentTurn(ctx, text) {
           break
         }
         pushLine("[continuing…]", C.tool)
-        // 重创新 AbortController：旧 signal 一旦 abort 过，resume 会立即失败 (防御性，current路径不可达但耦合紧）
+        // Recreate AbortController: once aborted, resume immediately fails (defensive; current path unreachable but tightly coupled)
         state.controller = new AbortController()
         continue
       }
@@ -247,26 +247,26 @@ export async function runAgentTurn(ctx, text) {
   state.subTasks = {}
   state.controller = null
   state.status = "Ready"
-  // 全部完成时自动收起 todo 面板 (对齐 kimi-code TUI；agent.tasks 本身保留）
+  // Auto-collapse todo panel when all tasks done (matching kimi-code TUI; agent.tasks are preserved)
   if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
     state.tasks = []
   }
-  // 每轮结束后保存会话 (崩溃也不丢）
+  // Save session after every turn (survives crashes)
   try {
     saveSession(agent, state.lines)
   } catch {
-    // 存失败不打断使用
+    // Save failure doesn't interrupt usage
   }
   render()
 
-  // 队列里有待执行消息：自动取下一条执行
+  // Queued messages: auto-process next one
   if (state.queue.length > 0) {
     const next = state.queue.shift()
-    // 队列里的斜杠命令直接执行
+    // Queued slash commands execute directly
     if (next.text.startsWith("/")) {
       await handleSlash(next.text)
       render()
-      // 斜杠命令执行完也继续检查队列
+      // After slash command completes, continue checking queue
       if (state.queue.length > 0 && !state.processing) {
         const next2 = state.queue.shift()
         await runAgentTurn(ctx, next2.text)
@@ -278,10 +278,10 @@ export async function runAgentTurn(ctx, text) {
   }
 }
 
-/** 从面板工具的输出中提取一行摘要 */
+/** Extract a one-line summary from a panel tool's output */
 function formatPanelSummary(name, result) {
   if (name === "verify") return _verifySummary(result)
-  // 默认：取第一行非空文本
+  // Default: first non-empty line
   const first = result.split("\n").find((l) => l.trim())
   return first ? `${name}: ${first.slice(0, 100)}` : null
 }
@@ -289,21 +289,21 @@ function formatPanelSummary(name, result) {
 function _verifySummary(result) {
   const lines = result.split("\n")
   const summary = []
-  // 变更文件数
+  // Changed files count
   const changed = lines.find((l) => l.startsWith("Changed files:"))
   if (changed) {
     const m = changed.match(/files changed/) ? changed.replace(/^Changed files \(.*?\)/, "Changed files") : changed
     summary.push(m)
   }
-  // 语法检查结果
+  // Syntax check results
   const syntax = lines.filter((l) => l.startsWith("  ✗"))
   if (syntax.length > 0) {
     summary.push(`${syntax.length} syntax error(s)`)
   }
-  // 测试结果
+  // Test results
   const testLine = lines.find((l) => l.startsWith("✓ Tests passed.") || l.startsWith("✗ Tests FAILED"))
   if (testLine) summary.push(testLine.trim())
-  // 任务列表
+  // Task list
   const taskLine = lines.find((l) => l.startsWith("Task list:"))
   if (taskLine) summary.push(taskLine)
   return summary.length > 0 ? `verify: ${summary.join(" — ")}` : ""

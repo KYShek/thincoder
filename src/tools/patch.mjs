@@ -150,10 +150,11 @@ export const applyPatchTool = {
       throw renameError
     }
     const summary = planned.map((p) => `  ${p.isNew ? "created " : "modified"} ${p.path}`).join("\n")
-    const syntaxResults = planned.map((p) => {
-      const r = autoSyntaxCheck(p.abs)
+    const syntaxChecks = await Promise.all(planned.map(async (p) => {
+      const r = await autoSyntaxCheck(p.abs)
       return r ? `${p.path}:${r.replace("Syntax: ", "")}` : ""
-    }).filter(Boolean).join("\n")
+    }))
+    const syntaxResults = syntaxChecks.filter(Boolean).join("\n")
     return `Applied patch to ${planned.length} file(s):\n${summary}${syntaxResults ? "\n\nSyntax checks:\n" + syntaxResults : ""}`
   },
 }

@@ -11,6 +11,8 @@ export const ansi = {
   mainBuffer: `${ESC}[?1049l`,
   mouseOn: `${ESC}[?1000h${ESC}[?1006h`,
   mouseOff: `${ESC}[?1000l${ESC}[?1006l`,
+  bracketedPasteOn: `${ESC}[?2004h`,
+  bracketedPasteOff: `${ESC}[?2004l`,
   home: `${ESC}[H`,
   clearLine: `${ESC}[K`,
   reset: `${ESC}[0m`,

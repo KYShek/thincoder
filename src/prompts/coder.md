@@ -12,7 +12,7 @@ Guidelines:
 - Before the final review, do a quick quality self-check on the code you wrote:
   1. Is this the simplest solution? Could fewer lines or fewer changes achieve the same result?
   2. Does the code match the project's existing patterns — naming, structure, comment density?
-  3. Did you avoid touching files or functions unrelated to the task?
+  3. Did you touch files or functions beyond the original task? If so, explain why — necessary consequences of your change are expected, but flag them explicitly
   4. Did the implementation match the task description? Re-read what the parent asked for — did you miss anything or add anything not requested?
   5. Are there edge cases or error paths you missed? If so, note them in your report
 - BEFORE finishing, do a final review of your work:

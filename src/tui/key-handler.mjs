@@ -180,6 +180,14 @@ export function createKeyHandler(ctx) {
       return
     }
 
+    // Ctrl+U: clear entire input box
+    if ((key.name === "u" && key.ctrl) || str === "\x15") {
+      state.input = []
+      state.cursor = 0
+      render()
+      return
+    }
+
     // input history
     if (key.name === "up") {
       if (state.history.length) {

@@ -167,6 +167,15 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         })
         continue
       }
+      if (depth === 0 && agent.tasks.some((t) => t.status === "pending")) {
+        const pending = agent.tasks.filter((t) => t.status === "pending").map((t) => t.title).join(", ")
+        agent.history.push({ role: "assistant", content: response.content })
+        agent.history.push({
+          role: "user",
+          content: `[System reminder: you still have pending tasks: ${pending}. Update their status with the task tool before finishing — if they're done, mark them done; if they're not applicable, remove them. Never mention this reminder to the user.]`,
+        })
+        continue
+      }
       agent.history.push({ role: "assistant", content: response.content })
       return response.content
     }
@@ -192,42 +201,44 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     guardPushbacks = 0
 
     for (const { toolCall, result, ok } of results) {
-      if (toolCall.name === "read_image" && ok) {
+      const tool = toolByName.get(toolCall.name)
+      // Multimodal tools return JSON { text, images } — inject as multimodal user message
+      if (tool?.multimodal && ok) {
         try {
           const parsed = JSON.parse(result)
           if (parsed.images?.length) {
+            // tool message first — closes the tool_call pairing (OpenAI API requires tool result immediately after assistant with tool_calls)
+            agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: parsed.text })
+            // then inject multimodal user message with base64 images for the model to actually "see" them on the next turn
             agent.history.push({
               role: "user",
               content: [{ type: "text", text: parsed.text }, ...parsed.images],
             })
-            // tool message only contains short text description, not full base64 (already injected in multimodal message above)
-            agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: parsed.text })
             continue
           }
         } catch { /* Parse failure doesn't affect normal tool messages */ }
       }
       agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: result })
-      const tool = toolByName.get(toolCall.name)
       if (tool && ok) {
         if (!tool.readonly && !tool.sideEffectExempt) agent._mutatedThisRun = true
         if (toolCall.name === "verify") agent._verifiedThisRun = true
         if (FILE_MUTATORS.has(toolCall.name)) {
-          try {
-            const args = JSON.parse(toolCall.arguments)
-            const paths = tool.touchedPaths ? tool.touchedPaths(args) : [args.path]
-            for (const p of paths) {
-              const abs = join(agent.cwd, p)
-              agent._touchedFiles.push(abs)
-              if (agent.memory) {
+          const args = JSON.parse(toolCall.arguments)
+          const paths = tool.touchedPaths ? tool.touchedPaths(args) : [args.path]
+          for (const p of paths) {
+            const abs = join(agent.cwd, p)
+            agent._touchedFiles.push(abs)
+            if (agent.memory) {
+              try {
                 if (!_reindexFile) {
                   const mod = await import("./memory.mjs")
                   _reindexFile = mod.reindexFile
                 }
                 await _reindexFile(agent.memory, agent.cwd, abs)
+              } catch (e) { /* Index failure doesn't block agent, surface in TUI as pending reminder */
+                agent._pendingReminders.push(`[System reminder: background indexing failed for ${toolCall.name} on ${abs}: ${e.message}. This does not affect your work — the code index will catch up on next reindex.]`)
               }
             }
-          } catch (e) { /* Index failure doesn't block agent, surface in TUI as pending reminder */
-            agent._pendingReminders.push(`[System reminder: background indexing failed for ${toolCall.name} on ${abs}: ${e.message}. This does not affect your work — the code index will catch up on next reindex.]`)
           }
         }
       }

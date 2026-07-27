@@ -148,8 +148,6 @@ export function layoutInput(chars, cursor, width) {
   }
   for (let i = 0; i <= chars.length; i++) {
     const ch = chars[i]
-    // Handle flush first: wide chars can trigger line wrap, cursorCol must be taken after flush,
-    // otherwise the cursor lands at end of previous line instead of beginning of next
     if (ch !== undefined && ch !== "\n") {
       const w = charWidth(ch.codePointAt(0))
       if (col + w > avail()) flush()

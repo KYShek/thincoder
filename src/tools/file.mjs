@@ -60,6 +60,7 @@ export const readImageTool = {
     required: ["path"],
   },
   readonly: true,
+  multimodal: true, // returns JSON { text, images } — agent loop converts to multimodal user message
   /** Returns JSON: { text, images }, for the agent layer to convert into multimodal user messages */
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
@@ -106,7 +107,7 @@ export const writeTool = {
     if (st?.isDirectory()) throw new Error(`Path is a directory: ${args.path}`)
     await writeFile(abs, args.content, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Wrote ${args.content.length} chars to ${args.path}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
+    return `Wrote ${args.content.length} chars to ${args.path}${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },
 }
 
@@ -151,7 +152,7 @@ export const editTool = {
       : content.replace(args.old_string, () => args.new_string)
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Edited ${args.path}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
+    return `Edited ${args.path}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },
 }
 
@@ -202,7 +203,7 @@ export const insertAfterTool = {
     const updated = lines.join("\n")
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
-    return `Inserted after line ${targetLine} in ${args.path}${diff ? "\n" + diff : ""}${autoSyntaxCheck(abs)}`
+    return `Inserted after line ${targetLine} in ${args.path}${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },
 }
 
