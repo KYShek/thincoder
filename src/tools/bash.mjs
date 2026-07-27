@@ -35,6 +35,7 @@ export const bashTool = {
   },
   readonly: false,
   sideEffectExempt: true, // may-or-may-not-write: scope of file modification is opaque to agent loop
+  outputPanel: true, // stream stdout to panel during execution, collapse to summary on completion
   async execute(args, ctx) {
     // 安全预检：禁止 shell 重定向（> >> <）——应改用 write/edit/insert_after 工具
     if (hasFileRedirection(args.command)) {
