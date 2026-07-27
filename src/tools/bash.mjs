@@ -34,6 +34,7 @@ export const bashTool = {
     required: ["command"],
   },
   readonly: false,
+  sideEffectExempt: true, // may-or-may-not-write: scope of file modification is opaque to agent loop
   async execute(args, ctx) {
     // 安全预检：禁止 shell 重定向（> >> <）——应改用 write/edit/insert_after 工具
     if (hasFileRedirection(args.command)) {
@@ -61,7 +62,9 @@ export const bashTool = {
 
     return new Promise((resolve) => {
       // detached: 让子进程成为进程组组长，超时/中断时才能整树杀掉（POSIX 用负 pid 组杀，
-      // Windows 用 taskkill /T）——只 kill 壳进程会把孙进程（如 npm test）留在后台继续跑
+      // Windows 用 taskkill /T）——只 kill 壳进程会把孙进程（如 npm test）留在后台继续跑。
+      // Windows 上 detached 必须为 false：detached:true 在 cmd.exe spawn 时无实际效果，
+      // taskkill /T 已覆盖进程树清理，且部分场景下 detached 会阻止 taskkill 遍历子进程。
       const killTree = () => {
         if (process.platform === "win32") {
           try { execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }) } catch {}

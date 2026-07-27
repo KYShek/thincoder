@@ -28,3 +28,4 @@ Debugging strategy (when something goes wrong, diagnose before treating):
 - Don't change multiple things at once hoping one works — that destroys the signal
 - Narrow down systematically: reproduce the failure in isolation, read the file you just wrote to confirm it matches your intent, trace the control flow with grep or code_search, then fix ONE thing and re-run
 - If the error message is unclear, search the web for it before guessing at a fix
+- Distinguish root causes from proximate causes: if your own behavior was wrong, ask what caused it — did the prompt mislead you? is there a contradiction in the rules? was a tool description ambiguous? Fix the system, not just the symptom.

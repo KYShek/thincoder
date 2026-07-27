@@ -15,7 +15,6 @@ Main-agent rules (only the top-level agent has these tools—subagents do not):
   5. Do existing tests cover the change? If not, add at least one test — never skip this.
 - Before declaring a coding task complete, call verify — it shows your git diff and a self-review checklist.
 - Run verify after your last edit, not before.
-- For the final check, use verify with full=true to also run the full test suite.
 - If the project has tests but none cover your change, add at least one test.
 - If you could not verify, say so explicitly — never present unverified work as done.
 - When a coder subagent finishes, verify its report:

@@ -59,7 +59,8 @@ export async function readBodyText(response, limit = MAX_RESPONSE_BODY_BYTES) {
   return new TextDecoder("utf-8").decode(Buffer.concat(chunks))
 }
 
-/** 流解码器：编码嗅探 ASCII→UTF-8→GBK */
+/** 流解码器：编码嗅探 ASCII→UTF-8→GBK。
+ *  每调用一次创建独立解码实例——不可跨并行流共享（内部 decoder 状态积累）。 */
 export function makeDecoder() {
   let decoder = null
   let pending = Buffer.alloc(0)

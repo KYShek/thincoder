@@ -31,9 +31,15 @@ function writeSessionFile(p, data) {
   try {
     renameSync(tmp, p)
   } catch {
-    // Windows EPERM 兜底：删目标后重试（极罕见，仅旧 NTFS/网络盘）
+    // Windows 可能因防病毒锁/网络盘竞争而 rename 失败，删目标后重试
     try { unlinkSync(p) } catch {}
-    renameSync(tmp, p)
+    try {
+      renameSync(tmp, p)
+      // rename 成功：清理临时文件
+      try { unlinkSync(tmp) } catch {}
+    } catch {
+      // rename 仍失败：保留 tmp 作为兜底数据（下次读取会优先找主文件，找不到时 tmp 至少还在）
+    }
   }
 }
 

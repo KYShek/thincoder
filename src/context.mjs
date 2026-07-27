@@ -174,7 +174,8 @@ export async function compressIfNeeded(agent, threshold) {
     })
     .join("\n")
 
-  const summary = await chat(agent.provider, {
+  // 摘要是一轮纯文本任务，不需要思考——压缩 provider 带 thinking 白费 token
+  const summary = await chat({ ...agent.provider, thinking: null, reasoningEffort: null }, {
     messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
   })
 

@@ -27,6 +27,7 @@ export const subagentTool = {
     required: ["task"],
   },
   readonly: false,
+  sideEffectExempt: true, // child agent may write files; parent can't introspect its _mutatedThisRun
   parallel: true,
   async execute(args, ctx) {
     const parent = ctx.agent
@@ -75,7 +76,7 @@ export const subagentTool = {
     })
 
     // explore/plan：注入 git 上下文（分支/最近提交/工作区状态）——探索与规划都和仓库现状有关（借鉴 kimi-code 的 promptPrefix）
-    let input = args.context ? `背景：\n${args.context}\n\n任务：\n${args.task}` : args.task
+    let input = args.context ? `Context:\n${args.context}\n\nTask:\n${args.task}` : args.task
     if (role === "explore" || role === "plan") {
       const gitCtx = collectGitContext(parent.cwd)
       if (gitCtx) input = `<untrusted_git_context>\n${escapeXml(gitCtx)}\n</untrusted_git_context>\n\n${input}`

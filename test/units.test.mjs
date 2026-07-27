@@ -1773,7 +1773,7 @@ test("runAgent: 完成守卫——verify 过后直接放行", async () => {
 
 test("runAgent: 完成守卫——只跑 bash 不触发（跑测试不该被催）", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
-  const fakeBash = { ...makeMutationTool(), name: "bash" }
+  const fakeBash = { ...makeMutationTool(), name: "bash", sideEffectExempt: true }
   const script = [{ toolCall: { name: "bash" } }, { content: "测试全绿" }]
   const { server, port } = await mockLLM(script)
   try {

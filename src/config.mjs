@@ -22,7 +22,7 @@ export const PROVIDER_PRESETS = {
 }
 
 // 默认 provider 跟 deepseek 预设保持一致（去掉 desc 展示字段）
-const { desc: _presetDesc, ...deepseekPreset } = PROVIDER_PRESETS.deepseek
+const { desc: _, ...deepseekPreset } = PROVIDER_PRESETS.deepseek
 
 const DEFAULTS = {
   providers: [{ name: "deepseek", ...deepseekPreset }],

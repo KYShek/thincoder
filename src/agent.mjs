@@ -39,6 +39,9 @@ export {
   MIN_REPORT_CHARS, REPORT_CONTINUATION, DEFAULT_SUBAGENT_TURNS,
 }
 
+// 文件修改后自动增量索引的缓存。
+// 模块级单例：当前假设全进程只有一个 agent/memory 实例。
+// 若未来支持多 agent/多数据库，需改为 per-agent 缓存或直接每次 import。
 let _reindexFile = null
 const AUTO_REMINDER = "[System reminder: AUTO mode is active — all tool calls are automatically approved without asking.]"
 const MAX_VERIFY_RETRIES = 3
@@ -123,7 +126,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
 
     if (response.toolCalls.length === 0) {
       if (!response.content) {
-        throw new Error("LLM 返回了空回复（可能是思考耗尽或被截断）。可 /think effort 降低推理强度后重试")
+        throw new Error("LLM returned empty response (likely reasoning exhausted or output truncated). Try lowering reasoning effort if this persists.")
       }
       if (depth === 0 && agent._mutatedThisRun && !agent._verifiedThisRun && guardPushbacks < 2) {
         guardPushbacks++
@@ -136,7 +139,6 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       }
       if (depth === 0 && agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries < MAX_VERIFY_RETRIES) {
         agent._verifyRetries++
-        agent._verifiedThisRun = false
         agent.history.push({ role: "assistant", content: response.content })
         agent.history.push({
           role: "user",
@@ -199,7 +201,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: result })
       const tool = toolByName.get(toolCall.name)
       if (tool && ok) {
-        if (!tool.readonly && toolCall.name !== "bash" && toolCall.name !== "subagent") agent._mutatedThisRun = true
+        if (!tool.readonly && !tool.sideEffectExempt) agent._mutatedThisRun = true
         if (toolCall.name === "verify") agent._verifiedThisRun = true
         if (FILE_MUTATORS.has(toolCall.name)) {
           try {

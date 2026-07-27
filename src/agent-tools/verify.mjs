@@ -18,7 +18,7 @@ export const verifyTool = {
   parameters: {
     type: "object",
     properties: {
-      full: { type: "boolean", description: "Also run the full test suite (npm test). Default false — only run when completing a task or the user asks." },
+      full: { type: "boolean", description: "Also run the full test suite (npm test). Default false — use sparingly, per the testing discipline rules." },
     },
   },
   readonly: true,

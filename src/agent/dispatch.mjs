@@ -60,7 +60,7 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       return { ...item, result: reason, ok: false }
     }
     try {
-      const raw = String(await item.tool.execute(item.args, {
+      const rawResult = await item.tool.execute(item.args, {
         cwd: agent.cwd,
         agent,
         depth,
@@ -69,7 +69,9 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
         onOutput: (chunk) => callbacks.onToolOutput?.(item.toolCall.name, chunk),
         onQuestion: callbacks.onQuestion,
         onPermissionRequest: callbacks.onPermissionRequest,
-      }))
+      })
+      if (rawResult === undefined) throw new Error(`Tool "${item.toolCall.name}" returned undefined — all tools must return a string value`)
+      const raw = String(rawResult)
       const result = item.toolCall.name === "read_image" ? raw : await offloadToolResult(raw, item.toolCall.id)
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result, ok: true }
