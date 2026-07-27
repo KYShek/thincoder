@@ -60,6 +60,7 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       return { ...item, result: reason, ok: false }
     }
     try {
+      if (item.tool.outputPanel) callbacks.setupOutputPanel?.(item.toolCall.name)
       const rawResult = await item.tool.execute(item.args, {
         cwd: agent.cwd,
         agent,

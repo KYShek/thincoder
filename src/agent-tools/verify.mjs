@@ -22,6 +22,7 @@ export const verifyTool = {
     },
   },
   readonly: true,
+  outputPanel: true, // stream test output to a panel instead of inline
   async execute(args, ctx) {
     const cwd = ctx.agent.cwd
     const lines = []

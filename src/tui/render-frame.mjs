@@ -111,6 +111,29 @@ export function renderFrame(state, agent, opts) {
     }
   }
 
+  // ---- tool output panels (streaming output like tail -f, auto-clears when done) ----
+  if (panels.output) {
+    const active = Object.values(state.outputPanels).filter((p) => !p.done)
+    if (active.length > 0) {
+      const linesPerPanel = Math.max(1, Math.floor(panels.output.h / active.length))
+      for (const p of active) {
+        const textLines = (p.text ?? "").split("\n").filter((l) => l.trim())
+        const tail = textLines.slice(-linesPerPanel)
+        for (const line of tail) {
+          out.push(`${C.dim}  │ ${sliceByWidth(sanitizeDisplay(line), W - 5)}${ansi.reset}${ansi.clearLine}`)
+        }
+      }
+      // fill remaining rows
+      const used = active.reduce((s, p) => {
+        const tl = (p.text ?? "").split("\n").filter((l) => l.trim()).slice(-linesPerPanel)
+        return s + tl.length
+      }, 0)
+      for (let i = used; i < panels.output.h; i++) {
+        out.push(ansi.clearLine)
+      }
+    }
+  }
+
   // ---- permission preview ----
   if (panels.permission) {
     out.push(`${ansi.bold}${C.warn}❯ Permission Request${ansi.reset}${ansi.clearLine}`)

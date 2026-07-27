@@ -130,22 +130,46 @@ export async function runAgentTurn(ctx, text) {
         }, 3000)
       }
       const stream = state.toolStreams[name]
-      if (stream) {
+      const panel = state.outputPanels[name]
+      if (panel) {
+        // 有输出面板的工具：面板收成完成态，对话区只留摘要
+        panel.done = true
+        delete state.toolStreams[name]
+        const summary = formatPanelSummary(name, result)
+        if (summary) pushLine(`  ${summary}`, C.dim)
+        // 3 秒后清除面板
+        setTimeout(() => {
+          delete state.outputPanels[name]
+          if (state.processing) render()
+        }, 3000)
+      } else if (stream) {
         const tail = stream.trimEnd().slice(-4000)
         if (tail) pushLine(tail, C.dim)
         delete state.toolStreams[name]
       }
-      if (!isSubagent) {
+      if (!isSubagent && !panel) {
         const first = result.split("\n")[0]
         pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
       }
     },
     onToolOutput: (name, chunk) => {
+      // 有输出面板的工具：流式写到面板而不是冲进对话
+      const panel = state.outputPanels[name]
+      if (panel) {
+        panel.text = (panel.text ?? "") + chunk
+        if (panel.text.length > 4000) panel.text = panel.text.slice(-4000)
+        scheduleRender()
+        return
+      }
       state.toolStreams[name] = (state.toolStreams[name] ?? "") + chunk
       scheduleRender()
     },
     onPermissionRequest: (name, args) => askPermission(name, args),
     onQuestion: (text, options) => askQuestion(text, options),
+    setupOutputPanel: (name) => {
+      state.outputPanels[name] = { text: "", done: false }
+      scheduleRender()
+    },
     onCompress: () => {
       pushLine("  [context] Context too long, auto-compacted (early conversation summarized by LLM, task state preserved)", C.warn)
     },
@@ -251,4 +275,35 @@ export async function runAgentTurn(ctx, text) {
       await runAgentTurn(ctx, next.text)
     }
   }
+}
+
+/** 从面板工具的输出中提取一行摘要 */
+function formatPanelSummary(name, result) {
+  if (name === "verify") return _verifySummary(result)
+  // 默认：取第一行非空文本
+  const first = result.split("\n").find((l) => l.trim())
+  return first ? `${name}: ${first.slice(0, 100)}` : null
+}
+
+function _verifySummary(result) {
+  const lines = result.split("\n")
+  const summary = []
+  // 变更文件数
+  const changed = lines.find((l) => l.startsWith("Changed files:"))
+  if (changed) {
+    const m = changed.match(/files changed/) ? changed.replace(/^Changed files \(.*?\)/, "Changed files") : changed
+    summary.push(m)
+  }
+  // 语法检查结果
+  const syntax = lines.filter((l) => l.startsWith("  ✗"))
+  if (syntax.length > 0) {
+    summary.push(`${syntax.length} syntax error(s)`)
+  }
+  // 测试结果
+  const testLine = lines.find((l) => l.startsWith("✓ Tests passed.") || l.startsWith("✗ Tests FAILED"))
+  if (testLine) summary.push(testLine.trim())
+  // 任务列表
+  const taskLine = lines.find((l) => l.startsWith("Task list:"))
+  if (taskLine) summary.push(taskLine)
+  return summary.length > 0 ? `verify: ${summary.join(" — ")}` : ""
 }

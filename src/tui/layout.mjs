@@ -67,6 +67,10 @@ export function computeLayout(state, { cols, rows }) {
     ? Math.min(allSubs.length, MAX_SUB_LINES) + (allSubs.length > MAX_SUB_LINES ? 1 : 0)
     : 0
 
+  // Tool output panels: max 8 lines per panel, capped at reasonable total
+  const panels = Object.values(state.outputPanels).filter((p) => !p.done)
+  const outputPanelsH = panels.length > 0 ? Math.min(panels.length * 8, rows - 10) : 0
+
   // Permission preview (height depends on wrapped content)
   let permPreviewLines = []
   let permPreviewH = 0
@@ -85,7 +89,7 @@ export function computeLayout(state, { cols, rows }) {
   const queueH = state.queue.length > 0 && state.processing ? 1 : 0
 
   // --- 弹性面板：conversation 占剩余空间 ---
-  const fixedH = headerH + inputBoxH + statusH + pickerH + taskPanelH + subPanelH + permPreviewH + queueH
+  const fixedH = headerH + inputBoxH + statusH + pickerH + taskPanelH + subPanelH + outputPanelsH + permPreviewH + queueH
   const convH = Math.max(1, rows - fixedH)
 
   // --- Y 坐标（0-indexed，ANSI 用时 +1）---
@@ -95,6 +99,7 @@ export function computeLayout(state, { cols, rows }) {
   const picker = pickerH > 0 ? { y, h: pickerH } : null; y += pickerH
   const todo = taskPanelH > 0 ? { y, h: taskPanelH } : null; y += taskPanelH
   const subagent = subPanelH > 0 ? { y, h: subPanelH } : null; y += subPanelH
+  const output = outputPanelsH > 0 ? { y, h: outputPanelsH } : null; y += outputPanelsH
   const permission = permPreviewH > 0 ? { y, h: permPreviewH } : null; y += permPreviewH
   const queue = queueH > 0 ? { y, h: queueH } : null; y += queueH
   const inputBox = { y, h: inputBoxH }; y += inputBoxH
@@ -102,7 +107,7 @@ export function computeLayout(state, { cols, rows }) {
 
   return {
     W, cols, rows,
-    panels: { header, conversation, picker, todo, subagent, permission, queue, inputBox, status },
+    panels: { header, conversation, picker, todo, subagent, output, permission, queue, inputBox, status },
     // 预计算内容（影响高度，渲染时复用）
     inputLayout,
     inputOffset,

@@ -69,6 +69,7 @@ export async function startTUI(agent, opts = {}) {
     completion: null, // Tab 补全状态 { candidates, index }
     toolStreams: {}, // 各工具的实时输出 (按工具名隔离，并行工具互不串扰）
     subTasks: {}, // 子 agent 面板：{ roleName: { role, text, done } }，每 role 一行，完成后标记 done 停留片刻
+    outputPanels: {}, // 通用工具输出面板：{ toolName: { text, done } } — 执行时流式显示，完成后收摘要
     currentTool: null, // 正在执行的工具名 (状态栏显示）
     processingStarted: 0, // 本轮处理开始时间 (状态栏计时）
     status: "Ready",
