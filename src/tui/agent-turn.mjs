@@ -10,6 +10,7 @@ import { ansi, C } from "./ansi.mjs"
  *         handleSlash, summarize } */
 export async function runAgentTurn(ctx, text) {
   const { agent, state, pushLine, pushLabel, render, scheduleRender, ensureAssistantLabel, askPermission, askQuestion, handleSlash, summarize } = ctx
+  pushLabel(`❯ You:`, ansi.bold + C.user)
   pushLine(text, C.text)
 
   // 任务开始前自动打存档点 (git 仓库内；失败静默，不挡任务）
@@ -48,12 +49,18 @@ export async function runAgentTurn(ctx, text) {
 
   const callbacks = {
     onToken: (t) => {
-      // 子 agent 流式输出：前缀匹配 explore/coder/plan/sub 的 token 进 subTasks 面板
-      const subMatch = t.match(/^(explore|coder|plan|sub)\//)
+      // 子 agent 流式输出：前缀格式 role#id/ → 提取 id，更新对应 subTask 的流式文本
+      const subMatch = t.match(/^(\w+)#(\d+)\//)
       if (subMatch) {
-        const role = subMatch[1]
-        if (!state.subTasks[role]) state.subTasks[role] = { role, text: "", done: false }
-        state.subTasks[role].text = (state.subTasks[role].text + t.slice(subMatch[0].length)).slice(-200)
+        const key = `${subMatch[1]}#${subMatch[2]}`
+        const payload = t.slice(subMatch[0].length)
+        if (!state.subTasks[key]) {
+          state.subTasks[key] = { key, role: subMatch[1], text: "", tool: null, done: false, started: Date.now() }
+        }
+        state.subTasks[key].text += payload
+        if (state.subTasks[key].text.length > 2000) {
+          state.subTasks[key].text = state.subTasks[key].text.slice(-2000)
+        }
         scheduleRender()
         return
       }
@@ -62,11 +69,13 @@ export async function runAgentTurn(ctx, text) {
       scheduleRender()
     },
     onReasoning: (t) => {
-      // 子 agent 的思考 token 同样带 role/ 前缀，进 subTasks 面板，不污染主思考流
-      const subMatch = t.match(/^(explore|coder|plan|sub)\//)
+      // 子 agent 的思考 token 同样带 role#id/ 前缀，进 subTasks 面板
+      const subMatch = t.match(/^(\w+)#(\d+)\//)
       if (subMatch) {
-        const role = subMatch[1]
-        if (!state.subTasks[role]) state.subTasks[role] = { role, text: "", done: false }
+        const key = `${subMatch[1]}#${subMatch[2]}`
+        if (!state.subTasks[key]) {
+          state.subTasks[key] = { key, role: subMatch[1], text: "", tool: null, done: false, started: Date.now() }
+        }
         scheduleRender()
         return
       }
@@ -75,6 +84,20 @@ export async function runAgentTurn(ctx, text) {
       scheduleRender()
     },
     onToolCall: (name, args) => {
+      // 子 agent 工具调用：前缀 role#id/toolName → 更新对应 subTask 的当前工具
+      const subMatch = name.match(/^(\w+)#(\d+)\//)
+      if (subMatch) {
+        const key = `${subMatch[1]}#${subMatch[2]}`
+        const toolName = name.slice(subMatch[0].length)
+        if (!state.subTasks[key]) {
+          state.subTasks[key] = { key, role: subMatch[1], text: "", tool: null, done: false, started: Date.now() }
+        }
+        state.subTasks[key].tool = toolName
+        state.subTasks[key].toolArgs = args
+        state.subTasks[key].text = ""
+        scheduleRender()
+        return
+      }
       flushStream()
       ensureAssistantLabel()
       state.currentTool = name
@@ -82,12 +105,16 @@ export async function runAgentTurn(ctx, text) {
     },
     onToolResult: (name, result) => {
       state.currentTool = null
-      // 子 agent 结束：标记 done，面板保留片刻后清除
+      // 子 agent 结束：标记最早创建的 running subTask 为 done
       const isSubagent = name === "subagent"
       if (isSubagent) {
-        // 所有活跃子 agent 标记 done
-        for (const key of Object.keys(state.subTasks)) {
+        const running = Object.entries(state.subTasks)
+          .filter(([, s]) => !s.done)
+          .sort(([, a], [, b]) => a.started - b.started)
+        if (running.length > 0) {
+          const [key] = running[0]
           state.subTasks[key].done = true
+          state.subTasks[key].tool = null
         }
         // 子 agent 报告摘要 (最多 8 行）直接展示在对话区
         const lines = result.split("\n")

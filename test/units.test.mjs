@@ -2120,7 +2120,7 @@ test("runAgent: 子 agent 报告达标时不打回", async () => {
   }
 })
 
-test("runAgent: 子 agent 内部工具调用不 relay 到父回调（只 relay token，防 TUI 刷屏）", async () => {
+test("runAgent: 子 agent token + 工具调用 relay 到父回调（带 role#id 前缀）", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "做个小改动", role: "coder" }) } },
@@ -2142,11 +2142,12 @@ test("runAgent: 子 agent 内部工具调用不 relay 到父回调（只 relay t
       onToolResult: (name) => toolResults.push(name),
       onToken: (t) => { tokens += t },
     })
-    // 父回调只见 subagent 本身；子 agent 的 mutate 不透传（透传会在 TUI 每个内部调用刷一行）
-    assert.deepStrictEqual(toolCalls, ["subagent"])
+    // 父回调见 subagent 本身 + 子 agent 的工具调用（带 coder#N/ 前缀）
+    assert.ok(toolCalls.includes("subagent"))
+    assert.ok(toolCalls.some((n) => /^coder#\d+\/mutate$/.test(n)), `expected coder#N/mutate in ${JSON.stringify(toolCalls)}`)
     assert.deepStrictEqual(toolResults, ["subagent"])
-    // 正文 token 带 coder/ 前缀 relay（TUI 滚动 2 行显示靠这个）
-    assert.ok(tokens.includes("coder/"))
+    // 正文 token 带 coder#N/ 前缀 relay
+    assert.ok(/coder#\d+\//.test(tokens), `expected coder#N/ prefix in tokens`)
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()

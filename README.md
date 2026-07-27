@@ -204,6 +204,14 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.8.0 (2026-07)
+- **TUI rendering overhaul**: layout engine (`layout.mjs`) — panels are positioned declaratively by priority instead of hand-pinned arithmetic; `renderFrame` is now a pure function (no state mutation); cursor position derived from layout coordinates. Status bar slash-command hints moved from if-else chain to lookup table. Three Chinese UI strings fixed to English
+- **Subagent panel redesigned**: per-instance tracking (`role#id/` prefix) — parallel subagents of the same role no longer overwrite each other. Shows current tool name + args, or streaming text last line (what it's writing right now), instead of truncated 200-char token fragments. `onToolCall` relayed from subagent to parent TUI. Only the earliest running subagent is marked done on completion (not all)
+- **Tool file split**: `system.mjs` (337 lines) split into `bash.mjs` / `glob.mjs` / `grep.mjs` / `ls.mjs`; `repomap.mjs` (306 lines) split into `repomap.mjs` (public API) + `repomap-parse.mjs` (dependency graph parsing)
+- **Export position normalization**: 8 files rearranged — exports at top, implementation helpers below, for top-down readability
+- **Provider management UX**: Add Provider excludes already-added presets from the list; Esc in sub-pickers (Add/Remove/Key) returns to model picker instead of exiting; config operations no longer leave traces in the conversation flow (picker refresh is the feedback); `❯ You:` label restored for user messages
+- **distill-cmd import fix**: resolved export name mismatch that crashed TUI startup
+
 ### 0.7.8 (2026-07)
 - **Provider config flow streamlined**: adding a provider now immediately prompts for API key (no more "go back to /provider → Set Key"). Switching to a keyless provider via `/model` also prompts for key inline. Empty input gives clear "skipped" feedback
 - **bash tool: file writing forbidden**: models must use write/edit/insert_after/apply_patch instead of `echo`/`sed`/`printf > file`. Fixes GBK encoding corruption on Chinese Windows (cmd.exe writes redirected files in ANSI code page, not UTF-8). `PYTHONIOENCODING=utf-8` set for Python subprocesses on Windows

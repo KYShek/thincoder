@@ -81,10 +81,12 @@ export const subagentTool = {
       if (gitCtx) input = `<untrusted_git_context>\n${escapeXml(gitCtx)}\n</untrusted_git_context>\n\n${input}`
     }
 
-    // 只 relay 正文/思考 token（TUI 滚动 2 行显示子 agent 活动）；
-    // 不 relay 内部工具调用——子 agent 每次 read/grep 都往对话区刷一行就满屏了，
-    // 内部活动由流式 token 概括，最终报告经父 agent 的 subagent 工具结果回到对话区
-    const relayPrefix = role ? `${role}/` : "sub/"
+    // relay 正文/思考 token + 工具调用到父 TUI（子 agent 面板显示活动）。
+    // 前缀含唯一 id：并行同 role 子 agent 各自独立，不互相覆盖。
+    // 格式：role#id/  →  onToken("coder#2/正在写..."), onToolCall("coder#2/read", args)
+    parent._subAgentCounter = (parent._subAgentCounter ?? 0) + 1
+    const subId = parent._subAgentCounter
+    const relayPrefix = `${role ?? "sub"}#${subId}/`
     const childOpts = {
       onPermissionRequest: childPermission,
       onToken: ctx.callbacks?.onToken
@@ -92,6 +94,9 @@ export const subagentTool = {
         : null,
       onReasoning: ctx.callbacks?.onReasoning
         ? (t) => ctx.callbacks.onReasoning(`${relayPrefix}${t}`)
+        : null,
+      onToolCall: ctx.callbacks?.onToolCall
+        ? (name, args) => ctx.callbacks.onToolCall(`${relayPrefix}${name}`, args)
         : null,
     }
     const childRunOpts = { depth: (ctx.depth ?? 0) + 1, maxTurns: DEFAULT_SUBAGENT_TURNS }

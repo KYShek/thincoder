@@ -52,13 +52,16 @@ src/agent.mjs       main loop + reminder injection (task/goal/plan/mode) + compl
 src/agent/          agent loop helpers: dispatch (two-phase tool execution), setup (system prompt assembly), helpers
 src/agent-tools/    self-discipline tools (task/plan/goal/verify/subagent/skill/recent_changes), loaded via agent-tools.mjs
 src/provider/       LLM calls — core.mjs (SSE, reasoning_content, usage), rate.mjs (TPM/RPM gate), index.mjs (entry)
-src/tui/            bare-ANSI TUI — index.mjs (startTUI), render.mjs (drawing primitives), render-frame.mjs (frame layout), ansi.mjs
-                    (conversation / todo panel / input box / status bar / pickers / subagent panel; slash commands → cursor-list pickers)
+src/tui/            bare-ANSI TUI — index.mjs (startTUI + render side-effects), layout.mjs (declarative panel layout engine),
+                    render.mjs (drawing primitives: charWidth/wrapText/formatTables/sanitize), render-frame.mjs (pure frame renderer),
+                    ansi.mjs, agent-turn.mjs, key-handler.mjs, startup.mjs, interaction.mjs, pickers.mjs, wizard.mjs,
+                    slash-commands.mjs + cmd-*.mjs (per-command handlers), config-helpers.mjs, clipboard.mjs
+                    (conversation / todo panel / subagent panel / input box / status bar / pickers / wizard; slash commands → cursor-list pickers)
 src/tui.mjs         re-export shim → src/tui/index.mjs
 src/tui-render.mjs  re-export shim → src/tui/render.mjs
 src/tools/          20+ file/network/git tools; descriptions in src/tools/*.md
-                    index.mjs (builtinTools registry), file/git/patch/system/web.mjs (tool groups), shared.mjs (schema utils)
-                    repomap.mjs (repo dependency outline: import/export parsing, compact summary + full detail on demand)
+                    index.mjs (builtinTools registry), file/git/patch/bash/glob/grep/ls/web.mjs (tool groups), shared.mjs (schema utils)
+                    repomap.mjs (repo dependency outline: public API), repomap-parse.mjs (import/export parsing + dependency graph)
                     automatic node --check incremental syntax check after file modifications
 src/tools.mjs       re-export shim → src/tools/index.mjs
 src/context.mjs     context compaction (key decisions saved before compaction, task/plan state re-injected after)

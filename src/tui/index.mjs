@@ -20,12 +20,14 @@ import { emitKeypressEvents } from "node:readline"
 import { PassThrough } from "node:stream"
 import { saveSession, archiveCurrent, listSlots } from "../session.mjs"
 import { closeAllMcp } from "../mcp.mjs"
+import { estimateTokens } from "../context.mjs"
 import { ansi, C } from "./ansi.mjs"
-import { renderFrame } from "./render-frame.mjs"
+import { renderFrame, countConvLines } from "./render-frame.mjs"
+import { computeLayout } from "./layout.mjs"
 import { SLASH_COMMANDS, createSlashCommands } from "./slash-commands.mjs"
 import { createWizard } from "./wizard.mjs"
 import { createPickers } from "./pickers.mjs"
-import { runDistillCmd } from "./distill-cmd.mjs"
+import { runDistill as runDistillImpl } from "./distill-cmd.mjs"
 import { createInteraction } from "./interaction.mjs"
 import { pasteClipboardImage as pasteClipboardImageImpl } from "./clipboard.mjs"
 import { runAgentTurn } from "./agent-turn.mjs"
@@ -174,9 +176,28 @@ export async function startTUI(agent, opts = {}) {
   }
 
   function render() {
+    // 副作用：scroll 归位 + ctxCache 更新 + overlay scroll 归位
+    // (renderFrame 是纯函数，副作用集中在此)
+    const dims = { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }
+    const layout = computeLayout(state, dims)
+    // clamp conversation scroll
+    const convLines = countConvLines(state, dims.cols)
+    const maxScroll = Math.max(0, convLines - layout.panels.conversation.h)
+    state.scroll = Math.min(state.scroll, maxScroll)
+    // clamp overlay scroll
+    const overlay = state.picker ?? state.wizard
+    if (overlay && layout.panels.picker) {
+      const winH = layout.panels.picker.h - 1
+      if (overlay.selectedLine < overlay.scroll) overlay.scroll = overlay.selectedLine
+      if (overlay.selectedLine >= overlay.scroll + winH) overlay.scroll = overlay.selectedLine - winH + 1
+    }
+    // update ctxCache
+    if (state.ctxCache.len !== agent.history.length) {
+      state.ctxCache = { len: agent.history.length, tokens: estimateTokens(agent.history) }
+    }
+
     const { frame, cursorRow, cursorCol } = renderFrame(state, agent, {
-      cols: process.stdout.columns || 80,
-      rows: process.stdout.rows || 24,
+      ...dims,
       slashCommands: SLASH_COMMANDS,
     })
     if (frame !== lastFrame) {
@@ -211,7 +232,7 @@ export async function startTUI(agent, opts = {}) {
         const cmd0 = text.split(/\s+/)[0]
         const ALIASES = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
         const resolved0 = ALIASES[cmd0] ?? cmd0
-        const safeDuringProcessing = new Set(["/help", "/exit", "/model", "/provider", "/think", "/config", "/skills", "/mcp", "/goal", "/session"])
+        const safeDuringProcessing = new Set(["/help", "/exit", "/model", "/think", "/config", "/skills", "/mcp", "/goal", "/session"])
         if (safeDuringProcessing.has(resolved0)) {
           await handleSlash(text)
         } else {
@@ -260,7 +281,7 @@ export async function startTUI(agent, opts = {}) {
 
   // 模型选择器 + 通用 picker：实现在 pickers.mjs
   const { openPicker, closePicker, renderPickerLines, openModelPicker, setProviderKey } = createPickers({
-    agent, state, render, ansi, C, pushLine, pushLabel, persistRaw, askQuestion,
+    agent, state, render, ansi, C, pushLine, pushLabel, persistRaw, askQuestion, maskKey,
   })
 
   // 初始 Config 向导：实现在 wizard.mjs，通过 ctx 传入闭包依赖
@@ -270,7 +291,7 @@ export async function startTUI(agent, opts = {}) {
   })
 
   // /distill: impl in distill-cmd.mjs, ctx-passed
-  const runDistill = () => runDistillCmd({ agent, state, pushLine, render, askPermission, distillOpts })
+  const runDistill = () => runDistillImpl({ agent, state, pushLine, render, askPermission, distillOpts })
 
   // 斜杠命令分发、Tab 补全：实现在 slash-commands.mjs，通过 ctx 传入闭包依赖
   const { handleSlash, completions, handleTab } = createSlashCommands({

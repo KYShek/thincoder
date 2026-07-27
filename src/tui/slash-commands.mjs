@@ -8,7 +8,6 @@
  *     persistRaw, syncProviderField, maskKey, exit, SLASH_COMMANDS }
  */
 
-import { PROVIDER_PRESETS as PRESETS } from "../config.mjs"
 import { C } from "./ansi.mjs"
 import { handleClearCommand } from "./cmd-clear.mjs"
 import { handleNewCommand } from "./cmd-new.mjs"
@@ -24,7 +23,6 @@ import { handleMcpCommand } from "./cmd-mcp.mjs"
 import { handleAutoCommand } from "./cmd-auto.mjs"
 import { handleThinkCommand } from "./cmd-think.mjs"
 import { handleModelCommand } from "./cmd-model.mjs"
-import { handleProviderCommand } from "./cmd-provider.mjs"
 import { handleConfigCommand } from "./cmd-config.mjs"
 import { handleExtractCommand } from "./cmd-extract.mjs"
 import { handleHelpCommand } from "./cmd-help.mjs"
@@ -32,13 +30,12 @@ import { handleHelpCommand } from "./cmd-help.mjs"
 export const SLASH_COMMANDS = [
   { name: "/plan", group: "Agent", desc: "toggle plan mode (design first, then implement)" },
   { name: "/auto", group: "Agent", desc: "toggle auto-approve" },
-  { name: "/model", group: "Agent", desc: "select model" },
+  { name: "/model", group: "Agent", desc: "select model & manage providers" },
   { name: "/goal", group: "Agent", desc: "set/view/cancel long-term goal" },
   { name: "/think", group: "Agent", desc: "thinking mode & reasoning effort" },
   { name: "/init", group: "Tools", desc: "generate project AGENTS.md skeleton" },
   { name: "/skills", group: "Tools", desc: "list project skills" },
   { name: "/mcp", group: "Tools", desc: "manage MCP servers" },
-  { name: "/provider", group: "Config", desc: "manage providers (add/remove/set key)" },
   { name: "/config", group: "Config", desc: "config management (embedding / agent)" },
   { name: "/reindex", group: "Config", desc: "rebuild memory index" },
   { name: "/new", group: "Session", desc: "new session (old one archived to slot)" },
@@ -66,7 +63,6 @@ const HANDLERS = {
   "/auto": handleAutoCommand,
   "/think": handleThinkCommand,
   "/model": handleModelCommand,
-  "/provider": handleProviderCommand,
   "/config": handleConfigCommand,
   "/extract": handleExtractCommand,
   "/help": handleHelpCommand,
@@ -108,11 +104,6 @@ export function createSlashCommands(ctx) {
     const argIndex = parts.length - 2 // 正在敲第几个参数 (0 基）
     const match = (cands) => cands.filter((c) => c.startsWith(last)).map((c) => `${head} ${c}`)
     if (cmd === "/model" && argIndex === 0) return match(agent.providers.map((p) => p.name))
-    if (cmd === "/provider") {
-      if (argIndex === 0) return match(["add", "remove", "key"])
-      if (argIndex === 1 && parts[1] === "add") return match(Object.keys(PRESETS))
-      if (argIndex === 1 && (parts[1] === "remove" || parts[1] === "key")) return match(agent.providers.map((p) => p.name))
-    }
     if (cmd === "/think") {
       if (argIndex === 0) return match(["on", "off", "effort"])
       if (argIndex === 1 && parts[1] === "effort") return match(["low", "high", "max"])
