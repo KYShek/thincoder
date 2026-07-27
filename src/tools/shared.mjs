@@ -109,7 +109,7 @@ export function autoSyntaxCheck(abs) {
     return "\nSyntax: OK"
   } catch (e) {
     const err = (e.stderr || e.stdout || e.message || "").toString().split("\n").slice(0, 3).join("\n")
-    return `\nSyntax: FAILED — ${err}`
+    return `\nSyntax: FAILED — ${err}\n(If this file was corrupted by a bad edit, recover it from a checkpoint: checkpoint action=list then action=rewind with the latest id.)`
   }
 }
 

@@ -42,7 +42,7 @@ export const bashTool = {
     }
     // 安全预检：破坏性非 git 命令（rm -rf / DROP TABLE 等）直接拒绝
     if (shellSegments(args.command).some(isDestructiveCommand)) {
-      throw new Error("Destructive command blocked — use specific tools or confirm with the user first")
+      throw new Error("Destructive command blocked — use specific tools or confirm with the user first. (If work was already destroyed, recover from auto-snapshot: checkpoint action=list then action=rewind.)")
     }
     // 安全预检：销毁性 git 操作先检查未提交改动，有则拒绝——防一键清掉几小时工作
     if (shellSegments(args.command).some(isDestructiveGitSegment)) {

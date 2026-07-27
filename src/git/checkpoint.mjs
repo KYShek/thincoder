@@ -241,6 +241,64 @@ export async function rewind(cwd, id, { path } = {}) {
   }
 }
 
+// ---- 查看 ----
+
+/**
+ * 查看快照中某个文件的内容（不修改工作区）。
+ * 跟踪文件：通过 checkout HEAD + apply 补丁块临时还原后读取，读完后恢复原文件。
+ * 未跟踪文件：直接从快照目录读取副本。
+ * 返回文件内容字符串。
+ */
+export async function catFile(cwd, id, filePath) {
+  const root = checkpointRoot(cwd)
+  const dir = join(root, id)
+  if (!existsSync(join(dir, "meta.json"))) throw new Error(`checkpoint ${id} not found`)
+  const meta = JSON.parse(await readFile(join(dir, "meta.json"), "utf8"))
+  const patchContent = await readFile(join(dir, "patch.diff"), "utf8")
+
+  const isTracked = meta.tracked?.includes(filePath) ?? extractFileHunks(patchContent, filePath) !== ""
+  const inUntracked = (meta.untracked ?? []).includes(filePath)
+
+  if (!isTracked && !inUntracked) {
+    throw new Error(`file "${filePath}" not in checkpoint ${id}`)
+  }
+
+  // 未跟踪文件：直接读副本
+  if (inUntracked && !isTracked) {
+    const src = join(dir, "untracked", filePath)
+    if (!existsSync(src)) throw new Error(`untracked file "${filePath}" copy missing in checkpoint`)
+    return await readFile(src, "utf8")
+  }
+
+  // 跟踪文件：临时还原 → 读取 → 恢复现场
+  const abs = join(cwd, filePath)
+  const existed = existsSync(abs)
+  let saved = null
+  if (existed) saved = await readFile(abs, "utf8")
+
+  try {
+    git(cwd, ["checkout", "HEAD", "--", filePath])
+    const hunks = extractFileHunks(patchContent, filePath)
+    if (hunks) {
+      const tmpPatch = join(root, ".tmp_cat.patch")
+      await writeFile(tmpPatch, hunks, "utf8")
+      try {
+        git(cwd, ["apply", "--whitespace=nowarn", tmpPatch])
+      } finally {
+        await rm(tmpPatch, { force: true })
+      }
+    }
+    return await readFile(abs, "utf8")
+  } finally {
+    // 恢复工作区原状态
+    if (existed) {
+      await writeFile(abs, saved, "utf8")
+    } else {
+      await rm(abs, { force: true })
+    }
+  }
+}
+
 /** 只留最近 MAX_CHECKPOINTS 个 */
 async function pruneCheckpoints(cwd) {
   const root = checkpointRoot(cwd)

@@ -138,8 +138,8 @@ export const checkpointTool = {
   parameters: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["list", "create", "rewind"], description: "list snapshots / create one now / restore a snapshot by id" },
-      id: { type: "string", description: "Snapshot id (required for rewind)" },
+      action: { type: "string", enum: ["list", "create", "rewind", "cat"], description: "list snapshots / create one now / restore a snapshot by id / read a file's content from a snapshot" },
+      id: { type: "string", description: "Snapshot id (required for rewind and cat; optional for list — shows file tree of that snapshot)" },
       path: { type: "string", description: "Restore only this single file from the checkpoint (tracked or untracked). Other files are left untouched." },
     },
     required: ["action"],
@@ -160,9 +160,24 @@ export const checkpointTool = {
       }
       return `Rewound to checkpoint ${args.id}: patch ${s.patchApplied ? "applied" : "(empty)"}, ${s.restored ?? 0} untracked file(s) restored, ${s.deleted ?? 0} file(s) deleted.\n(The pre-rewind state was snapshotted first — you can rewind again to go back.)`
     }
+    if (args.action === "cat") {
+      if (!args.id) throw new Error("id is required for cat — use action=list to see snapshot ids")
+      if (!args.path) throw new Error("path is required for cat — specify which file to read")
+      const { catFile } = await import("../git/checkpoint.mjs")
+      return await catFile(ctx.cwd, args.id, args.path)
+    }
     if (args.action === "list") {
       const cps = await listCheckpoints(ctx.cwd)
       if (cps.length === 0) return "(no checkpoints yet — one is auto-created before each user task)"
+
+      // 指定 id：显示该快照内文件目录树
+      if (args.id) {
+        const cp = cps.find((c) => c.id === args.id)
+        if (!cp) throw new Error(`checkpoint ${args.id} not found`)
+        return formatFileTree(cp)
+      }
+
+      // 概览：所有快照列表
       return cps.map((c) => {
         const parts = [`${c.id}  ${new Date(c.time).toISOString()}`]
         if (c.tracked.length) parts.push(`${c.tracked.length} tracked: ${c.tracked.join(", ")}`)
@@ -172,4 +187,51 @@ export const checkpointTool = {
     }
     throw new Error(`Unknown action: ${args.action}`)
   },
+}
+
+/** 把快照的文件列表格式化为目录树（目录在前，缩进展示） */
+function formatFileTree(cp) {
+  const all = [
+    ...(cp.tracked ?? []).map((f) => ({ path: f, type: "" })),
+    ...(cp.untracked ?? []).map((f) => ({ path: f, type: " (untracked)" })),
+  ]
+  if (all.length === 0) return "(empty checkpoint)"
+
+  // 按路径排序（目录自然分组）
+  all.sort((a, b) => a.path.localeCompare(b.path))
+
+  // 构建目录 → 文件列表映射
+  const tree = new Map()
+  for (const { path, type } of all) {
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "."
+    if (!tree.has(dir)) tree.set(dir, [])
+    tree.get(dir).push({ name: path.slice(dir === "." ? 0 : dir.length + 1), type })
+  }
+
+  // 按目录排序输出
+  const lines = []
+  const dirs = [...tree.keys()].sort()
+  for (const dir of dirs) {
+    if (dir !== "." && !lines.includes(dir + "/")) {
+      // 父目录先于子目录
+      const parts = dir.split("/")
+      for (let i = 1; i <= parts.length; i++) {
+        const prefix = parts.slice(0, i).join("/") + "/"
+        if (!lines.includes(prefix)) lines.push(prefix)
+      }
+    }
+  }
+  // 确保目录在文件前
+  for (const dir of dirs) {
+    if (dir !== ".") {
+      for (const { name, type } of tree.get(dir)) {
+        lines.push(`  ${dir}/${name}${type}`)
+      }
+    }
+  }
+  for (const { name, type } of tree.get(".") ?? []) {
+    lines.push(name + type)
+  }
+
+  return lines.join("\n")
 }
