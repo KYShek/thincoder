@@ -1,6 +1,6 @@
 {
   "name": "thincoder",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Thin coding agent - zero dependencies, no build step, Node.js native. Sharp code, zero bloat.",
   "keywords": [
     "ai",
@@ -14,7 +14,7 @@
   ],
   "type": "module",
   "bin": {
-    "thincoder": "./bin/thincoder.js"
+    "thincoder": "bin/thincoder.cjs"
   },
   "engines": {
     "node": ">=24"
