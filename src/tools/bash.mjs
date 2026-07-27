@@ -54,8 +54,9 @@ export const bashTool = {
       }).trim()
       if (status) {
         throw new Error(
-          `Refusing destructive git command: uncommitted changes exist. Commit or stash first.\n` +
-          `(If uncommitted work was already lost, the checkpoint tool can restore the auto-snapshot: action=list, then action=rewind.)\n\n${status}`
+          `Refusing destructive git command: uncommitted changes exist.\n` +
+          `First create a checkpoint (action=create) to protect current work, then commit or stash before the destructive operation.\n` +
+          `(If uncommitted work was already lost, recover from the latest auto-snapshot: checkpoint action=list, then action=rewind.)\n\n${status}`
         )
       }
     }
