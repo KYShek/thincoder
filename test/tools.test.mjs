@@ -20,6 +20,31 @@ function freshMemory() {
 
 // ---------------------------------------------------------------- tools
 
+test("read_image: 非视觉模型直接拒绝（防 image_url 毒化会话），视觉模型正常返回", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-test-"))
+  try {
+    // 1x1 透明 PNG
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64")
+    writeFileSync(join(dir, "a.png"), png)
+    const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+    // DeepSeek（无视觉）：读文件前就拒绝，错误信息说明原因与替代方案
+    await assert.rejects(
+      () => byName.read_image.execute({ path: "a.png" }, { cwd: dir, agent: { provider: { model: "deepseek-v4-pro" } } }),
+      /does not support image input/,
+    )
+    // Kimi K3（有视觉）：正常返回 { text, images }
+    const out = await byName.read_image.execute({ path: "a.png" }, { cwd: dir, agent: { provider: { model: "kimi-k3" } } })
+    const parsed = JSON.parse(out)
+    assert.match(parsed.text, /read_image: a\.png/)
+    assert.equal(parsed.images[0].type, "image_url")
+    // 无 agent 上下文（独立调用）：不拦截
+    const out2 = await byName.read_image.execute({ path: "a.png" }, { cwd: dir })
+    assert.equal(JSON.parse(out2).images.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("tools: write / read / edit / glob / grep", async () => {
   const dir = mkdtempSync(join(tmpdir(), "thincoder-test-"))
   const ctx = { cwd: dir }

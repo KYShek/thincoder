@@ -7,6 +7,7 @@ import {
   resolveInCwd,
   resolveExternal,
 } from "./shared.mjs";
+import { specForModel } from "../config.mjs";
 import { mkdir } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { stat } from "node:fs/promises";
@@ -65,6 +66,15 @@ export const readImageTool = {
   multimodal: true, // returns JSON { text, images } — agent loop converts to multimodal user message
   /** Returns JSON: { text, images }, for the agent layer to convert into multimodal user messages */
   async execute(args, ctx) {
+    // Vision capability gate: injecting an image into a text-only model's history poisons the whole
+    // conversation (every subsequent request 400s on the image part). Refuse before reading the file.
+    const model = ctx.agent?.provider?.model
+    if (model && !specForModel(model).multimodal) {
+      throw new Error(
+        `Model "${model}" does not support image input — read_image is unavailable with this provider. ` +
+        `Verify visual output programmatically (file size, dimensions, pixel checks via code) or ask the user to switch to a vision-capable provider.`
+      )
+    }
     const abs = resolveInCwd(ctx, args.path)
     const ext = abs.slice(abs.lastIndexOf(".") + 1).toLowerCase()
     const mime = IMAGE_EXTENSIONS[ext]

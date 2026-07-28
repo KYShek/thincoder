@@ -211,11 +211,20 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           if (parsed.images?.length) {
             // tool message first — closes the tool_call pairing (OpenAI API requires tool result immediately after assistant with tool_calls)
             agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: parsed.text })
-            // then inject multimodal user message with base64 images for the model to actually "see" them on the next turn
-            agent.history.push({
-              role: "user",
-              content: [{ type: "text", text: parsed.text }, ...parsed.images],
-            })
+            if (specForModel(agent.provider.model).multimodal) {
+              // then inject multimodal user message with base64 images for the model to actually "see" them on the next turn
+              agent.history.push({
+                role: "user",
+                content: [{ type: "text", text: parsed.text }, ...parsed.images],
+              })
+            } else {
+              // Non-vision model: image parts must never enter history — text-only APIs 400 on them on EVERY
+              // subsequent request, poisoning the conversation. (read_image itself already refuses; this is defense-in-depth.)
+              agent.history.push({
+                role: "user",
+                content: `[System reminder: the image returned by ${toolCall.name} was NOT injected — model ${agent.provider.model} does not support image input. Do not call ${toolCall.name} again under this provider; verify visual output programmatically instead.]`,
+              })
+            }
             continue
           }
         } catch { /* Parse failure doesn't affect normal tool messages */ }

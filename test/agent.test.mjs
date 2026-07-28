@@ -1576,3 +1576,61 @@ test("runAgent: 同一工具调用连续 3 次触发停滞提醒", async () => {
     server.close()
   }
 })
+
+// ---------------------------------------------------------------- 视觉能力防护（image_url 会话毒化）
+
+test("provider: 发送前为非视觉模型剥离 image_url（防会话毒化），视觉模型透传", async () => {
+  const { chat } = await import("../src/provider/index.mjs")
+  const { server, port, requests } = await mockLLM([{ content: "答" }])
+  try {
+    const poisoned = [
+      { role: "user", content: "之前的请求" },
+      { role: "user", content: [{ type: "text", text: "[read_image: a.png]" }, { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } }] },
+    ]
+    // DeepSeek（无视觉）：image_url 被替换为文本占位符，原历史不被修改
+    const ds = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "deepseek-v4-pro" }
+    await chat(ds, { messages: poisoned })
+    const sentDs = JSON.stringify(requests.at(-1).messages)
+    assert.ok(!sentDs.includes("image_url"))
+    assert.match(sentDs, /image omitted/)
+    assert.equal(poisoned[1].content[1].type, "image_url") // 历史原样保留，切回视觉模型可恢复
+    // Kimi K3（有视觉）：原样透传
+    const kimi = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "kimi-k3" }
+    await chat(kimi, { messages: poisoned })
+    assert.equal(requests.at(-1).messages[1].content[1].type, "image_url")
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: 非视觉模型 — 多模态工具结果不注入 image_url，改注入提醒", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const fakeVisionTool = {
+    name: "read_image",
+    description: "fake multimodal",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    multimodal: true,
+    execute: async () => JSON.stringify({
+      text: "[read_image: a.png (image/png, 3 bytes)]",
+      images: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAA" } }],
+    }),
+  }
+  const script = [{ toolCall: { name: "read_image" } }, { content: "无法查看图片" }]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "deepseek-v4-pro" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-vision-test-"))
+    const agent = createAgent({ provider, tools: [fakeVisionTool], config: {}, cwd })
+    const out = await runAgent(agent, "看看这张图", {})
+    assert.equal(out, "无法查看图片")
+    // 历史里没有 image_url，取而代之的是系统提醒
+    assert.ok(!JSON.stringify(agent.history).includes("image_url"))
+    assert.ok(agent.history.some((m) => typeof m.content === "string" && m.content.includes("does not support image input")))
+    // 实际发出的请求体也不含 image_url
+    assert.ok(!JSON.stringify(requests).includes("image_url"))
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
