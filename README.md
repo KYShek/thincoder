@@ -205,6 +205,20 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.8.9 (2026-07)
+- **Bugfix**: `wizardProviderItems` was defined inside `createWizard()` but not included in the return statement, causing key-handler to crash with `TypeError` during provider selection on first launch (/ new config)
+
+### 0.8.8 (2026-07)
+- **Bugfix**: remove env whitelist from bash tool — child processes receive full parent environment
+- **Bugfix**: reduce TUI flicker — single `write` with `home` + `clearToEnd` instead of separate cursor moves
+- **Feat**: auto update check on startup + `/upgrade` command
+
+### 0.8.3 (2026-07)
+- **Output panels**: tools with `outputPanel` flag stream to scrolled panel, auto-collapse to summary on completion (bash, long tool results)
+- **Checkpoint enhancements**: `cat` for file preview from snapshots, per-file rewind, auto-recover on apply failure, escape-hatch hints on errors
+- **Bash safety**: `checkpoint-before-destructive` discipline rule; bash guard guides checkpoint instead of just commit/stash
+- **Code review fixes**: output friendliness, readability, English-only strings, TUI polish
+
 ### 0.8.0 (2026-07)
 - **TUI rendering overhaul**: layout engine (`layout.mjs`) — panels are positioned declaratively by priority instead of hand-pinned arithmetic; `renderFrame` is now a pure function (no state mutation); cursor position derived from layout coordinates. Status bar slash-command hints moved from if-else chain to lookup table. Three Chinese UI strings fixed to English
 - **Subagent panel redesigned**: per-instance tracking (`role#id/` prefix) — parallel subagents of the same role no longer overwrite each other. Shows current tool name + args, or streaming text last line (what it's writing right now), instead of truncated 200-char token fragments. `onToolCall` relayed from subagent to parent TUI. Only the earliest running subagent is marked done on completion (not all)
