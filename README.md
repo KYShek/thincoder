@@ -205,6 +205,9 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.8.10 (2026-07)
+- **Bugfix**: pasted text now lands in the active TUI text target — the API key prompt when adding a provider via `/model` (and any free-text `askQuestion`) now accepts paste correctly. Previously, bracketed-paste injection in the terminal was always written to the main input box, so pasting into a question prompt appeared as "nothing happened" and orphaned the text into the input box after the question closed. Both bracketed-paste (Windows Terminal / most modern terminals) and Ctrl+V-as-key-event (legacy conhost) now route through a single `insertPastedText` helper that targets the question answer, options-list (ignored), or main input box as appropriate
+
 ### 0.8.9 (2026-07)
 - **Bugfix**: `wizardProviderItems` was defined inside `createWizard()` but not included in the return statement, causing key-handler to crash with `TypeError` during provider selection on first launch (/ new config)
 
