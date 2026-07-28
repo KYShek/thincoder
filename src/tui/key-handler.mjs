@@ -1,4 +1,5 @@
 import { ansi, C } from "./ansi.mjs"
+import { readClipboardText, insertPastedText } from "./clipboard.mjs"
 
 /** Keyboard event dispatch: permission confirm / question / picker / wizard / edit / scroll / history / paste.
  *  Extracted from index.mjs.
@@ -69,6 +70,7 @@ export function createKeyHandler(ctx) {
           state.status = "Processing..."
           render()
         } else if (key.name === "return") {
+          if (q._pasting) return // block Enter while paste is in flight
           const answer = (q.answer ?? "").trim()
           q.resolve(answer || "")
           state.question = null
@@ -78,6 +80,18 @@ export function createKeyHandler(ctx) {
         } else if (key.name === "backspace") {
           q.answer = (q.answer ?? "").slice(0, -1)
           render()
+        } else if (key.ctrl && !key.alt && key.name === "v") {
+          // Ctrl+V paste: read clipboard text (fires when the terminal passes Ctrl+V through
+          // as a key event; bracketed-paste terminals are handled upstream in the stdin handler)
+          if (q._pasting) return
+          q._pasting = true
+          readClipboardText().then((text) => {
+            q._pasting = false
+            if (text) {
+              insertPastedText(state, text)
+              render()
+            }
+          }).catch(() => { q._pasting = false })
         } else if (str && !key.ctrl && !key.meta) {
           q.answer = (q.answer ?? "") + str
           render()
@@ -256,8 +270,20 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // Ctrl+V (Unix) / Alt+V (Windows): paste clipboard image → save temp file → insert read_image into input box
-    const isPasteImage = (key.name === "v" && (key.ctrl || key.meta)) || (key.name === "v" && key.alt)
+    // Ctrl+V: paste clipboard text into the active text target
+    if (key.ctrl && !key.alt && key.name === "v") {
+      ;(async () => {
+        const text = await readClipboardText()
+        if (text) {
+          insertPastedText(state, text)
+          render()
+        }
+      })()
+      return
+    }
+
+    // Ctrl+Alt+V (Windows) / Alt+V: paste clipboard image
+    const isPasteImage = key.name === "v" && key.alt
     if (isPasteImage) {
       pasteClipboardImage(agent).catch((e) => pushLine(`[error] ${e.message}`, C.error))
       return

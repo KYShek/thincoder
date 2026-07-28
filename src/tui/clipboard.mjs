@@ -1,5 +1,43 @@
 import { C } from "./ansi.mjs"
 
+/** Read text from system clipboard. Returns empty string on failure. */
+export async function readClipboardText() {
+  try {
+    const { execFile } = await import("node:child_process")
+    const isWin = process.platform === "win32"
+    const isMac = process.platform === "darwin"
+    if (isWin) {
+      return await new Promise((resolve) => execFile("powershell", ["-NoProfile", "-Command", "Get-Clipboard"], { timeout: 5000 }, (err, stdout) => resolve(err ? "" : stdout)))
+    } else if (isMac) {
+      return await new Promise((resolve) => execFile("pbpaste", [], { timeout: 5000 }, (err, stdout) => resolve(err ? "" : stdout)))
+    } else {
+      return await new Promise((resolve) => execFile("xclip", ["-selection", "clipboard", "-o"], { timeout: 5000 }, (err, stdout) => resolve(err ? "" : stdout)))
+    }
+  } catch {
+    return ""
+  }
+}
+
+/** Insert pasted text into the active text target.
+ *  Free-text question active → append to its answer (single-line field: newlines stripped).
+ *  Options question active → ignore (no text field; must not leak into the input box).
+ *  Otherwise → splice into the main input box at cursor (newlines kept, tabs → 2 spaces).
+ *  Shared by bracketed paste (stdin data handler) and Ctrl+V clipboard read,
+ *  so pasted content lands in the same place regardless of how the terminal delivered it. */
+export function insertPastedText(state, rawText) {
+  if (!rawText) return
+  const q = state.question
+  if (q) {
+    if (q.options.length > 0) return
+    q.answer = (q.answer ?? "") + rawText.replace(/[\r\n]+/g, "")
+    return
+  }
+  const text = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "  ")
+  const chars = [...text]
+  state.input.splice(state.cursor, 0, ...chars)
+  state.cursor += chars.length
+}
+
 /** Ctrl+V / Alt+V: read clipboard image → write temp file in working directory → insert read_image command into input box.
  *  Extracted from index.mjs.
  *  ctx: { agent, state, pushLine, render } */

@@ -29,7 +29,7 @@ import { createWizard } from "./wizard.mjs"
 import { createPickers } from "./pickers.mjs"
 import { runDistill as runDistillImpl } from "./distill-cmd.mjs"
 import { createInteraction } from "./interaction.mjs"
-import { pasteClipboardImage as pasteClipboardImageImpl } from "./clipboard.mjs"
+import { pasteClipboardImage as pasteClipboardImageImpl, insertPastedText } from "./clipboard.mjs"
 import { runAgentTurn } from "./agent-turn.mjs"
 import { createKeyHandler } from "./key-handler.mjs"
 import { showStartup, backgroundIndex } from "./startup.mjs"
@@ -102,18 +102,17 @@ export async function startTUI(agent, opts = {}) {
       mousePending = ""
 
     // Bracketed paste: terminal wraps pasted text in \x1b[200~ ... \x1b[201~
-    // Insert pasted content directly into state.input to avoid slow char-by-char keypress render
+    // Route pasted content to the active text target (question answer / input box) in one shot,
+    // avoiding slow char-by-char keypress render — see insertPastedText in clipboard.mjs
     if (pasteMode) {
       const endIdx = text.indexOf("\x1b[201~")
       if (endIdx >= 0) {
         pasteAccum += text.slice(0, endIdx)
         pasteMode = false
-        const pasted = pasteAccum.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "  ")
+        const pasted = pasteAccum
         pasteAccum = ""
         if (pasted) {
-          const chars = [...pasted]
-          state.input.splice(state.cursor, 0, ...chars)
-          state.cursor += chars.length
+          insertPastedText(state, pasted)
           render()
         }
         text = text.slice(endIdx + 6)
@@ -131,11 +130,9 @@ export async function startTUI(agent, opts = {}) {
       const endIdx = after.indexOf("\x1b[201~")
       if (endIdx >= 0) {
         // Paste begin and end in the same chunk: insert pasted content directly
-        const pasted = after.slice(0, endIdx).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "  ")
+        const pasted = after.slice(0, endIdx)
         if (pasted) {
-          const chars = [...pasted]
-          state.input.splice(state.cursor, 0, ...chars)
-          state.cursor += chars.length
+          insertPastedText(state, pasted)
           render()
         }
         text = before + after.slice(endIdx + 6)

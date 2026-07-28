@@ -151,11 +151,12 @@ export function renderFrame(state, agent, opts) {
   // ---- input box ----
   const { borderColor, title } = inputBoxStyle(state)
   let topBorder
-  if (title === " Input " && isMultimodal) {
-    const hint = platform === "win32" ? " Alt+V paste " : " Ctrl+V paste "
-    topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 4 - stringWidth(title) - stringWidth(hint)))}${hint}─╮`
-  } else if (title === " Input ") {
-    const hint = " Ctrl+U clear "
+  if (title === " Input " || title === " Question ") {
+    const parts = []
+    if (title === " Input ") parts.push(" Ctrl+U clear ")
+    if (title === " Question ") parts.push(" Enter submit ")
+    parts.push(" Ctrl+V paste ")
+    const hint = parts.join("")
     topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 4 - stringWidth(title) - stringWidth(hint)))}${hint}─╮`
   } else {
     topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 3 - stringWidth(title)))}╮`

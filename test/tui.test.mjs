@@ -269,7 +269,38 @@ test("renderFrame: multimodal hint on supported model with image paste shortcut"
   const agent = tuiAgent()
   agent.provider.model = "kimi-k3"
   const { frame } = renderFrame(state, agent, { cols: 80, rows: 24, slashCommands: [], platform: "linux" })
-  assert.ok(frame.includes("Ctrl+V paste"), "paste shortcut shown")
+  assert.ok(frame.includes("paste"), "paste shortcut shown")
+})
+
+// ====================================================================
+// clipboard.mjs — insertPastedText routing
+// ====================================================================
+
+test("insertPastedText: free-text question active → appends to answer, strips newlines, input untouched", async () => {
+  const { insertPastedText } = await import("../src/tui/clipboard.mjs")
+  const state = tuiState()
+  state.question = { text: "Enter API key:", options: [], answer: "sk-", resolve: noop }
+  insertPastedText(state, "abc123\r\n")
+  assert.equal(state.question.answer, "sk-abc123")
+  assert.equal(state.input.length, 0, "pasted text must not leak into main input box")
+})
+
+test("insertPastedText: options question active → ignored (no text field)", async () => {
+  const { insertPastedText } = await import("../src/tui/clipboard.mjs")
+  const state = tuiState()
+  state.question = { text: "pick", options: ["a", "b"], selected: 0, resolve: noop }
+  insertPastedText(state, "hello")
+  assert.equal(state.input.length, 0, "pasted text discarded, not orphaned in input box")
+})
+
+test("insertPastedText: no question → inserts into main input at cursor, keeps newlines, tabs → 2 spaces", async () => {
+  const { insertPastedText } = await import("../src/tui/clipboard.mjs")
+  const state = tuiState()
+  state.input = [..."ab"]
+  state.cursor = 1
+  insertPastedText(state, "X\r\nY\tZ")
+  assert.equal(state.input.join(""), "aX\nY  Zb")
+  assert.equal(state.cursor, 7)
 })
 
 // ====================================================================
