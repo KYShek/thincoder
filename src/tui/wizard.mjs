@@ -164,5 +164,5 @@ export function createWizard(ctx) {
     ctx.openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error))
   }
 
-  return { startWizard, renderWizard, wizardChooseProvider, wizardSubmitText, cancelWizard, finishWizard }
+  return { startWizard, renderWizard, wizardChooseProvider, wizardSubmitText, cancelWizard, finishWizard, wizardProviderItems }
 }
