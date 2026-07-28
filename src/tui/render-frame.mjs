@@ -194,8 +194,15 @@ export function countConvLines(state, cols) {
   return buildConvLines(state, cols).length
 }
 
-/** Build conversation lines from state (sanitized + wrapped). Pure. */
+/** Build conversation lines from state (sanitized + wrapped). Pure.
+ *  Cached: avoids O(n) rebuild on cursor moves — only recomputes when conversation grows/changes. */
+let _convCache = { key: "", cols: 0, lines: [] }
 function buildConvLines(state, cols) {
+  // Cheap cache key: structural hints that change whenever the conversation changes
+  const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
+  const key = `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${Object.keys(state.toolStreams).length}`
+  if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
+
   const convLines = []
   for (const l of state.lines) {
     for (const line of formatTables(sanitizeDisplay(l.text), cols - 1)) {
@@ -223,6 +230,7 @@ function buildConvLines(state, cols) {
       convLines.push({ text: wrapped, color: C.dim })
     }
   }
+  _convCache = { key, cols, lines: convLines }
   return convLines
 }
 

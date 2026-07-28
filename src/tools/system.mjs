@@ -17,16 +17,6 @@ import { spawn, execFileSync } from "node:child_process";
 import { readFile, readdir, stat, lstat } from "node:fs/promises";
 import { join } from "node:path";
 
-/** Child process environment variable whitelist: only pass through safe variables, isolate sensitive info like API keys */
-const SAFE_ENV_KEYS = new Set([
-  "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-  "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL",
-  "ComSpec", "PATHEXT", "SystemRoot", "windir",
-  "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
-  "PYTHONIOENCODING", "GIT_EDITOR", "EDITOR", "VISUAL",
-  "GIT_PAGER", "PAGER", "TERM",
-])
-
 /** Maximum buffer size per stream (stdout / stderr) before truncation */
 const MAX_STREAM_BUF = 2_000_000
 
@@ -67,16 +57,14 @@ function checkBashSafety(command, cwd) {
 }
 
 /**
- * Build a sanitized environment for the child process.
- * Whitelists safe variables, forces non-interactive defaults (EDITOR/PAGER/TERM),
- * and sets PYTHONIOENCODING on Windows to override GBK default for Python scripts.
+ * Build environment for child process.
+ * Passes through all parent env vars, with non-interactive overrides (EDITOR/PAGER/TERM).
+ * Sets PYTHONIOENCODING on Windows to override GBK default for Python scripts.
  */
 function buildBashEnv() {
   const winCmd = process.platform === "win32"
   return {
-    ...Object.fromEntries(
-      Object.entries(process.env).filter(([k]) => SAFE_ENV_KEYS.has(k))
-    ),
+    ...process.env,
     GIT_EDITOR: "true",
     EDITOR: "true",
     VISUAL: "true",

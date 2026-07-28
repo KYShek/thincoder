@@ -15,7 +15,7 @@ Load skills when relevant — project skills (.thincoder/skills/) contain reusab
 **How you finish:**
 
 After a batch of edits, pause and self-review:
-1. Simplest solution? Fewer lines or files?
+1. Is it correct? Every line does exactly what it claims — no off-by-one, no missing edge case, no silent failure.
 2. Matches existing patterns?
 3. Changed anything unrelated? If so, explain why.
 4. Matches the design? Re-read the requirements — missed anything? Added anything not asked for?

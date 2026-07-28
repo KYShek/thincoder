@@ -97,8 +97,9 @@ export async function startTUI(agent, opts = {}) {
   let pasteAccum = ""
 
   process.stdin.on("data", (chunk) => {
-    let text = mousePending + utf8Decoder.decode(chunk, { stream: true })
-    mousePending = ""
+    try {
+      let text = mousePending + utf8Decoder.decode(chunk, { stream: true })
+      mousePending = ""
 
     // Bracketed paste: terminal wraps pasted text in \x1b[200~ ... \x1b[201~
     // Insert pasted content directly into state.input to avoid slow char-by-char keypress render
@@ -169,6 +170,9 @@ export async function startTUI(agent, opts = {}) {
       render()
     }
     if (text) keyStream.write(text)
+    } catch (e) {
+      pushLine(`[input-error] ${e.message || e}`, C.error)
+    }
   })
 
   let cleanedUp = false
@@ -223,6 +227,7 @@ export async function startTUI(agent, opts = {}) {
   // Frame dedup + streaming rate limit: skip re-rendering unchanged frames (prevents flicker);
   // merge token flood to ~25fps
   let lastFrame = ""
+  let lastCursorRow = -1, lastCursorCol = -1
   let renderTimer = null
 
   function scheduleRender() {
@@ -234,7 +239,8 @@ export async function startTUI(agent, opts = {}) {
   }
 
   function render() {
-    // Side effects: reset scroll + update ctxCache + clamp overlay scroll
+    try {
+      // Side effects: reset scroll + update ctxCache + clamp overlay scroll
     // (renderFrame is pure, side effects concentrated here)
     const dims = { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }
     const layout = computeLayout(state, dims)
@@ -266,12 +272,26 @@ export async function startTUI(agent, opts = {}) {
         out += ansi.hideCursor
       } else {
         out += `\x1b[${cursorRow};${cursorCol}H${ansi.showCursor}`
+        lastCursorRow = cursorRow
+        lastCursorCol = cursorCol
       }
       process.stdout.write(out)
+    } else if (cursorRow !== lastCursorRow || cursorCol !== lastCursorCol) {
+      // Frame unchanged but cursor moved (e.g. arrow keys) — only reposition cursor
+      lastCursorRow = cursorRow
+      lastCursorCol = cursorCol
+      if (!(state.permission || state.question || state.picker || state.wizard?.step === "provider")) {
+        process.stdout.write(`\x1b[${cursorRow};${cursorCol}H${ansi.showCursor}`)
+      }
+    }
+    } catch (e) {
+      // Don't let a render error crash the TUI
     }
   }
 
-  process.stdout.on("resize", render)
+  process.stdout.on("resize", () => {
+    try { render() } catch { /* resize error — ignore */ }
+  })
 
   // ---------------------------------------------------------- Submit
 
@@ -376,7 +396,14 @@ export async function startTUI(agent, opts = {}) {
     wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
     renderWizard, pushLine, cleanup,
   })
-  keyStream.on("keypress", onKeypress)
+  keyStream.on("keypress", (str, key) => {
+    try {
+      onKeypress(str, key)
+    } catch (e) {
+      pushLine(`[input-error] ${e.message || e}`, C.error)
+      render()
+    }
+  })
 
   // ---------------------------------------------------------- Startup screen + background indexing
 

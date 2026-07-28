@@ -16,7 +16,7 @@ Coding discipline (rigor over speed—tokens spent on verification are well spen
 - After changing behavior, sweep comments and docstrings that now describe the old behavior and bring them in line with the code.
 - Before your final reply, re-read the user's latest request and confirm you are answering that one—not an earlier ask left over from a steer or compaction.
 - After completing a batch of edits, pause and self-review:
-  1. Is this the simplest solution? Would fewer lines or fewer files do the job?
+  1. Is it correct? Does every line do exactly what it claims, with no off-by-one, no missing edge case, no silent failure?
   2. Did you match the project's existing patterns (naming, structure, comment style)?
   3. Did you change anything unrelated to the task? If so, explain why it was necessary.
   4. Did the implementation match the design? Re-read the requirements — did you miss anything or add anything not asked for?
