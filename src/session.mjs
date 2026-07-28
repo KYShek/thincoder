@@ -198,7 +198,7 @@ export function loadSession(cwd) {
       result._recovered = true
     } else {
       console.error(`[session] .tmp fallback also failed — session lost. Backing up corrupted file as .corrupted.`)
-      try { renameSync(p, `${p}.corrupted`) } catch {}
+      try { renameSync(p, `${p}.corrupted`) } catch (e) { console.error(`[session] rename to .corrupted also failed: ${e.message}`) }
       return null
     }
   }

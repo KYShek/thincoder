@@ -198,7 +198,7 @@ export async function runAgentTurn(ctx, text) {
       let n = 0
       return () => {
         if (++n % 5 !== 0) return
-        try { saveSession(agent, state.lines) } catch {}
+        try { saveSession(agent, state.lines) } catch (e) { console.error(`[session] incremental save failed: ${e.message}`) }
       }
     })(),
   }

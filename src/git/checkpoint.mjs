@@ -78,7 +78,8 @@ export async function createCheckpoint(cwd) {
     const src = join(cwd, rel)
     const dst = join(dir, "untracked", rel)
     await mkdir(dirname(dst), { recursive: true })
-    await copyFile(src, dst).catch(() => {}) // Copy failed (socket/device file etc.) — skip
+    // Copy failed (socket/device file etc.) — skip, but log in case it's unexpected
+    await copyFile(src, dst).catch((e) => console.error(`[checkpoint] skipping ${rel}: ${e.message}`))
   }
 
   await writeFile(join(dir, "meta.json"), JSON.stringify({

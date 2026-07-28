@@ -79,6 +79,8 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result, ok: true }
     } catch (error) {
+      // Log full error for debugging; only pass message to the model (stack traces confuse LLMs and may leak paths)
+      console.error(`[dispatch] tool "${item.toolCall.name}" failed:`, error)
       return { ...item, result: `Error: ${error.message}`, ok: false }
     }
   }

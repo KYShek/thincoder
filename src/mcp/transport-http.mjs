@@ -155,7 +155,10 @@ export function httpTransport(baseURL, extraHeaders = {}) {
       headers: headers(),
       body: JSON.stringify({ jsonrpc: "2.0", method, params }),
       signal: AbortSignal.timeout(10_000),
-    }).catch(() => {})
+    }).catch((e) => {
+      // notify is fire-and-forget by design, but log network errors for debugging
+      if (e.name !== "AbortError") console.error(`[mcp] notify failed: ${e.message}`)
+    })
   }
 
   const close = () => {
@@ -166,7 +169,10 @@ export function httpTransport(baseURL, extraHeaders = {}) {
         method: "DELETE",
         headers: { "Mcp-Session-Id": sessionId, ...extraHeaders },
         signal: AbortSignal.timeout(5_000),
-      }).catch(() => {})
+      }).catch((e) => {
+        // close is best-effort cleanup; log but don't throw
+        if (e.name !== "AbortError") console.error(`[mcp] close DELETE failed: ${e.message}`)
+      })
       sessionId = null
     }
     for (const [, resolve] of pending) resolve({ id: null, error: { code: -32000, message: "Connection closed" } })

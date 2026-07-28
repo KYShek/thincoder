@@ -185,27 +185,27 @@ export function createPickers(ctx) {
     openPicker({
       title: "Add Provider",
       entries: presetEntries,
-      onCancel: () => openModelPicker().catch(() => {}),
+      onCancel: () => openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)),
       onSelect: async (se) => {
         if (se.kind === "custom") {
           const name = await askQuestion("Enter provider name:")
-          if (!name) { openModelPicker().catch(() => {}); return }
-          if (agent.providers.some((p) => p.name === name)) { openModelPicker().catch(() => {}); return }
+          if (!name) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
+          if (agent.providers.some((p) => p.name === name)) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
           const baseURLRaw = await askQuestion("Enter baseURL (e.g. https://api.example.com/v1):")
-          if (!baseURLRaw) { openModelPicker().catch(() => {}); return }
+          if (!baseURLRaw) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
           const baseURL = baseURLRaw.replace(/\/+$/, "")
-          if (!/^https?:\/\//.test(baseURL)) { openModelPicker().catch(() => {}); return }
+          if (!/^https?:\/\//.test(baseURL)) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
           const model = await askQuestion("Enter model name:")
-          if (!model) { openModelPicker().catch(() => {}); return }
+          if (!model) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
           agent.providers.push({ name, baseURL, model })
           await persistRaw((raw) => { raw.providers = agent.providers })
           const key = await askQuestion(`Enter API key for ${name} (leave empty to skip):`)
           if (key) { await setProviderKey(name, key) }
-          openModelPicker().catch(() => {})
+          openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error))
           return
         }
         // preset
-        if (agent.providers.some((p) => p.name === se.name)) { openModelPicker().catch(() => {}); return }
+        if (agent.providers.some((p) => p.name === se.name)) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
         const preset = PRESETS[se.name]
         const providerCfg = { name: se.name, baseURL: preset.baseURL, model: preset.model }
         if (preset.thinking) providerCfg.thinking = preset.thinking
@@ -217,7 +217,7 @@ export function createPickers(ctx) {
         await persistRaw((raw) => { raw.providers = agent.providers })
         const presetKey = await askQuestion(`Enter API key for ${se.name} (leave empty to skip):`)
         if (presetKey) await setProviderKey(se.name, presetKey)
-        openModelPicker().catch(() => {})
+        openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error))
       },
     })
   }
@@ -225,7 +225,7 @@ export function createPickers(ctx) {
   /** Remove provider (cannot remove the currently active one) */
   async function removeProviderFlow() {
     const candidates = agent.providers.filter((p) => p.name !== agent.activeProvider)
-    if (candidates.length === 0) { openModelPicker().catch(() => {}); return }
+    if (candidates.length === 0) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
     const removeEntries = [
       { type: "header", text: "Select provider to remove (current one cannot be removed)" },
       ...candidates.map((p) => ({ type: "item", text: `${p.name} (${p.model})`, name: p.name })),
@@ -233,12 +233,12 @@ export function createPickers(ctx) {
     openPicker({
       title: "Remove Provider",
       entries: removeEntries,
-      onCancel: () => openModelPicker().catch(() => {}),
+      onCancel: () => openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)),
       onSelect: async (se) => {
         const at = agent.providers.findIndex((p) => p.name === se.name)
         agent.providers.splice(at, 1)
         await persistRaw((raw) => { raw.providers = agent.providers })
-        openModelPicker().catch(() => {})
+        openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error))
       },
     })
   }
@@ -256,12 +256,12 @@ export function createPickers(ctx) {
     openPicker({
       title: "Configure API Key",
       entries: keyEntries,
-      onCancel: () => openModelPicker().catch(() => {}),
+      onCancel: () => openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)),
       onSelect: async (se) => {
         const key = await askQuestion(`Enter API key for ${se.name}:`)
-        if (!key) { openModelPicker().catch(() => {}); return }
+        if (!key) { openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error)); return }
         await setProviderKey(se.name, key)
-        openModelPicker().catch(() => {})
+        openModelPicker().catch((e) => pushLine(`[error] ${e.message}`, C.error))
       },
     })
   }

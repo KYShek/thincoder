@@ -91,7 +91,10 @@ export function createKeyHandler(ctx) {
               insertPastedText(state, text)
               render()
             }
-          }).catch(() => { q._pasting = false })
+          }).catch((e) => {
+            q._pasting = false
+            console.error(`[tui] clipboard paste failed: ${e.message}`)
+          })
         } else if (str && !key.ctrl && !key.meta) {
           q.answer = (q.answer ?? "") + str
           render()

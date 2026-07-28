@@ -51,11 +51,17 @@ export async function pullTeam(dir) {
     return true
   } catch (error) {
     if (await hasConflict(dir)) {
-      await git(dir, ["rebase", "--abort"]).catch(() => {})
+      let abortFailed = false
+      try { await git(dir, ["rebase", "--abort"]) } catch {
+        abortFailed = true
+      }
       throw new Error(
         `Team memory sync conflict: local and remote modified the same entry.\n` +
         `Please resolve manually in ${dir} with \`git pull\`, then re-run \`thincoder sync\`.\n` +
-        `(The local repo has been restored to its pre-sync state — nothing was lost.)`,
+        (abortFailed
+          ? `(WARNING: git rebase --abort also failed — the repo may be in a conflicted state. ` +
+            `Run \`cd ${dir} && git rebase --abort\` manually to clean up.)`
+          : `(The local repo has been restored to its pre-sync state — nothing was lost.)`),
       )
     }
     throw error
