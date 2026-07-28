@@ -92,6 +92,18 @@ export async function prepareRun(agent, input, callbacks, {
         content: `[System reminder: current time is ${new Date().toISOString()}.]`,
         transient: true,
       })
+      // Checklist injection: inject pending + in_progress items from .thincoder/checklist.md
+      try {
+        const { pendingItems } = await import("../tools/checklist.mjs")
+        const items = pendingItems(agent.cwd)
+        if (items.length > 0) {
+          agent.history.push({
+            role: "user",
+            content: `[System reminder: task checklist (pending/in-progress):\n${items.map(i => `- [${i.status === "in_progress" ? "~" : " "}] ${i.text}`).join("\n")}]`,
+            transient: true,
+          })
+        }
+      } catch { /* checklist not available — suppress error */ }
     }
     agent.history.push({ role: "user", content: input })
   }
