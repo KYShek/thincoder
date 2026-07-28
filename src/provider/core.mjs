@@ -155,7 +155,7 @@ async function requestWithRetry(provider, body, signal, onWait) {
 
     const text = await response.text().catch(() => "")
     const message = `LLM API error ${response.status}: ${text}`
-    if (isQuotaError(text)) throw new Error(message)
+    if (isNonRetryableError(response.status, text)) throw new Error(message)
     if (response.status === 429) {
       const retryAfter = Number(response.headers.get("retry-after"))
       const waitMs =
@@ -179,19 +179,39 @@ async function requestWithRetry(provider, body, signal, onWait) {
   throw lastError
 }
 
-function isQuotaError(text) {
-  try {
-    const type = JSON.parse(text)?.error?.type
-    return typeof type === "string" && type.includes("quota")
-  } catch {
-    return false
+/**
+ * Detect errors that should NOT be retried — quota, billing, auth, invalid params.
+ * Different providers use wildly different error formats. Check body text for known patterns.
+ */
+function isNonRetryableError(status, text) {
+  // Auth errors: never retry
+  if (status === 401 || status === 403) return true
+  // 400-level non-429: usually invalid params
+  if (status >= 400 && status < 500 && status !== 429) return true
+  // For 429, check if it's actually a billing/quota error (not rate limit)
+  if (status === 429) {
+    const lower = text.toLowerCase()
+    // Chinese providers often return 429 for billing issues
+    if (lower.includes("余额不足") || lower.includes("余额") || lower.includes("充值")) return true
+    if (lower.includes("insufficient") && (lower.includes("balance") || lower.includes("quota") || lower.includes("credit"))) return true
+    if (lower.includes("quota") && (lower.includes("exceeded") || lower.includes("insufficient"))) return true
+    // Standard OpenAI billing error (error.type === "insufficient_quota" or similar)
+    try {
+      const j = JSON.parse(text)
+      const errType = j?.error?.type || ""
+      if (typeof errType === "string" && (errType.includes("quota") || errType.includes("billing") || errType.includes("insufficient") || errType.includes("balance"))) return true
+      const errCode = j?.error?.code || ""
+      if (typeof errCode === "string" && (errCode === "1113" || errCode === "1114")) return true // GLM billing codes
+    } catch {}
   }
+  return false
 }
 
 async function readSSE(response, { onToken, onReasoning }) {
   const result = { content: "", reasoning: "", toolCalls: [], usage: null, finishReason: null }
   const decoder = new TextDecoder()
   let buffer = ""
+  let hasChoices = false
 
   const processLines = (lines) => {
     for (const line of lines) {
@@ -205,6 +225,7 @@ async function readSSE(response, { onToken, onReasoning }) {
       if (json.usage) result.usage = json.usage
       const choice = json.choices?.[0]
       if (!choice) continue
+      hasChoices = true
       if (choice.finish_reason) result.finishReason = choice.finish_reason
 
       const delta = choice.delta ?? {}
@@ -234,6 +255,31 @@ async function readSSE(response, { onToken, onReasoning }) {
   }
   buffer += decoder.decode()
   processLines(buffer.split("\n"))
+
+  // If no SSE choices were found, the response is likely a JSON error
+  if (!hasChoices) {
+    const contentType = response.headers.get("content-type") || ""
+    let errorMsg = ""
+    try {
+      const raw = buffer.trim() || ""
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        errorMsg = parsed?.error?.message
+          || parsed?.base_resp?.status_msg
+          || parsed?.detail
+          || parsed?.message
+          || parsed?.msg
+          || (typeof parsed.error === "string" ? parsed.error : "")
+      }
+    } catch { /* not JSON */ }
+    if (!errorMsg && !contentType.includes("event-stream")) {
+      errorMsg = `Response is not SSE (Content-Type: ${contentType || "unknown"})`
+    }
+    if (errorMsg) {
+      throw new Error(`API error: ${errorMsg}`)
+    }
+  }
+
   return result
 }
 
