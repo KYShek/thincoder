@@ -126,7 +126,7 @@ thinking 模式的协议约束：是否回传 reasoning_content 由规格表 rea
 
 ### tools/ — 工具系统
 
-工具定义分散在 `src/tools/file.mjs` / `system.mjs` / `git.mjs` / `web.mjs` / `patch.mjs`，统一在 `index.mjs` 注册为 `builtinTools` 数组。描述文本存在 `src/tools/*.md`，运行时动态加载。
+工具定义分散在 `src/tools/file.mjs` / `system.mjs` / `git.mjs` / `web.mjs` / `patch.mjs` / `checklist.mjs`，统一在 `index.mjs` 注册为 `builtinTools` 数组。描述文本存在 `src/tools/*.md`，运行时动态加载。
 
 ```js
 // 每个工具的定义形状（对齐 OpenAI tool calling schema）：
@@ -140,7 +140,7 @@ thinking 模式的协议约束：是否回传 reasoning_content 由规格表 rea
   execute: async (args, ctx) => result   // ctx: { cwd, agent, signal, ... }
 }
 
-export const builtinTools = [read, write, edit, bash, glob, grep, ...]  // 28 个工具
+export const builtinTools = [read, write, edit, bash, glob, grep, ...]  // 20 个工具
 export function toOpenAISchema(tool)     // 转成 OpenAI tools 参数格式
 ```
 
@@ -150,6 +150,7 @@ export function toOpenAISchema(tool)     // 转成 OpenAI tools 参数格式
 - `bash` 工具有超时（默认 120 秒）和输出截断（防上下文爆炸）
 - `edit` 用 old_string/new_string 精确替换（参照主流实践，可靠）
 - 危险操作（写文件、bash）在 TUI 层做权限确认，tools 层只做执行——关注点分离
+- `checklist` 管**项目级**任务清单（`.thincoder/checklist.md`，人可读可手改），与 `task`（会话内单任务拆解）互补；条目一一对应需求/设计要点，标 done 自动归档到 `checklist-done.md`；每轮 run 开头把 pending + in_progress 条目作为 transient reminder 注入（`setup.mjs`）——上下文会压缩，清单文件不丢
 
 ### agent.mjs — 主循环
 
@@ -245,6 +246,11 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 - 每轮变化的**记忆注入**不进 system prompt，作为独立 user 上下文消息（`[Relevant memories ...]`）随输入一起入 history——历史只增不改，前缀缓存照常命中
 - 技能列表、项目指令按 cwd 稳定，留在 system prompt；skills 文件变更会破一次缓存，可接受
 - 回归测试：连续两次 runAgent，断言两请求的 system 消息逐字节相等
+
+**视觉能力防护（image_url 会话毒化）**：文本模型的 API 见到任何一条消息含 image_url 部分就整个请求 400——历史里混进一张图，之后每轮请求都挂，会话直接变砖。三道防线：
+1. `read_image` 执行前按 `specForModel(model).multimodal` 拒绝非视觉模型（读文件之前就拒，错误信息给出替代方案）
+2. 主循环注入多模态工具结果时，非视觉模型改注入 system reminder（"图片未注入，不要重复调用"），image 部分不进历史（纵深防御）
+3. `stripImagesForTextModel`（`provider/core.mjs`）发送前把历史里残留的 image_url 替换为文本占位符——防"视觉模型会话切到文本 provider 恢复"的存量毒化；历史本身不改，切回视觉模型图片即恢复
 
 **TUI todo 面板**：对话区与输入框之间常驻，最多 5 行（`▶ in_progress` / `✓ done`（暗色+删除线）/ `○ pending`；超 5 条优先 in_progress、兼顾最早 pending 和最近 done）；一轮结束全部 done 自动收起；会话恢复时以 `agent.tasks` 直接初始化。状态栏保留 `▶done/total` 计数，对话区每次更新留痕 `[task] x/y ▶ 当前任务`。chat 命令经 stderr 输出同款留痕。
 

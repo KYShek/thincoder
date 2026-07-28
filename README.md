@@ -205,6 +205,13 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.8.11 (2026-07)
+- **Feat**: `checklist` tool — persistent project task tracking in `.thincoder/checklist.md`. Add/mark/list items, auto-archive done items to `checklist-done.md`. Injected at session start (pending + in_progress only)
+- **Feat**: updated prompts — four-step workflow (requirements→design→development→testing), three-step debugging strategy (logs→docs→binary search), working checklist discipline
+- **Feat**: methodology docs — `docs/design/METHODOLOGY.md` rebuilt, `PHILOSOPHY.md` expanded with worldview #6 (official docs over guessing)
+- **Bugfix**: vision guard — `read_image` now refuses non-vision models before reading the file, the agent loop injects a system reminder instead of image parts for text-only models, and `stripImagesForTextModel` sanitizes image parts at send time (history untouched, restored when switching back to a vision model). Previously a single image in history made text-only APIs (e.g. DeepSeek) reject EVERY subsequent request with 400, bricking the conversation
+- **Improvement**: silent `catch {}` blocks now log to stderr (checkpoint file copies, MCP notify/close, session incremental save, clipboard paste, provider picker, team-memory rebase abort, tool dispatch) — failures are visible for debugging instead of disappearing
+
 ### 0.8.10 (2026-07)
 - **Bugfix**: pasted text now lands in the active TUI text target — the API key prompt when adding a provider via `/model` (and any free-text `askQuestion`) now accepts paste correctly. Previously, bracketed-paste injection in the terminal was always written to the main input box, so pasting into a question prompt appeared as "nothing happened" and orphaned the text into the input box after the question closed. Both bracketed-paste (Windows Terminal / most modern terminals) and Ctrl+V-as-key-event (legacy conhost) now route through a single `insertPastedText` helper that targets the question answer, options-list (ignored), or main input box as appropriate
 
