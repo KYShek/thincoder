@@ -17,6 +17,10 @@ export const ansi = {
   clearLine: `${ESC}[K`,
   clearToEnd: `${ESC}[J`,
   clearScreen: `${ESC}[2J`,
+  saveCursor: `${ESC}7`,      // DECSC — save cursor position
+  restoreCursor: `${ESC}8`,   // DECRC — restore cursor position
+  syncUpdateStart: `${ESC}[?2026h`, // DECSET 2026 — buffer output until syncUpdateEnd
+  syncUpdateEnd: `${ESC}[?2026l`,   // DECRST 2026 — flush buffered output atomically
   reset: `${ESC}[0m`,
   dim: `${ESC}[2m`,
   bold: `${ESC}[1m`,

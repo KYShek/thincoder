@@ -62,7 +62,7 @@ export async function classifyAndApply(agent, turn) {
         { role: "user", content: prompt.slice(0, 2000) },
       ],
       tools: [],
-      signal: new AbortController().signal,
+      signal: AbortSignal.timeout(5_000),
     })
     const word = (response.content ?? "").trim().toLowerCase()
     if (word.startsWith("low")) level = "low"

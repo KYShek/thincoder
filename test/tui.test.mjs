@@ -7,7 +7,12 @@ import assert from "node:assert/strict"
 
 import { stringWidth, wrapText } from "../src/tui/render.mjs"
 import { computeLayout } from "../src/tui/layout.mjs"
-import { renderFrame } from "../src/tui/render-frame.mjs"
+import {
+  renderFrame, countConvLines, convCacheKey,
+  renderHeader, renderConversation, renderTodo, renderSubagent,
+  renderOutput, renderPermission, renderQueue,
+  renderInputBox, renderStatus,
+} from "../src/tui/render-frame.mjs"
 import { createKeyHandler } from "../src/tui/key-handler.mjs"
 
 // ====================================================================
@@ -454,4 +459,228 @@ test("keyHandler: escape in picker closes it", () => {
   })
   handler("", { name: "escape" })
   assert.ok(closed)
+})
+
+// ---------------------------------------------------------------- panel render functions (incremental rendering)
+
+test("panel functions: renderHeader includes model name", () => {
+  const agent = {
+    provider: { model: "deepseek-v4-pro", thinking: null },
+    cwd: "/home/user/project",
+  }
+  const line = renderHeader(agent, 100)
+  assert.ok(line.includes("ThinCoder"))
+  assert.ok(line.includes("deepseek-v4-pro"))
+  assert.ok(line.includes("project"))
+})
+
+test("panel functions: renderHeader with thinking mode shows badge", () => {
+  const agent = {
+    provider: { model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max" },
+    cwd: "/project",
+  }
+  const line = renderHeader(agent, 120)
+  assert.ok(line.includes("think: max"))
+})
+
+test("panel functions: convCacheKey changes on streaming append", () => {
+  const s1 = tuiState({ streaming: "hello" })
+  const s2 = tuiState({ streaming: "hello world" })
+  const k1 = convCacheKey(s1)
+  const k2 = convCacheKey(s2)
+  assert.notEqual(k1, k2)
+})
+
+test("panel functions: convCacheKey stable on scroll change alone", () => {
+  const s = tuiState({ lines: [{ text: "a", color: "" }] })
+  const k1 = convCacheKey(s)
+  s.scroll = 5
+  const k2 = convCacheKey(s)
+  assert.equal(k1, k2)
+})
+
+test("panel functions: renderConversation returns correct line count", () => {
+  const state = tuiState({
+    lines: [
+      { text: "line1", color: "" },
+      { text: "line2", color: "" },
+      { text: "line3", color: "" },
+    ],
+  })
+  const lines = renderConversation(state, 80, 10, 0)
+  assert.equal(lines.length, 10) // pad to visibleH
+})
+
+test("panel functions: renderTodo shows status marks", () => {
+  const tasks = [
+    { title: "done task", status: "done" },
+    { title: "in progress", status: "in_progress" },
+    { title: "pending", status: "pending" },
+  ]
+  const lines = renderTodo(tasks, 80)
+  assert.equal(lines.length, 3)
+  assert.ok(lines[0].includes("✓"))
+  assert.ok(lines[1].includes("▶"))
+  assert.ok(lines[2].includes("○"))
+})
+
+test("panel functions: renderSubagent shows running and done states", () => {
+  const subs = [
+    { role: "coder", text: "writing tests...", tool: null, done: false, started: Date.now() },
+    { role: "explore", text: "", tool: null, done: true, started: Date.now() - 5000 },
+  ]
+  const lines = renderSubagent(subs, 100)
+  assert.ok(lines.some((l) => l.includes("coder") && l.includes("writing")))
+  assert.ok(lines.some((l) => l.includes("explore") && l.includes("done")))
+})
+
+test("panel functions: renderOutput formats active panels", () => {
+  const state = tuiState({
+    outputPanels: {
+      test: { text: "running 1/10\nrunning 2/10", done: false },
+    },
+  })
+  const lines = renderOutput(state, 80, 4)
+  assert.ok(lines.some((l) => l.includes("running")))
+})
+
+test("panel functions: renderOutput hides done panels", () => {
+  const state = tuiState({
+    outputPanels: {
+      test: { text: "done all tests pass", done: true },
+    },
+  })
+  const lines = renderOutput(state, 80, 4)
+  assert.equal(lines.length, 0)
+})
+
+test("panel functions: renderFrame (legacy) produces valid ANSI", () => {
+  const state = tuiState({ lines: [{ text: "hello", color: "" }] })
+  const agent = { provider: { model: "test-model" }, cwd: "/test", planMode: false, autoApprove: false, config: {} }
+  const result = renderFrame(state, agent, { cols: 80, rows: 24, slashCommands: [] })
+  assert.ok(result.frame.startsWith("\x1b[H")) // starts with home
+  assert.ok(result.frame.includes("hello"))
+  assert.ok(result.frame.includes("ThinCoder"))
+})
+
+test("panel functions: renderFrame returns cursor position in normal mode", () => {
+  const state = tuiState({})
+  const agent = { provider: { model: "test" }, cwd: "/test", planMode: false, autoApprove: false, config: {} }
+  const result = renderFrame(state, agent, { cols: 80, rows: 24, slashCommands: [] })
+  assert.ok(result.cursorRow > 0)
+  assert.ok(result.cursorCol > 0)
+})
+
+test("panel functions: renderFrame hides cursor in permission mode", () => {
+  const state = tuiState({ permission: { name: "test", args: {} } })
+  const agent = { provider: { model: "test" }, cwd: "/test", planMode: false, autoApprove: false, config: {} }
+  const result = renderFrame(state, agent, { cols: 80, rows: 24, slashCommands: [] })
+  assert.equal(result.cursorRow, 0)
+  assert.equal(result.cursorCol, 0)
+})
+
+test("panel functions: renderInputBox shows Processing title when processing", () => {
+  const state = tuiState({ processing: true })
+  const lines = renderInputBox(state, 80, ["▸ Hello"], 80)
+  assert.ok(lines[0].includes("Processing..."))
+})
+
+test("panel functions: renderStatus includes elapsed time during processing", () => {
+  const state = tuiState({ processing: true, processingStarted: Date.now() })
+  const agent = { provider: { model: "test" }, cwd: "/test", planMode: false, autoApprove: false, config: {} }
+  const line = renderStatus(state, agent, 120, [])
+  assert.ok(line.includes("0s")) // just started
+})
+
+test("panel functions: renderPermission formats permission request", () => {
+  const lines = renderPermission(["  Allow bash: rm -rf /", "  This is dangerous"])
+  assert.equal(lines.length, 3)
+  assert.ok(lines[0].includes("Permission Request"))
+})
+
+test("panel functions: renderQueue shows queue preview", () => {
+  const state = tuiState({ queue: [{ text: "next task here" }], processing: true })
+  const line = renderQueue(state, 80)
+  assert.ok(line.includes("Queue:"))
+  assert.ok(line.includes("next task here"))
+})
+
+test("panel functions: renderQueue empty when not processing", () => {
+  const state = tuiState({ queue: [{ text: "waiting" }], processing: false })
+  const line = renderQueue(state, 80)
+  assert.equal(line, "")
+})
+
+test("panel functions: countConvLines counts wrapped lines", () => {
+  const state = tuiState({
+    lines: [
+      { text: "short", color: "" },
+      { text: "a".repeat(200), color: "" }, // will wrap
+    ],
+  })
+  // "a" repeated 200 times at width 80 → ceil(200/80) = 3 lines
+  const count = countConvLines(state, 80)
+  assert.equal(count, 4) // 1 (short) + 3 (wrapped)
+})
+
+// ---------------------------------------------------------------- streaming line-diff simulation
+
+test("streaming simulation: only last line changes during token append", () => {
+  // Simulate the conversation panel line caching logic:
+  // initial state → token arrives → verify only new/changed lines differ
+  const cols = 80, visibleH = 5
+  const empty = renderConversation(tuiState({ lines: [] }), cols, visibleH, 0)
+  const withText = renderConversation(tuiState({
+    lines: [{ text: "hello", color: "" }],
+  }), cols, visibleH, 0)
+  const withStream = renderConversation(tuiState({
+    lines: [{ text: "hello", color: "" }],
+    streaming: " world",
+  }), cols, visibleH, 0)
+
+  // Compare line by line: between "hello" and "hello world", only last line differs
+  let diffCount = 0
+  for (let i = 0; i < visibleH; i++) {
+    if (withText[i] !== withStream[i]) diffCount++
+  }
+  // streaming is a SEPARATE line appended after history, so when it first appears
+  // it pushes the last history line up → typically 2 lines change on first token,
+  // then only 1 (the streaming line) on subsequent tokens within the same turn.
+  assert.ok(diffCount <= 2, `expected ≤2 diffs, got ${diffCount}`)
+})
+
+test("streaming simulation: no diff when streaming content unchanged", () => {
+  const cols = 80, visibleH = 5
+  const state = tuiState({ lines: [{ text: "hello", color: "" }], streaming: " world" })
+  const a = renderConversation(state, cols, visibleH, 0)
+  const b = renderConversation(state, cols, visibleH, 0)
+  assert.deepEqual(a, b) // pure function, same input → same output
+})
+
+test("streaming simulation: new line in middle pushes lines up", () => {
+  const cols = 80, visibleH = 4
+  // Two lines of history
+  const s1 = tuiState({ lines: [
+    { text: "line1", color: "" },
+    { text: "line2", color: "" },
+  ]})
+  // Add a third line — the visible window shifts
+  const s2 = tuiState({ lines: [
+    { text: "line1", color: "" },
+    { text: "line2", color: "" },
+    { text: "line3", color: "" },
+  ]})
+  const a = renderConversation(s1, cols, visibleH, 0)
+  const b = renderConversation(s2, cols, visibleH, 0)
+
+  // With visibleH=4 and 3 lines, both render 4 lines (1 pad + 2 content vs 1 pad + 3 content)
+  assert.equal(a.length, visibleH)
+  assert.equal(b.length, visibleH)
+  // Content differs: s1 shows line1,line2; s2 shows line1,line2,line3
+  let diffs = 0
+  for (let i = 0; i < visibleH; i++) {
+    if (a[i] !== b[i]) diffs++
+  }
+  // Adding a new history line pushes all visible lines up — up to visibleH diffs
+  assert.ok(diffs >= 1 && diffs <= visibleH, `expected 1-${visibleH} diffs, got ${diffs}`)
 })

@@ -1,11 +1,12 @@
 /**
- * repomap.mjs — repo dependency outline (zero dependencies, pure regex)
+ * repomap.mjs — repo dependency outline
  * Real-time import/export parsing, generates compact text for LLMs to understand code structure.
  * No index stored — reads and parses files on each call, ~50ms.
  */
 import { existsSync } from "node:fs"
-import { readFile } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
+import { normalizeEOL } from "./shared.mjs"
 
 /** Extract JS/TS file import paths (normalize by stripping .ts/.js/.mjs suffixes) */
 function parseImports(lines, ext) {
@@ -125,8 +126,11 @@ async function _buildDepGraph(db, cwd) {
     const rel = allFiles[i]
     const abs = join(cwd, ...rel.split("/"))
     if (!existsSync(abs)) continue
+    // Large file guard: skip files over 10MB to prevent OOM
+    const fst = await stat(abs).catch(() => null)
+    if (fst && fst.size > 10_000_000) continue
     let text
-    try { text = await readFile(abs, "utf8") } catch { continue }
+    try { text = normalizeEOL(await readFile(abs, "utf8")) } catch { continue }
     const lines = text.split("\n")
     const ext = rel.slice(rel.lastIndexOf(".")).toLowerCase()
 

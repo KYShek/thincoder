@@ -6,6 +6,7 @@ import {
   autoSyntaxCheck,
   resolveInCwd,
   resolveExternal,
+  normalizeEOL,
 } from "./shared.mjs";
 import { specForModel } from "../config.mjs";
 import { createHash } from "node:crypto";
@@ -39,7 +40,7 @@ export const readTool = {
     // Large file guard: check size first, reject reading entire file if >10MB (offset/limit only affect the returned slice, not buffering)
     const st = await stat(abs).catch(() => null)
     if (st && st.size > MAX_FILE_READ_BYTES) throw new Error(`File too large (${Math.round(st.size / 1_000_000)}MB > 10MB limit). Use bash with head/tail or grep for targeted extraction.`)
-    const content = await readFile(abs, "utf8")
+    const content = normalizeEOL(await readFile(abs, "utf8"))
     const lines = content.split("\n")
     const offset = Math.max(1, args.offset ?? 1)
     const limit = Math.min(args.limit ?? MAX_READ_LINES, MAX_READ_LINES)
@@ -153,7 +154,7 @@ export const editTool = {
     if (!args.old_string) {
       throw new Error("old_string must not be empty (empty string matches everywhere and would corrupt the file)")
     }
-    const content = await readFile(abs, "utf8")
+    const content = normalizeEOL(await readFile(abs, "utf8"))
     const occurrences = content.split(args.old_string).length - 1
     if (occurrences === 0) {
       // Give clues to help the model locate: first-line preview + common causes
@@ -195,7 +196,7 @@ export const insertAfterTool = {
   readonly: false,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
-    const text = await readFile(abs, "utf8")
+    const text = normalizeEOL(await readFile(abs, "utf8"))
     const lines = text.split("\n")
 
     let targetLine
@@ -208,7 +209,12 @@ export const insertAfterTool = {
         throw new Error(`after_line ${targetLine} out of range (file has ${lines.length} lines)`)
       }
     } else if (args.after_regex) {
-      const regex = new RegExp(args.after_regex)
+      let regex
+      try {
+        regex = new RegExp(args.after_regex)
+      } catch (e) {
+        throw new Error(`after_regex /${args.after_regex}/ is not a valid JavaScript regex: ${e.message}`)
+      }
       const matches = []
       for (let i = 0; i < lines.length; i++) {
         if (regex.test(lines[i])) matches.push(i + 1)
@@ -254,22 +260,24 @@ export const hashlineEditTool = {
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     if (!args.old_hashes?.length) throw new Error("old_hashes must not be empty — read the file with hashes=true to get line hashes")
-    const content = await readFile(abs, "utf8")
+    const content = normalizeEOL(await readFile(abs, "utf8"))
     const lines = content.split("\n")
     const fileHashes = lines.map((l) => hashLine(l))
     const target = args.old_hashes
 
-    // Sliding-window match: find the exact sequence of hashes
-    let pos = -1
+    // Sliding-window match: find all occurrences of the hash sequence.
+    // When multiple matches are found (e.g. empty lines), report positions so the
+    // model can include more context lines (adjacent lines with unique hashes).
+    const matches = []
     for (let i = 0; i <= fileHashes.length - target.length; i++) {
       let match = true
       for (let j = 0; j < target.length; j++) {
         if (fileHashes[i + j] !== target[j]) { match = false; break }
       }
-      if (match) { pos = i; break }
+      if (match) matches.push(i)
     }
 
-    if (pos === -1) {
+    if (matches.length === 0) {
       // Help the model recover: show the current file hashes for context
       const maxShow = Math.min(fileHashes.length, 50)
       const hashDump = fileHashes.slice(0, maxShow).map((h, i) => `${h}  L${i + 1}: ${lines[i].slice(0, 80)}`).join("\n")
@@ -280,6 +288,26 @@ export const hashlineEditTool = {
       )
     }
 
+    if (matches.length > 1) {
+      const ctx = 2 // lines of surrounding context
+      const detail = matches.map((m) => {
+        const start = Math.max(0, m - ctx)
+        const end = Math.min(lines.length, m + target.length + ctx)
+        const preview = lines.slice(start, end).map((l, i) => {
+          const ln = start + i + 1
+          const marker = m <= ln - 1 && ln - 1 < m + target.length ? ">" : " "
+          return `${marker} L${ln}: ${l.slice(0, 80)}`
+        }).join("\n")
+        return `  Match at line ${m + 1} (${target.length} line(s)):\n${preview}`
+      }).join("\n\n")
+      throw new Error(
+        `Hash sequence matches ${matches.length} positions in ${args.path} — ambiguous.\n` +
+        `Include more surrounding lines (unique-hash lines before/after the target) to disambiguate.\n\n` +
+        `All matches with surrounding context:\n\n${detail}`
+      )
+    }
+
+    const pos = matches[0]
     // Replace: remove old lines, insert new lines at the same position
     const newLines = args.new_content.split("\n")
     lines.splice(pos, target.length, ...newLines)

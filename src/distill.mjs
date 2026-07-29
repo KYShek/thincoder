@@ -47,11 +47,26 @@ export async function extractCandidates(provider, transcript) {
   const res = await chat(provider, {
     messages: [{ role: "user", content: DISTILL_PROMPT + transcript }],
   })
-  // Non-greedy match first JSON array (greedy [\s\S]* would eat across multiple arrays including interstitial text)
-  const match = res.content.match(/\[[\s\S]*?\]/)
-  if (!match) return []
+  // Balanced-bracket extraction: find the first '[' and track depth through nested
+  // brackets (tags arrays, nested objects, etc.) until the matching ']'.
+  // Non-greedy regex (/\[[\s\S]*?\]/) stops at the FIRST ']', which is wrong when
+  // LLM output contains nested arrays like `"tags": ["a", "b"]`.
+  const start = res.content.indexOf("[")
+  if (start === -1) return []
+  let depth = 0
+  let end = -1
+  for (let i = start; i < res.content.length; i++) {
+    const ch = res.content[i]
+    if (ch === "[" && (i === start || res.content[i - 1] !== "\\")) depth++
+    else if (ch === "]" && res.content[i - 1] !== "\\") {
+      depth--
+      if (depth === 0) { end = i + 1; break }
+    }
+  }
+  if (end === -1) return []
+  const jsonText = res.content.slice(start, end)
   try {
-    const parsed = JSON.parse(match[0])
+    const parsed = JSON.parse(jsonText)
     if (!Array.isArray(parsed)) return []
     return parsed.filter((c) => c?.type && c?.title && c?.content)
   } catch {

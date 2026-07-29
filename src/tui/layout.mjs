@@ -3,8 +3,8 @@
  * Computes position and height of each panel from state + terminal dimensions.
  * Does not modify state — side effects are performed by the caller before rendering.
  *
- * Panel layout (top to bottom):
- *   header → conversation → subagent → output → todo → permission → queue → input → status
+ *   header → conversation → subagent → output → todo → picker → permission → queue → input → status
+ *   header → conversation → todo → subagent → output → picker → permission → queue → input → status
  * Fixed panels deducted first, conditional panels allocated by priority, remaining space to conversation.
  */
 import { layoutInput, wrapText } from "./render.mjs"
@@ -100,8 +100,8 @@ export function computeLayout(state, { cols, rows }) {
   const conversation = { y, h: convH }; y += convH
   const subagent = subPanelH > 0 ? { y, h: subPanelH } : null; y += subPanelH
   const output = outputPanelsH > 0 ? { y, h: outputPanelsH } : null; y += outputPanelsH
-  const picker = pickerH > 0 ? { y, h: pickerH } : null; y += pickerH
   const todo = taskPanelH > 0 ? { y, h: taskPanelH } : null; y += taskPanelH
+  const picker = pickerH > 0 ? { y, h: pickerH } : null; y += pickerH
   const permission = permPreviewH > 0 ? { y, h: permPreviewH } : null; y += permPreviewH
   const queue = queueH > 0 ? { y, h: queueH } : null; y += queueH
   const inputBox = { y, h: inputBoxH }; y += inputBoxH

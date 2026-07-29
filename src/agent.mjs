@@ -92,7 +92,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     const lastRole = agent.history.at(-1)?.role
     if (lastRole === "user" || lastRole === "tool") {
       try {
-        if (await compressIfNeeded(agent, threshold)) {
+        if (await compressIfNeeded(agent, threshold, callbacks)) {
           agent._compressFailures = 0
           recentCallSigs.length = 0 // After compression history is rebuilt, reset stall detection counter
           callbacks.onCompress?.()

@@ -40,7 +40,9 @@ function writeSessionFile(p, data) {
       // rename succeeded: clean up temp file
       try { unlinkSync(tmp) } catch {}
     } catch {
-      // rename still failed: keep tmp as fallback data (next read prefers main file; if missing, tmp is at least there)
+      // rename still failed — fall back to direct write (non-atomic but data-preserving)
+      // p was deleted above; avoid losing both old and new data
+      writeFileSync(p, readFileSync(tmp, "utf8"), "utf8")
     }
   }
 }

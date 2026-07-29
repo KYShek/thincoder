@@ -22,7 +22,12 @@ import { saveSession, archiveCurrent, listSlots } from "../session.mjs"
 import { closeAllMcp } from "../mcp.mjs"
 import { estimateTokens } from "../context.mjs"
 import { ansi, C } from "./ansi.mjs"
-import { renderFrame, countConvLines } from "./render-frame.mjs"
+import {
+  renderFrame, countConvLines, convCacheKey,
+  renderHeader, renderConversation, renderTodo, renderSubagent,
+  renderOutput, renderPermission, renderQueue, renderPicker,
+  renderInputBox, renderStatus,
+} from "./render-frame.mjs"
 import { computeLayout } from "./layout.mjs"
 import { SLASH_COMMANDS, createSlashCommands } from "./slash-commands.mjs"
 import { createWizard } from "./wizard.mjs"
@@ -222,66 +227,171 @@ export async function startTUI(agent, opts = {}) {
 
   // ---------------------------------------------------------- Render
 
-  // Frame dedup + streaming rate limit: skip re-rendering unchanged frames (prevents flicker);
-  // merge token flood to ~25fps
-  let lastFrame = ""
-  let lastCursorRow = -1, lastCursorCol = -1
-  let renderTimer = null
+  // Panel cache for incremental rendering: panelName → { y, h, content }
+  const panelCache = new Map()
+  let lastCols = 0, lastRows = 0
+  let lastConvKey = "", lastConvCols = 0, lastConvScroll = -1
+  const convLineCache = []  // line-level cache for conversation panel (per-line diff)
+  let renderRequested = false, renderTimer = null, lastRenderAt = 0
+  const MIN_RENDER_INTERVAL_MS = 16  // ~60fps cap, matching pi-tui
 
   function scheduleRender() {
     if (renderTimer) return
+    const elapsed = performance.now() - lastRenderAt
+    const delay = Math.max(0, MIN_RENDER_INTERVAL_MS - elapsed)
     renderTimer = setTimeout(() => {
       renderTimer = null
-      render()
-    }, 40)
+      if (!renderRequested) return
+      renderRequested = false
+      lastRenderAt = performance.now()
+      doRender()
+      if (renderRequested) scheduleRender()  // more requests arrived during render
+    }, delay)
   }
 
+  /** Rate-limited render entry point. All call sites use this. */
   function render() {
-    try {
-      // Side effects: reset scroll + update ctxCache + clamp overlay scroll
-    // (renderFrame is pure, side effects concentrated here)
-    const dims = { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }
-    const layout = computeLayout(state, dims)
-    // clamp conversation scroll
-    const convLines = countConvLines(state, dims.cols)
-    const maxScroll = Math.max(0, convLines - layout.panels.conversation.h)
-    state.scroll = Math.min(state.scroll, maxScroll)
-    // clamp overlay scroll
-    const overlay = state.picker ?? state.wizard
-    if (overlay && layout.panels.picker) {
-      const winH = layout.panels.picker.h - 1
-      if (overlay.selectedLine < overlay.scroll) overlay.scroll = overlay.selectedLine
-      if (overlay.selectedLine >= overlay.scroll + winH) overlay.scroll = overlay.selectedLine - winH + 1
-    }
-    // update ctxCache
-    if (state.ctxCache.len !== agent.history.length) {
-      state.ctxCache = { len: agent.history.length, tokens: estimateTokens(agent.history) }
-    }
+    if (renderRequested) return
+    renderRequested = true
+    // process.nextTick merges multiple synchronous render() calls
+    // within the same tick into a single scheduleRender call.
+    process.nextTick(() => scheduleRender())
+  }
 
-    const { frame, cursorRow, cursorCol } = renderFrame(state, agent, {
-      ...dims,
-      slashCommands: SLASH_COMMANDS,
-    })
-    if (frame !== lastFrame) {
-      lastFrame = frame
-      // Single write: home + hide cursor + frame + clear-tail + cursor position — prevents flicker
-      let out = ansi.home + ansi.hideCursor + frame + ansi.clearToEnd
-      if (state.permission || state.question || state.picker || state.wizard?.step === "provider") {
-        out += ansi.hideCursor
-      } else {
-        out += `\x1b[${cursorRow};${cursorCol}H${ansi.showCursor}`
-        lastCursorRow = cursorRow
-        lastCursorCol = cursorCol
-      }
-      process.stdout.write(out)
-    } else if (cursorRow !== lastCursorRow || cursorCol !== lastCursorCol) {
-      // Frame unchanged but cursor moved (e.g. arrow keys) — only reposition cursor
-      lastCursorRow = cursorRow
-      lastCursorCol = cursorCol
-      if (!(state.permission || state.question || state.picker || state.wizard?.step === "provider")) {
-        process.stdout.write(`\x1b[${cursorRow};${cursorCol}H${ansi.showCursor}`)
-      }
+  /** Build ANSI content for a panel at its layout position. Returns null if unchanged. */
+  function buildPanel(name, panelLayout, lines, cacheKey) {
+    if (!panelLayout) {
+      if (panelCache.has(name)) panelCache.delete(name)
+      return null
     }
+    const content = lines.join("\r\n")
+    const cached = panelCache.get(name)
+    const effectiveKey = cacheKey ?? content
+    if (cached && cached.y === panelLayout.y && cached.h === panelLayout.h && cached.key === effectiveKey) return null
+    const rows = []
+    for (let i = 0; i < panelLayout.h; i++) {
+      rows.push(`\x1b[${panelLayout.y + 1 + i};1H${lines[i] ?? ""}\x1b[K`)
+    }
+    panelCache.set(name, { y: panelLayout.y, h: panelLayout.h, key: effectiveKey })
+    return rows.join("")
+  }
+
+  /** Detect if panel layout structure changed (appeared/disappeared/shifted).
+   *  Only checks panels that are ALREADY cached — new panels (not yet written)
+   *  are not a structural change; the incremental path will write them naturally. */
+  function layoutStructureChanged(layout) {
+    for (const [name, cached] of panelCache) {
+      const p = layout.panels[name] ?? null
+      if (p == null) return true  // cached panel disappeared → layout changed
+      if (p.y !== cached.y || p.h !== cached.h) return true  // shifted/resized
+    }
+    return false
+  }
+
+  function doRender() {
+    try {
+      const dims = { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }
+      const layout = computeLayout(state, dims)
+      const { W, panels, inputLayout, inputOffset, boxLines, visibleTasks, allSubs, permPreviewLines, overlay } = layout
+
+      // Side effects: clamp scroll + overlay + update ctxCache
+      const convLines = countConvLines(state, dims.cols)
+      state.scroll = Math.min(state.scroll, Math.max(0, convLines - panels.conversation.h))
+      if (overlay && panels.picker) {
+        const winH = panels.picker.h - 1
+        if (overlay.selectedLine < overlay.scroll) overlay.scroll = overlay.selectedLine
+        if (overlay.selectedLine >= overlay.scroll + winH) overlay.scroll = overlay.selectedLine - winH + 1
+      }
+      if (state.ctxCache.len !== agent.history.length) {
+        state.ctxCache = { len: agent.history.length, tokens: estimateTokens(agent.history) }
+      }
+
+      // Terminal resize or panel layout shift → full redraw (using legacy renderFrame).
+      // Don't clear panelCache — update positions so the next incremental check
+      // sees correct Y/h. Content keys will be stale, forcing a one-time rewrite
+      // per panel on the next frame (much cheaper than another full redraw).
+      if (dims.cols !== lastCols || dims.rows !== lastRows || layoutStructureChanged(layout)) {
+        lastCols = dims.cols; lastRows = dims.rows
+        // Update cached panel positions (content stays stale → next frame rewrites)
+        for (const [name, panelLayout] of Object.entries(panels)) {
+          if (!panelLayout) { panelCache.delete(name); continue }
+          const cached = panelCache.get(name)
+          if (cached) { cached.y = panelLayout.y; cached.h = panelLayout.h }
+        }
+        const isStreaming = state.processing && !state.permission && !state.question && !state.picker
+        const isWizard = state.wizard?.step === "provider"
+        // Content + cursor in a single write. Hardware cursor stays hidden —
+        // the visual cursor is drawn in the input box as SGR reverse video.
+        // Position for IME, hide for visual (matching pi-tui).
+        if (isStreaming) {
+          process.stdout.write(ansi.syncUpdateStart + ansi.home + frame + ansi.clearToEnd + ansi.syncUpdateEnd + `\x1b[${cursorRow};${cursorCol}H${ansi.hideCursor}`)
+        } else if (isWizard) {
+          process.stdout.write(ansi.syncUpdateStart + ansi.home + frame + ansi.clearToEnd + ansi.syncUpdateEnd + ansi.hideCursor)
+        } else {
+          process.stdout.write(ansi.syncUpdateStart + ansi.home + frame + ansi.clearToEnd + ansi.syncUpdateEnd + `\x1b[${cursorRow};${cursorCol}H${ansi.hideCursor}`)
+        }
+        return
+      }
+
+      // ---- Incremental rendering (layout stable) ----
+      // pi-tui pattern: content inside sync-update block; cursor outside.
+      // DECSET 2026 buffers all panel writes and renders them atomically.
+      // Cursor hide/show/position MUST be outside — otherwise the terminal's
+      // internal cursor state machine and the sync render buffer can disagree.
+      const out = []
+      const push = (s) => { if (s != null) out.push(s) }
+
+      // Always-visible panels
+      push(buildPanel("header", panels.header, [renderHeader(agent, dims.cols)]))
+      push(buildPanel("status", panels.status, [renderStatus(state, agent, dims.cols, SLASH_COMMANDS)]))
+      push(buildPanel("inputBox", panels.inputBox, renderInputBox(state, W, boxLines, dims.cols, inputLayout, inputOffset)))
+
+      // Conversation: line-level cache — only push changed lines
+      const convKey = convCacheKey(state)
+      const convChanged = convKey !== lastConvKey || dims.cols !== lastConvCols || state.scroll !== lastConvScroll
+      if (convChanged) {
+        lastConvKey = convKey; lastConvCols = dims.cols; lastConvScroll = state.scroll
+        const lines = renderConversation(state, dims.cols, panels.conversation.h, state.scroll)
+        const y = panels.conversation.y + 1
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i] !== convLineCache[i]) {
+            out.push(`\x1b[${y + i};1H${lines[i]}\x1b[K`)
+            convLineCache[i] = lines[i]
+          }
+        }
+        if (convLineCache.length > lines.length) {
+          for (let i = lines.length; i < convLineCache.length; i++) {
+            out.push(`\x1b[${y + i};1H\x1b[K`)
+          }
+        }
+        convLineCache.length = lines.length
+      }
+
+      // Conditional panels
+      push(buildPanel("todo", panels.todo, renderTodo(visibleTasks, dims.cols)))
+      push(buildPanel("subagent", panels.subagent, renderSubagent(allSubs, W)))
+      push(buildPanel("output", panels.output, renderOutput(state, W, panels.output?.h ?? 0)))
+      push(buildPanel("permission", panels.permission, renderPermission(permPreviewLines)))
+      if (panels.queue) push(buildPanel("queue", panels.queue, [renderQueue(state, W)]))
+      else panelCache.delete("queue")
+      if (panels.picker) push(buildPanel("picker", panels.picker, renderPicker(state, dims.cols, panels.picker, overlay)))
+      else panelCache.delete("picker")
+
+      // Determine cursor suffix — appended to the same write() as the sync block.
+      // MUST position the cursor at the input box even when hidden: the terminal's
+      // cursor position determines where the IME candidate window appears.
+      // pi-tui's positionHardwareCursor does the same — positions first, then
+      // decides show/hide based on showHardwareCursor.
+      // Hardware cursor stays hidden — the visual cursor is drawn in the input
+      // box text as SGR reverse video (matching pi-tui's approach).
+      // We still position the hardware cursor for IME candidate window placement.
+      const cr = panels.inputBox.y + 1 + (inputLayout.cursorLine - inputOffset) + 1
+      const cc = 3 + inputLayout.cursorCol
+      const hasOverlay = state.permission || state.question || state.picker || state.wizard?.step === "provider"
+      const cursorSuffix = hasOverlay ? "" : `\x1b[${cr};${cc}H${ansi.hideCursor}`
+
+      // Single write: sync markers + content + cursor — atomic as far as the terminal is concerned
+      if (out.length || cursorSuffix) process.stdout.write(ansi.syncUpdateStart + out.join("") + ansi.syncUpdateEnd + cursorSuffix)
     } catch (e) {
       // Don't let a render error crash the TUI
     }
@@ -325,11 +435,11 @@ export async function startTUI(agent, opts = {}) {
       return
     }
 
-    // While processing: queue for later, don't execute immediately
+    // While processing: queue for later, don't execute immediately.
+    // The queue panel (renderQueue) already shows pending items — don't also
+    // push to the conversation area, or the text scrolls up with streaming tokens.
     if (state.processing) {
       state.queue.push({ text })
-      pushLabel(`❯ You: (queued #${state.queue.length})`, ansi.bold + C.user)
-      pushLine(text, C.dim)
       render()
       return
     }
@@ -347,7 +457,7 @@ export async function startTUI(agent, opts = {}) {
 
   // Agent loop: implemented in agent-turn.mjs
   const turnCtx = {
-    agent, state, pushLine, pushLabel, render, scheduleRender, ensureAssistantLabel,
+    agent, state, pushLine, pushLabel, render, scheduleRender: render, ensureAssistantLabel,
     askPermission, askQuestion, handleSlash: null, summarize,
     get assistantLabeled() { return assistantLabeled },
     set assistantLabeled(v) { assistantLabeled = v },

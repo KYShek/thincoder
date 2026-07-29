@@ -11,7 +11,8 @@ import {
   isDestructiveCommand,
   hasFileRedirection,
   insideGitRepo,
-  globToRegex
+  globToRegex,
+  normalizeEOL,
 } from "./shared.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { readFile, readdir, stat, lstat } from "node:fs/promises";
@@ -222,6 +223,8 @@ async function* walkFiles(dir, rel = "") {
     return
   }
   for (const e of entries) {
+    // Skip ignored dirs AND symbolic links (symlinks to directories would cause infinite loops)
+    if (e.isSymbolicLink()) continue
     if (e.isDirectory() && IGNORED_DIRS.has(e.name)) continue
     const relPath = rel ? `${rel}/${e.name}` : e.name
     if (e.isDirectory()) {
@@ -253,7 +256,12 @@ export const grepTool = {
   readonly: true,
   async execute(args, ctx) {
     const base = resolveInCwd(ctx, args.path ?? ".")
-    const regex = new RegExp(args.pattern)
+    let regex
+    try {
+      regex = new RegExp(args.pattern)
+    } catch (e) {
+      throw new Error(`grep pattern /${args.pattern}/ is not a valid regex: ${e.message}`)
+    }
     const fileFilter = args.glob ? globToRegex(args.glob) : null
     const before = Math.max(0, Math.floor(args.before ?? 0))
     const after = Math.max(0, Math.floor(args.after ?? 0))
@@ -267,7 +275,7 @@ export const grepTool = {
         // Large file guard: skip files over 10MB to prevent OOM
         const fst = await stat(file)
         if (fst.size > 10_000_000) return
-        content = await readFile(file, "utf8")
+        content = normalizeEOL(await readFile(file, "utf8"))
       } catch {
         return // Skip unreadable files; binary files will be read as UTF-8 and searched (may produce garbled matches)
       }
@@ -346,7 +354,13 @@ export const lsTool = {
   readonly: true,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path ?? ".")
-    const entries = await readdir(abs, { withFileTypes: true })
+    let entries
+    try {
+      entries = await readdir(abs, { withFileTypes: true })
+    } catch (e) {
+      if (e.code === "ENOENT" || e.code === "ENOTDIR") throw new Error(`ls: ${args.path ?? "."} — ${e.code === "ENOTDIR" ? "not a directory" : "not found"}`)
+      throw e
+    }
     const rows = await Promise.all(
       entries.slice(0, 500).map(async (e) => {
         const s = await stat(join(abs, e.name)).catch(() => null)

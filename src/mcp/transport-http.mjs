@@ -1,7 +1,7 @@
 /**
  * mcp/transport-http.mjs — MCP HTTP + SSE transport (Streamable HTTP)
  */
-import { rpcId, CALL_TIMEOUT_MS, ENDPOINT_WAIT_MS, withTimeout } from "./helpers.mjs"
+import { rpcId, CALL_TIMEOUT_MS, ENDPOINT_WAIT_MS, INIT_TIMEOUT_MS, withTimeout } from "./helpers.mjs"
 
 /** Create an MCP HTTP+SSE transport for Streamable HTTP servers */
 export function httpTransport(baseURL, extraHeaders = {}) {
@@ -56,10 +56,11 @@ export function httpTransport(baseURL, extraHeaders = {}) {
     if (closed) return
     abortController?.abort()
     abortController = new AbortController()
+    const signal = AbortSignal.any([abortController.signal, AbortSignal.timeout(INIT_TIMEOUT_MS)])
     const resp = await fetch(url, {
       method: "GET",
       headers: { Accept: "text/event-stream", ...extraHeaders },
-      signal: abortController.signal,
+      signal,
     })
     if (!resp.ok) throw new Error(`SSE connect failed: HTTP ${resp.status}`)
     eventSource = parseSSE(resp)

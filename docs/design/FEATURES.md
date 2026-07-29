@@ -117,7 +117,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| 纯 ANSI | 零依赖框架，alt buffer 切换，退出自动清屏 |
+| 纯 ANSI | 零依赖框架，alt buffer 切换，退出自动清屏，增量渲染无闪烁 |
 | 流式输出 | token 实时滚动，thinking 灰色斜体 |
 | 权限审批 | 操作前预览 diff/命令，y/n/a（a=开 AUTO） |
 | 输入队列 | processing 时可继续打字，Ctrl+D 删队尾 |

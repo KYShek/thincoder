@@ -20,6 +20,13 @@ export const BASH_TIMEOUT_MS = 120_000
 export const MAX_RESPONSE_BODY_BYTES = 5_000_000
 export const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage"])
 
+/** Normalize Windows line endings to Unix: \r\n → \n.
+ *  Applied on every text-file read so that edit/hash matching
+ *  and hash computation are platform-consistent. */
+export function normalizeEOL(text) {
+  return text.replace(/\r\n/g, "\n")
+}
+
 /** Convert to OpenAI tools parameter format */
 export function toOpenAISchema(tool) {
   return {

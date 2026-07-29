@@ -84,7 +84,9 @@ async function requestWithRetry(embedder, input, signal) {
           Authorization: `Bearer ${embedder.apiKey}`,
         },
         body: JSON.stringify({ model: embedder.model, input }),
-        signal,
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+          : AbortSignal.timeout(60_000),
       })
     } catch (error) {
       if (error.name === "AbortError") throw error

@@ -205,6 +205,22 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.8.13 (2026-07)
+- **TUI: incremental rendering** — panel-level cache (`panelCache`) with sync-update bracketing (`DECSET 2026`). Only redraws changed panels, eliminating flicker. `saveCursor`/`restoreCursor` for efficient cursor positioning. Panel order reorganized: `header → conversation → subagent → output → todo → picker → permission → queue → input → status`.
+- **Ctrl+I inject resume** — Ctrl+I (or Tab during processing) now properly interrupts, injects the message, and *resumes* the agent loop. Controller is recreated after abort. Added active signal check in SSE read loop for faster abort on Windows.
+- **Processing hints** — Input box shows "Ctrl+U clear" hint during processing. Tab during processing treated as Ctrl+I. Slash commands re-render the frame.
+- **Compression visibility** — `compressIfNeeded` now forwards `onToken`/`onReasoning` callbacks, making compression activity visible in the TUI.
+- **Session: data-preserving fallback** — when atomic rename fails during session save, fall back to direct write instead of losing data.
+- **Distill: balanced-bracket JSON extraction** — handles nested arrays in LLM output (e.g. `"tags": ["a", "b"]`), replacing the broken non-greedy regex approach.
+- **File tools: EOL normalization** — `normalizeEOL` (`\r\n` → `\n`) applied on all reads (`read`, `edit`, `hashline_edit`, `insert_after`, `grep`, `repomap`), making hash computation and string matching platform-consistent.
+- **hashline_edit: multiple-match detection** — when a hash sequence matches multiple positions, reports all with surrounding context instead of silently picking one.
+- **delete: symlink-safe** — uses `lstat` instead of `stat` to correctly identify symlinks (not directories even if pointing to one).
+- **repomap: large file guard** — skip files >10MB in dependency outline builds to prevent OOM.
+- **Improved error messages** — `grep` and `insert_after` now catch invalid regex patterns at validation time with clear error messages.
+- **Advisor session persistence** — advisor config saved/restored across sessions.
+- **Timeout hardening** — auto-think uses `AbortSignal.timeout(5s)`, embedding requests add 60s timeout, MCP HTTP connect uses `INIT_TIMEOUT_MS`, fetch timeout extended to 10 minutes.
+- **ClearScreen on exit** — terminal restored with `clearScreen` ANSI on TUI cleanup.
+
 ### 0.8.12 (2026-07)
 - **Indexing: git-repo-only** — `codeSync` and `docSync` now only index inside git worktrees (via `git ls-files`), respecting `.gitignore`. Non-git directories get empty indexes. Prevents 2.9GB memory.db from accidentally indexing entire user profiles (AppData, browser extensions, Office add-ins, Program Files)
 - **Indexing: file-size caps** — code files >1MB and doc files >512KB are skipped during bulk indexing (minified bundles, test fixtures, generated code)

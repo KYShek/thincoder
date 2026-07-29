@@ -143,7 +143,7 @@ function applyCompression(agent, headEnd, tailStart, note) {
  * Only called at safe points in the loop (history ends with user or tool message — a complete exchange boundary).
  * Automatically re-injects task list state after compaction.
  */
-export async function compressIfNeeded(agent, threshold) {
+export async function compressIfNeeded(agent, threshold, callbacks) {
   const history = agent.history
   // Prefer the real baseline: the last response's prompt_tokens is the measured value for the full context (system+tools+history).
   // Subsequent appended messages use estimation as increment; when no measured value exists (first turn / after restore / right after compaction), fall back to pure estimation
@@ -174,6 +174,8 @@ export async function compressIfNeeded(agent, threshold) {
   // The summary is a plain-text task, no reasoning needed — passing thinking to the compaction provider wastes tokens
   const summary = await chat({ ...agent.provider, thinking: null, reasoningEffort: null }, {
     messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
+    onToken: callbacks?.onToken,
+    onReasoning: callbacks?.onReasoning,
   })
 
   applyCompression(agent, split.headEnd, split.tailStart, COMPACTION_PREFIX + summary.content)

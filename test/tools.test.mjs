@@ -725,3 +725,153 @@ test("hashline_edit: hash 未匹配时报错含当前哈希", async () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("hashline_edit: 多个匹配时报错列出所有位置", async () => {
+  const { hashLine } = await import("../src/tools/file.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-hashline-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    // File with multiple empty lines — all have the same hash
+    const lines = [
+      "// file with blanks",  // unique hash
+      "",                       // empty-line hash (collides across all empties)
+      "const a = 1",            // unique hash
+      "",                       // collides
+      "const b = 2",            // unique hash
+      "",                       // collides
+    ]
+    await byName.write.execute({ path: "f.mjs", content: lines.join("\n") }, ctx)
+
+    // Try to replace a single empty line — it will match 3 positions
+    const emptyHash = hashLine("")
+    await assert.rejects(
+      () => byName.hashline_edit.execute({
+        path: "f.mjs",
+        old_hashes: [emptyHash],
+        new_content: "// replaced",
+      }, ctx),
+      /matches 3 positions.*ambiguous/s
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- normalizeEOL (Windows line endings)
+
+test("normalizeEOL: \\r\\n file → edit matches with \\n only", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-eol-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    // Write file with Windows line endings directly to disk (bypass write tool which uses \n)
+    writeFileSync(join(dir, "f.mjs"), "hello\r\nworld\r\n", "utf8")
+
+    // edit should still match with \n-only old_string (normalizeEOL kicks in)
+    const out = await byName.edit.execute({
+      path: "f.mjs",
+      old_string: "hello\nworld",
+      new_string: "replaced",
+    }, ctx)
+    assert.ok(out.includes("replaced 1 occurrence"), out)
+
+    // Verify final content has \n only (tools always write \n)
+    const content = readFileSync(join(dir, "f.mjs"), "utf8")
+    assert.strictEqual(content, "replaced\n")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("normalizeEOL: hashes are consistent regardless of \\r\\n", async () => {
+  const { hashLine } = await import("../src/tools/file.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-eol2-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    // Write file with \r\n, reading should give same hashes as \n-only version
+    writeFileSync(join(dir, "crlf.mjs"), "const a = 1\r\nconst b = 2\r\n", "utf8")
+
+    const readOut = await byName.read.execute({ path: "crlf.mjs", hashes: true }, ctx)
+    const hash1 = readOut.split("\n")[0].match(/\[([a-f0-9]{12})\]/)[1]
+
+    // Compare against hash of \n-only line
+    const expectedHash = hashLine("const a = 1")
+    assert.strictEqual(hash1, expectedHash)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- insert_after regex validation
+
+test("insert_after: invalid regex gives helpful error", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-insert-re-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    await byName.write.execute({ path: "f.mjs", content: "hello\nworld\n" }, ctx)
+
+    await assert.rejects(
+      () => byName.insert_after.execute({
+        path: "f.mjs",
+        after_regex: "**bad**",
+        content: "// inserted",
+      }, ctx),
+      /not a valid JavaScript regex/
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- grep regex validation
+
+test("grep: invalid regex gives helpful error", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-grep-re-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    await byName.write.execute({ path: "f.mjs", content: "hello\nworld\n" }, ctx)
+
+    await assert.rejects(
+      () => byName.grep.execute({ pattern: "**bad**", path: "." }, ctx),
+      /not a valid regex/
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- grep \r\n normalization
+
+test("grep: \\r\\n file still matches", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-grep-eol-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    writeFileSync(join(dir, "crlf.mjs"), "hello world\r\nconst x = 1\r\n", "utf8")
+
+    const out = await byName.grep.execute({ pattern: "hello", path: "." }, ctx)
+    assert.ok(out.includes("crlf.mjs"), out)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- ls missing directory
+
+test("ls: missing directory gives helpful error", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-ls-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    await assert.rejects(
+      () => byName.ls.execute({ path: "nonexistent" }, ctx),
+      /not found/
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

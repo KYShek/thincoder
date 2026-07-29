@@ -6,7 +6,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
-import { stat } from "node:fs/promises";
+import { stat, lstat } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
 import { unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -206,8 +206,12 @@ export const deleteTool = {
   readonly: false,
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
-    if (!existsSync(abs)) throw new Error(`File not found: ${args.path}`)
-    const s = await stat(abs)
+    let s
+    try {
+      s = await lstat(abs)
+    } catch {
+      throw new Error(`File not found: ${args.path}`)
+    }
     if (s.isDirectory()) throw new Error(`"${args.path}" is a directory — use bash to remove directories`)
     // git-tracked files: refuse direct deletion (safety net); untracked: allow
     // Use resolved relative path (normalized forward slashes) to prevent backslash/unusual paths from bypassing ls-files matching
