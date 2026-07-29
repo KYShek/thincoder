@@ -232,7 +232,7 @@ export const verifyTool = {
 function runTestFile(cwd, testPath, ctx) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", ["--test", testPath], {
-      cwd, shell: true, stdio: ["ignore", "pipe", "pipe"],
+      cwd, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, FORCE_COLOR: "0" },
     })
     let stdout = ""

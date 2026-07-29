@@ -100,7 +100,7 @@ export const subagentTool = {
         ? (name, args) => ctx.callbacks.onToolCall(`${relayPrefix}${name}`, args)
         : null,
     }
-    const childRunOpts = { depth: (ctx.depth ?? 0) + 1, maxTurns: DEFAULT_SUBAGENT_TURNS }
+    const childRunOpts = { depth: (ctx.depth ?? 0) + 1, maxTurns: ctx.agent?.config?.agent?.subagentTurns ?? DEFAULT_SUBAGENT_TURNS }
     let report = await runAgent(child, input, childOpts, childRunOpts)
 
     // Report too short = incomplete handoff: send back for expansion once (inspired by kimi-code's summaryPolicy: min 200 chars, retry 1 time).

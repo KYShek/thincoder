@@ -30,6 +30,7 @@ export async function runAgentTurn(ctx, text) {
   state.currentTool = null
   state.processingStarted = Date.now()
   state.controller = new AbortController()
+  state.interruptPrompt = null
   // Refresh status bar every second during processing (elapsed timer)
   const ticker = setInterval(() => {
     if (state.processing) render()
@@ -179,10 +180,13 @@ export async function runAgentTurn(ctx, text) {
       state.tokens.completion += usage.completion_tokens ?? 0
       state.tokens.cacheHit += usage.prompt_cache_hit_tokens ?? 0
       state.tokens.cacheMiss += usage.prompt_cache_miss_tokens ?? 0
+      state.tokens.reasoningTokens += usage.completion_tokens_details?.reasoning_tokens ?? 0
     },
     // Throttle wait (active gate / 429 backoff): show in status bar so user knows it's not frozen
     onWait: ({ phase, seconds }) => {
-      state.status = phase === "gate" ? `TPM throttle wait ~${seconds}s` : `Rate-limited 429, retry in ${seconds}s`
+      if (phase === "gate") state.status = `TPM throttle wait ~${seconds}s`
+      else if (phase === "overloaded") state.status = `Server overloaded, retrying in ${seconds}s`
+      else state.status = `Rate-limited 429, retry in ${seconds}s`
       render()
     },
     onTaskUpdate: (items) => {
@@ -192,6 +196,9 @@ export async function runAgentTurn(ctx, text) {
       const current = items.find((i) => i.status === "in_progress")
       pushLine(`  [task] ${done}/${items.length}${current ? ` ▶ ${current.title}` : ""}`, C.dim)
       render()
+    },
+    onAdvisor: (note) => {
+      pushLine(`  [advisor] ${note.replace(/\n/g, "\n  ")}`, C.advisor)
     },
     // Incremental save: flush to disk every 5 tool turns — mid-crash loss window shrinks from an entire round to a few turns
     onTurnEnd: (() => {

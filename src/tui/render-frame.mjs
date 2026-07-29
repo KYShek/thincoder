@@ -40,8 +40,11 @@ export function renderFrame(state, agent, opts) {
   const thinking = agent.provider.thinking
   const effort = agent.provider.reasoningEffort
   const isMultimodal = specForModel(model).multimodal
+  const spec = specForModel(model)
+  const thinkOnValue = spec.thinkOnValue ?? "enabled"
   const thinkBadge = thinking?.type === "disabled" ? "│ think: off"
-    : effort ? `│ think: ${effort}` : thinking?.type === "enabled" ? "│ think: on" : ""
+    : effort ? `│ think: ${effort}`
+    : thinking?.type === thinkOnValue ? "│ think: on" : ""
 
   const out = [ansi.home]
   let cursorRow = 0, cursorCol = 0
@@ -145,17 +148,19 @@ export function renderFrame(state, agent, opts) {
   // ---- queue preview ----
   if (panels.queue) {
     const preview = sliceByWidth(state.queue[0].text, W - 20)
-    out.push(`${C.dim}❯ Queue: ${state.queue.length} pending${state.queue.length > 1 ? ` (next: ${preview}…)` : ` (next: ${preview})`} — Ctrl+D delete${ansi.reset}${ansi.clearLine}`)
+    out.push(`${C.dim}❯ Queue: ${state.queue.length} pending${state.queue.length > 1 ? ` (next: ${preview}…)` : ` (next: ${preview})`} — Ctrl+D delete │ Ctrl+I inject${ansi.reset}${ansi.clearLine}`)
   }
 
   // ---- input box ----
   const { borderColor, title } = inputBoxStyle(state)
   let topBorder
-  if (title === " Input " || title === " Question ") {
+  if (title === " Input " || title === " Question " || title === " Inject Message ") {
     const parts = []
     if (title === " Input ") parts.push(" Ctrl+U clear ")
     if (title === " Question ") parts.push(" Enter submit ")
+    if (title === " Inject Message ") parts.push(" Enter send, Esc cancel ")
     parts.push(" Ctrl+V paste ")
+    parts.push(" Ctrl+I inject ")
     const hint = parts.join("")
     topBorder = `╭─${title}${"─".repeat(Math.max(0, W - 4 - stringWidth(title) - stringWidth(hint)))}${hint}─╮`
   } else {
@@ -173,9 +178,10 @@ export function renderFrame(state, agent, opts) {
   const statusLine = buildStatusLine(state, agent, { cols, slashCommands })
   const autoBanner = agent.autoApprove ? `${C.warn} AUTO${ansi.reset}${ansi.dim}│` : ""
   const planBanner = agent.planMode ? `${C.tool} PLAN${ansi.reset}${ansi.dim}│` : ""
-  const bannerPrefix = (agent.planMode ? " PLAN│ " : "") + (agent.autoApprove ? " AUTO│ " : "")
+  const advisorBanner = agent.config?.advisor?.enabled ? `${C.advisor} ADVISOR${ansi.reset}${ansi.dim}│` : ""
+  const bannerPrefix = (agent.planMode ? " PLAN│ " : "") + (agent.autoApprove ? " AUTO│ " : "") + (agent.config?.advisor?.enabled ? " ADVISOR│ " : "")
   const statusMax = cols - 1 - (bannerPrefix ? stringWidth(bannerPrefix) : 0)
-  out.push(`${ansi.dim}${planBanner}${autoBanner}${sliceByWidth(statusLine, Math.max(10, statusMax))}${ansi.reset}${ansi.clearLine}`)
+  out.push(`${ansi.dim}${planBanner}${autoBanner}${advisorBanner}${sliceByWidth(statusLine, Math.max(10, statusMax))}${ansi.reset}${ansi.clearLine}`)
 
   const frame = out.join("\r\n")
 
@@ -239,7 +245,10 @@ function buildConvLines(state, cols) {
 function inputBoxStyle(state) {
   let borderColor = C.tool
   let title
-  if (state.question) {
+  if (state.interruptPrompt) {
+    borderColor = C.warn
+    title = " Inject Message "
+  } else if (state.question) {
     borderColor = C.tool
     title = " Question "
   } else if (state.permission) {
@@ -308,7 +317,7 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
   const fmtK = (n) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
   const cacheTotal = tk.cacheHit + tk.cacheMiss
   const tokenHint = tk.prompt > 0
-    ? ` │ ↑${fmtK(tk.prompt)} ↓${fmtK(tk.completion)}${cacheTotal > 0 ? ` hit${Math.round((tk.cacheHit / cacheTotal) * 100)}%` : ""}`
+    ? ` │ ↑${fmtK(tk.prompt)} ↓${fmtK(tk.completion)}${tk.reasoningTokens > 0 ? ` ✦${fmtK(tk.reasoningTokens)}` : ""}${cacheTotal > 0 ? ` hit${Math.round((tk.cacheHit / cacheTotal) * 100)}%` : ""}`
     : ""
   const elapsed = state.processing ? ` ${Math.floor((Date.now() - state.processingStarted) / 1000)}s` : ""
   const toolHint = state.currentTool ? ` ${state.currentTool}…` : ""
@@ -321,7 +330,7 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
       : ` │ context ${ctxPct}%`
     : ""
   const queueHint = state.queue.length > 0 ? ` │ queue: ${state.queue.length}` : ""
-  return ` ${statusText}${taskHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+C: exit`
+  return ` ${statusText}${taskHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+I: inject │ Ctrl+C: exit`
 }
 
 /** Summarize tool args for subagent panel display (one line, short). Pure. */

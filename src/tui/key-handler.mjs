@@ -114,6 +114,38 @@ export function createKeyHandler(ctx) {
       setTimeout(() => process.exit(0), 100)
     }
 
+    // Ctrl+I: interrupt current generation and inject a message (time-travel inject)
+    if (key.ctrl && !key.alt && key.name === "i") {
+      if (state.processing && state.controller && !state.interruptPrompt) {
+        state.interruptPrompt = { text: "" }
+        render()
+      }
+      return
+    }
+
+    // Interrupt prompt mode: type message, Enter to inject, Esc to cancel
+    if (state.interruptPrompt) {
+      if (key.name === "escape") {
+        state.interruptPrompt = null
+        render()
+      } else if (key.name === "return") {
+        const msg = (state.interruptPrompt.text ?? "").trim()
+        state.interruptPrompt = null
+        if (msg) {
+          pushLine(`  [inject] ${msg}`, C.warn)
+          state.controller.abort({ interrupt: true, message: msg })
+          render()
+        }
+      } else if (key.name === "backspace") {
+        state.interruptPrompt.text = state.interruptPrompt.text.slice(0, -1)
+        render()
+      } else if (str && !key.ctrl && !key.meta) {
+        state.interruptPrompt.text += str.replace(/[\r\n]+/g, "")
+        render()
+      }
+      return
+    }
+
     // generic list picker: ↑↓ move, Enter confirm, Esc cancel
     if (state.picker) {
       const items = state.picker?.entries.filter((e) => e.type === "item") ?? []

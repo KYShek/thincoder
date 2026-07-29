@@ -8,6 +8,7 @@ import {
   resolveExternal,
 } from "./shared.mjs";
 import { specForModel } from "../config.mjs";
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { stat } from "node:fs/promises";
@@ -28,6 +29,7 @@ export const readTool = {
       offset: { type: "number", description: "1-based line number to start from" },
       limit: { type: "number", description: `Max lines to return (default ${MAX_READ_LINES})` },
       allowExternal: { type: "boolean", description: "Allow reading files outside the working directory. Only set true when the user explicitly provided an external path — never use this to explore beyond cwd on your own." },
+      hashes: { type: "boolean", description: "Include SHA256 line hashes for hash-based editing (default false). Use when you plan to edit the file with hashline_edit." },
     },
     required: ["path"],
   },
@@ -42,7 +44,14 @@ export const readTool = {
     const offset = Math.max(1, args.offset ?? 1)
     const limit = Math.min(args.limit ?? MAX_READ_LINES, MAX_READ_LINES)
     const slice = lines.slice(offset - 1, offset - 1 + limit)
-    const numbered = slice.map((l, i) => `${offset + i}\t${l}`).join("\n")
+    const numbered = slice.map((l, i) => {
+      const ln = offset + i
+      if (args.hashes) {
+        const h = createHash("sha256").update(l).digest("hex").slice(0, 12)
+        return `${ln}\t[${h}] ${l}`
+      }
+      return `${ln}\t${l}`
+    }).join("\n")
     const suffix = offset - 1 + limit < lines.length ? `\n... (${lines.length} lines total, use offset to continue)` : ""
     return truncate(numbered + suffix)
   },
@@ -216,6 +225,68 @@ export const insertAfterTool = {
     await writeFile(abs, updated, "utf8")
     const diff = gitDiffOne(ctx.cwd, abs)
     return `Inserted after line ${targetLine} in ${args.path}${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
+  },
+}
+
+// ---------------------------------------------------------------- hashline_edit
+
+/**
+ * Compute a 12-char hex SHA256 hash for a line (exact content, no trimming).
+ * Used by both read (hashes=true) and hashline_edit for hash-based matching.
+ */
+export function hashLine(content) {
+  return createHash("sha256").update(content).digest("hex").slice(0, 12)
+}
+
+export const hashlineEditTool = {
+  name: "hashline_edit",
+  description: DESC("hashline_edit"),
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path" },
+      old_hashes: { type: "array", items: { type: "string" }, description: "SHA256 hashes (12 chars) of the lines to replace. Read the file with hashes=true first to obtain these hashes. Single line: pass 1 hash; multiple lines: pass the exact sequence of hashes." },
+      new_content: { type: "string", description: "Replacement text (can span multiple lines)" },
+    },
+    required: ["path", "old_hashes", "new_content"],
+  },
+  readonly: false,
+  async execute(args, ctx) {
+    const abs = resolveInCwd(ctx, args.path)
+    if (!args.old_hashes?.length) throw new Error("old_hashes must not be empty — read the file with hashes=true to get line hashes")
+    const content = await readFile(abs, "utf8")
+    const lines = content.split("\n")
+    const fileHashes = lines.map((l) => hashLine(l))
+    const target = args.old_hashes
+
+    // Sliding-window match: find the exact sequence of hashes
+    let pos = -1
+    for (let i = 0; i <= fileHashes.length - target.length; i++) {
+      let match = true
+      for (let j = 0; j < target.length; j++) {
+        if (fileHashes[i + j] !== target[j]) { match = false; break }
+      }
+      if (match) { pos = i; break }
+    }
+
+    if (pos === -1) {
+      // Help the model recover: show the current file hashes for context
+      const maxShow = Math.min(fileHashes.length, 50)
+      const hashDump = fileHashes.slice(0, maxShow).map((h, i) => `${h}  L${i + 1}: ${lines[i].slice(0, 80)}`).join("\n")
+      const preview = target.join(" ")
+      throw new Error(
+        `Hash sequence not found in ${args.path}: ${preview}\n` +
+        `The file may have been modified since you last read it. Current hashes (first ${maxShow} lines):\n${hashDump}`
+      )
+    }
+
+    // Replace: remove old lines, insert new lines at the same position
+    const newLines = args.new_content.split("\n")
+    lines.splice(pos, target.length, ...newLines)
+    const updated = lines.join("\n")
+    await writeFile(abs, updated, "utf8")
+    const diff = gitDiffOne(ctx.cwd, abs)
+    return `Edited ${args.path}: replaced ${target.length} line(s) at L${pos + 1} with ${newLines.length} line(s)${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },
 }
 

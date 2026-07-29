@@ -2,6 +2,37 @@
  * agent/dispatch.mjs — two-phase tool call execution
  */
 import { offloadToolResult } from "./helpers.mjs"
+import { writeFileSync, mkdirSync, existsSync } from "node:fs"
+import { join } from "node:path"
+import { homedir } from "node:os"
+
+const ERRORS_DIR = join(homedir(), ".thincoder", "tool-errors")
+
+/**
+ * Persist a tool error to ~/.thincoder/tool-errors/YYYY-MM-DD/HHmmss-toolName.log
+ * Only called for actual execution failures and malformed invocations.
+ * Skipped for intentional denials (plan mode, user reject).
+ */
+function logToolError(toolName, args, error) {
+  try {
+    const now = new Date()
+    const ymd = now.toISOString().slice(0, 10)
+    const ts = now.toISOString().replace(/:/g, "").replace(/\..+/, "").replace("T", "-")
+    const dir = join(ERRORS_DIR, ymd)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const file = join(dir, `${ts}-${toolName.replace(/[/\\]/g, "_")}.log`)
+    const entry = [
+      `time: ${now.toISOString()}`,
+      `tool: ${toolName}`,
+      `args: ${JSON.stringify(args, null, 2)}`,
+      `error: ${error?.message ?? String(error)}`,
+      error?.stack ? `stack:\n${error.stack}` : "",
+    ].filter(Boolean).join("\n") + "\n"
+    writeFileSync(file, entry, "utf8")
+  } catch {
+    // Log failure itself must not crash the agent
+  }
+}
 
 /**
  * Two-phase execution:
@@ -19,11 +50,13 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
     try {
       args = JSON.parse(toolCall.arguments || "{}")
     } catch {
+      logToolError(toolCall.name, { arguments: toolCall.arguments }, new Error("Invalid JSON arguments"))
       prepared.push({ toolCall, tool: null, error: `Invalid tool arguments JSON: ${toolCall.arguments}` })
       continue
     }
 
     if (!tool) {
+      logToolError(toolCall.name, {}, new Error(`Unknown tool: ${toolCall.name}`))
       prepared.push({ toolCall, tool: null, error: `Unknown tool: ${toolCall.name}` })
       continue
     }
@@ -79,8 +112,8 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       callbacks.onToolResult?.(item.toolCall.name, result)
       return { ...item, result, ok: true }
     } catch (error) {
-      // Log full error for debugging; only pass message to the model (stack traces confuse LLMs and may leak paths)
-      console.error(`[dispatch] tool "${item.toolCall.name}" failed:`, error)
+      // Persist to ~/.thincoder/tool-errors/ for post-mortem; only pass message to the model (stack traces confuse LLMs and may leak paths)
+      logToolError(item.toolCall.name, item.args, error)
       return { ...item, result: `Error: ${error.message}`, ok: false }
     }
   }

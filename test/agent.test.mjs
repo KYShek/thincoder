@@ -154,11 +154,11 @@ test("session: 畸形 display 不让 TUI 启动崩溃（schema 校验+净化）"
 // ---------------------------------------------------------------- 模型上下文窗口 / 阈值推导
 
 test("config: 上下文窗口映射与压缩阈值推导", async () => {
-  const { contextWindowForModel, resolveCompactThreshold } = await import("../src/config.mjs")
-  assert.equal(contextWindowForModel("deepseek-v4-pro"), 1_000_000)
-  assert.equal(contextWindowForModel("deepseek-v4-flash"), 256_000)
-  assert.equal(contextWindowForModel("DeepSeek-V4-Pro"), 1_000_000) // 大小写不敏感
-  assert.equal(contextWindowForModel("unknown-model-xyz"), 128_000) // 未知兜底
+  const { specForModel, resolveCompactThreshold } = await import("../src/config.mjs")
+  assert.equal(specForModel("deepseek-v4-pro").context, 1_000_000)
+  assert.equal(specForModel("deepseek-v4-flash").context, 1_000_000)
+  assert.equal(specForModel("DeepSeek-V4-Pro").context, 1_000_000) // 大小写不敏感
+  assert.equal(specForModel("unknown-model-xyz").context, 128_000) // 未知兜底
 
   // 显式配置优先
   assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
@@ -458,7 +458,7 @@ test("provider: DeepSeek Prefix Completion——length 时走 /beta 端点 prefi
     assert.equal(result.content, "前半段后半段")
     assert.equal(result.finishReason, "stop")
     assert.equal(requests.length, 2)
-    // 续写请求走 /beta 端点，尾部 assistant 消息带 prefix:true（无 partial、无 reasoning_content）
+    // 续写请求走 /beta 端点，尾部 assistant 消息带 prefix:true（此用例无 reasoning 故不含 reasoning_content）
     assert.equal(requests[0]._url, "/v1/chat/completions")
     assert.equal(requests[1]._url, "/beta/chat/completions")
     const tail = requests[1].messages.at(-1)
@@ -472,16 +472,27 @@ test("provider: DeepSeek Prefix Completion——length 时走 /beta 端点 prefi
   }
 })
 
-test("provider: DeepSeek Prefix 续写不处理思考模式（已产出 reasoning 直接返回）", async () => {
+test("provider: DeepSeek Prefix 续写支持思考模式——reasoning_content 回传 /beta 端点续写", async () => {
   const { chat } = await import("../src/provider/index.mjs")
-  const script = [{ content: "截断了", finishReason: "length", reasoning: "思考链" }]
+  const script = [
+    { content: "截断了", finishReason: "length", reasoning: "思考链" },
+    { content: "续写内容" },
+  ]
   const { server, port, requests } = await mockLLM(script)
   try {
     const ds = { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: "x", model: "deepseek-v4-pro" }
     const result = await chat(ds, { messages: [{ role: "user", content: "hi" }] })
-    assert.equal(result.content, "截断了")
-    assert.equal(result.finishReason, "length")
-    assert.equal(requests.length, 1) // 无续写请求
+    assert.equal(result.content, "截断了续写内容")
+    assert.equal(result.reasoning, "思考链")
+    assert.equal(result.finishReason, "stop")
+    assert.equal(requests.length, 2) // 续写请求已发出
+    // 续写请求的 prefix 消息应携带 reasoning_content
+    const tail = requests[1].messages.at(-1)
+    assert.equal(tail.role, "assistant")
+    assert.equal(tail.prefix, true)
+    assert.equal(tail.partial, undefined)
+    assert.equal(tail.reasoning_content, "思考链")
+    assert.equal(tail.content, "截断了")
   } finally {
     server.close()
   }
@@ -1310,11 +1321,11 @@ test("runAgent: 目录树注入仅顶层（depth 0 有，depth 1 无）", async 
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
     const main = createAgent({ provider, tools: [], config: {}, cwd })
     await runAgent(main, "测试")
-    assert.ok(main.history.some((m) => typeof m.content === "string" && m.content.includes("System reminder: working directory snapshot") && m.content.includes("marker-file.js")))
+    assert.ok(main.history.some((m) => typeof m.content === "string" && m.content.includes("Working directory snapshot:") && m.content.includes("marker-file.js")))
 
     const child = createAgent({ provider, tools: [], config: {}, cwd })
     await runAgent(child, "测试", {}, { depth: 1 })
-    assert.ok(!child.history.some((m) => typeof m.content === "string" && m.content.includes("System reminder: working directory snapshot")))
+    assert.ok(!child.history.some((m) => typeof m.content === "string" && m.content.includes("Working directory snapshot:")))
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()
@@ -1633,4 +1644,259 @@ test("runAgent: 非视觉模型 — 多模态工具结果不注入 image_url，�
   } finally {
     server.close()
   }
+})
+
+// ---------------------------------------------------------------- stream rules
+
+test("provider: compileStreamRules 编译并过滤非法正则", async () => {
+  const { compileStreamRules } = await import("../src/provider/core.mjs")
+
+  // Valid rules
+  const rules = compileStreamRules([
+    { pattern: "hello", message: "no hello", action: "abort" },
+    { pattern: "world", message: "no world", action: "warn", flags: "i" },
+  ])
+  assert.equal(rules.length, 2)
+  assert.ok(rules[0]._regex instanceof RegExp)
+  assert.equal(rules[0].message, "no hello")
+  assert.equal(rules[0].action, "abort")
+  assert.equal(rules[1].flags, "i")
+
+  // Empty/null input
+  assert.equal(compileStreamRules([]), null)
+  assert.equal(compileStreamRules(null), null)
+  assert.equal(compileStreamRules(undefined), null)
+
+  // Invalid regex is silently skipped
+  const withBad = compileStreamRules([
+    { pattern: "valid", message: "ok", action: "abort" },
+    { pattern: "[invalid", message: "bad", action: "abort" },
+  ])
+  assert.equal(withBad.length, 1)
+  assert.equal(withBad[0].message, "ok")
+})
+
+test("provider: readSSE — stream rule abort mid-generation", async () => {
+  const { readSSE, compileStreamRules } = await import("../src/provider/core.mjs")
+
+  const rules = compileStreamRules([
+    { pattern: "FORBIDDEN", message: "Do not use the word FORBIDDEN", action: "abort" },
+  ])
+
+  // Build a ReadableStream that emits SSE events in separate chunks
+  const body = new ReadableStream({
+    async start(controller) {
+      const enc = (s) => new TextEncoder().encode(s)
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "safe " } }] })}\n\n`))
+      // Small delay to encourage separate chunk delivery
+      await new Promise(r => setTimeout(r, 1))
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "text FORBIDDEN more" } }] })}\n\n`))
+      await new Promise(r => setTimeout(r, 1))
+      // This should NOT be received if abort works (but may arrive if chunks merged)
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: " after" } }] })}\n\n`))
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`))
+      controller.enqueue(enc(`data: [DONE]\n\n`))
+      controller.close()
+    }
+  })
+
+  const response = { body, headers: { get: () => "text/event-stream" } }
+  const result = await readSSE(response, { onToken: () => {}, onReasoning: () => {}, rules })
+
+  assert.equal(result.ruleTriggered, true)
+  assert.equal(result.ruleMessage, "Do not use the word FORBIDDEN")
+  assert.ok(result.content.includes("FORBIDDEN"), "partial content before abort is preserved")
+})
+
+test("provider: readSSE — no rules means no trigger", async () => {
+  const { readSSE } = await import("../src/provider/core.mjs")
+
+  const body = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(new TextEncoder().encode(
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "FORBIDDEN text" } }] })}\n\n` +
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+        `data: [DONE]\n\n`
+      ))
+      controller.close()
+    }
+  })
+
+  const response = { body, headers: { get: () => "text/event-stream" } }
+  const result = await readSSE(response, { onToken: () => {}, onReasoning: () => {}, rules: null })
+
+  assert.equal(result.ruleTriggered, undefined)
+  assert.ok(result.content.includes("FORBIDDEN"))
+  assert.equal(result.finishReason, "stop")
+})
+
+test("runAgent: stream rules — rule triggers abort and reminder is injected", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+
+  // Multi-turn mock: first response triggers the rule, second is clean
+  let callCount = 0
+  const { createServer } = await import("node:http")
+  const server = createServer((req, res) => {
+    let bodyText = ""
+    req.on("data", (c) => (bodyText += c))
+    req.on("end", () => {
+      callCount++
+      const content = callCount === 1
+        ? "This contains FORBIDDEN_WORD and should abort"
+        : "OK here is a clean response"
+      const frames =
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n` +
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+        `data: [DONE]\n\n`
+      res.writeHead(200, { "Content-Type": "text/event-stream" })
+      res.end(frames)
+    })
+  })
+  await new Promise(r => server.listen(0, "127.0.0.1", r))
+  const port = server.address().port
+
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const config = {
+      agent: {
+        streamRules: [
+          { pattern: "FORBIDDEN_WORD", message: "Reminder: do not use FORBIDDEN_WORD. Re-generate your response without it.", action: "abort" },
+        ],
+        maxTurns: 100,
+        subagentTurns: 100,
+        compactThreshold: 100000,
+        verifyGuard: false,
+      },
+    }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-stream-rules-"))
+    const agent = createAgent({ provider, tools: [], config, cwd })
+
+    const out = await runAgent(agent, "do it", {})
+    // Second turn succeeded with clean response
+    assert.ok(out.includes("clean response"), `expected clean response, got: ${out}`)
+    // History contains the reminder injection
+    assert.ok(agent.history.some(m => m.content?.includes("FORBIDDEN_WORD")), "reminder about FORBIDDEN_WORD was injected")
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+// ---------------------------------------------------------------- stream rules — warn + repeat
+
+test("provider: readSSE — warn mode does not abort, accumulates warnings", async () => {
+  const { readSSE, compileStreamRules } = await import("../src/provider/core.mjs")
+
+  const rules = compileStreamRules([
+    { pattern: "WARN_ME", message: "Please avoid WARN_ME", action: "warn" },
+  ])
+
+  const body = new ReadableStream({
+    async start(controller) {
+      const enc = (s) => new TextEncoder().encode(s)
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "safe " } }] })}\n\n`))
+      await new Promise(r => setTimeout(r, 1))
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "text WARN_ME more" } }] })}\n\n`))
+      await new Promise(r => setTimeout(r, 1))
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: " after" } }] })}\n\n`))
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`))
+      controller.enqueue(enc(`data: [DONE]\n\n`))
+      controller.close()
+    }
+  })
+
+  const response = { body, headers: { get: () => "text/event-stream" } }
+  const result = await readSSE(response, { onToken: () => {}, onReasoning: () => {}, rules })
+
+  // warn does NOT set ruleTriggered — stream completes normally
+  assert.equal(result.ruleTriggered, undefined)
+  assert.equal(result.finishReason, "stop")
+  // Full content is received (not truncated at match point)
+  assert.ok(result.content.includes("safe"), "content before match is preserved")
+  assert.ok(result.content.includes("after"), "content after match is preserved")
+  // Warning is accumulated
+  assert.equal(result._warnings.length, 1)
+  assert.equal(result._warnings[0].message, "Please avoid WARN_ME")
+})
+
+test("provider: readSSE — repeat: once deduplicates within same stream", async () => {
+  const { readSSE, compileStreamRules } = await import("../src/provider/core.mjs")
+
+  const rules = compileStreamRules([
+    { pattern: "DUP", message: "DUP warning", action: "warn", repeat: "once" },
+  ])
+
+  const body = new ReadableStream({
+    async start(controller) {
+      const enc = (s) => new TextEncoder().encode(s)
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "first DUP" } }] })}\n\n`))
+      await new Promise(r => setTimeout(r, 1))
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: " second DUP end" } }] })}\n\n`))
+      controller.enqueue(enc(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`))
+      controller.enqueue(enc(`data: [DONE]\n\n`))
+      controller.close()
+    }
+  })
+
+  const response = { body, headers: { get: () => "text/event-stream" } }
+  const result = await readSSE(response, { onToken: () => {}, onReasoning: () => {}, rules })
+
+  assert.equal(result._warnings.length, 1, "repeat:once should only record warning once")
+  assert.equal(result._warnings[0].message, "DUP warning")
+  assert.ok(result.content.includes("second"), "stream completes after repeated match")
+})
+
+// ---------------------------------------------------------------- rules discovery
+
+test("rules: discoverRules parses .md files with frontmatter", async () => {
+  const { discoverRules } = await import("../src/rules.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-rules-"))
+  const rulesDir = join(dir, ".thincoder", "rules")
+  mkdirSync(rulesDir, { recursive: true })
+
+  // Valid rule file
+  writeFileSync(join(rulesDir, "no-console.md"),
+    `---
+pattern: "console[.]log"
+action: warn
+repeat: once
+---
+Use logger instead of console.log.`
+  )
+
+  // Rule with only frontmatter, no body — uses message field
+  writeFileSync(join(rulesDir, "trailing-comma.md"),
+    `---
+pattern: ",\\\\s*}"
+message: "No trailing commas in objects"
+action: abort
+---
+`
+  )
+
+  // Non-.md file — skipped
+  writeFileSync(join(rulesDir, "readme.txt"), "not a rule")
+  // No frontmatter — skipped
+  writeFileSync(join(rulesDir, "bad.md"), "no frontmatter here")
+  // No pattern — skipped
+  writeFileSync(join(rulesDir, "empty.md"), `---\nmessage: "missing pattern"\n---\nbody`)
+
+  const rules = discoverRules(dir)
+  assert.equal(rules.length, 2)
+
+  const consoleRule = rules.find(r => r.name === "no-console")
+  assert.ok(consoleRule, "no-console rule found")
+  assert.equal(consoleRule.pattern, "console[.]log")
+  assert.equal(consoleRule.action, "warn")
+  assert.equal(consoleRule.repeat, "once")
+  assert.equal(consoleRule.message, "Use logger instead of console.log.")
+
+  const commaRule = rules.find(r => r.name === "trailing-comma")
+  assert.ok(commaRule, "trailing-comma rule found")
+  assert.equal(commaRule.action, "abort")
+  assert.equal(commaRule.message, "No trailing commas in objects")
+
+  assert.deepEqual(discoverRules(join(dir, "nonexistent")), [])
+
+  rmSync(dir, { recursive: true, force: true })
 })

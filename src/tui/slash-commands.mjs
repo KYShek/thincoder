@@ -21,6 +21,7 @@ import { handleGoalCommand } from "./cmd-goal.mjs"
 import { handleSkillsCommand } from "./cmd-skills.mjs"
 import { handleMcpCommand } from "./cmd-mcp.mjs"
 import { handleAutoCommand } from "./cmd-auto.mjs"
+import { handleAdvisorCommand } from "./cmd-advisor.mjs"
 import { handleThinkCommand } from "./cmd-think.mjs"
 import { handleModelCommand } from "./cmd-model.mjs"
 import { handleConfigCommand } from "./cmd-config.mjs"
@@ -31,6 +32,7 @@ import { handleUpgradeCommand } from "./cmd-upgrade.mjs"
 export const SLASH_COMMANDS = [
   { name: "/plan", group: "Agent", desc: "toggle plan mode (design first, then implement)" },
   { name: "/auto", group: "Agent", desc: "toggle auto-approve" },
+  { name: "/advisor", group: "Agent", desc: "toggle advisor review & select model" },
   { name: "/model", group: "Agent", desc: "select model & manage providers" },
   { name: "/goal", group: "Agent", desc: "set/view/cancel long-term goal" },
   { name: "/think", group: "Agent", desc: "thinking mode & reasoning effort" },
@@ -63,6 +65,7 @@ const HANDLERS = {
   "/skills": handleSkillsCommand,
   "/mcp": handleMcpCommand,
   "/auto": handleAutoCommand,
+  "/advisor": handleAdvisorCommand,
   "/think": handleThinkCommand,
   "/model": handleModelCommand,
   "/config": handleConfigCommand,

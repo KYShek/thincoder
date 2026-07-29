@@ -5,6 +5,7 @@ import { loadConfig, configDir } from "../config.mjs"
 import { createMemory, memoryTools, syncDir, codeSearchTool, docSearchTool } from "../memory.mjs"
 import { repoOutlineTool } from "../tools/repomap.mjs"
 import { builtinTools } from "../tools/index.mjs"
+import { discoverRules } from "../rules.mjs"
 
 /** Assemble an agent with memory, MCP tools, and code/doc indices attached (sync all layers, then return) */
 export async function assembleAgent() {
@@ -18,6 +19,14 @@ export async function assembleAgent() {
     memory.embedder = createEmbedder(config.embedding)
   }
   const cwd = process.cwd()
+  // Merge project-level rules (.thincoder/rules/*.md) into config; file rules take priority (first),
+  // config.json rules append (deduped by pattern). Users can override with explicit config rules.
+  const fileRules = discoverRules(cwd)
+  if (fileRules.length) {
+    const filePatterns = new Set(fileRules.map(r => r.pattern))
+    const configRules = (config.agent?.streamRules || []).filter(r => !filePatterns.has(r.pattern))
+    config.agent.streamRules = [...fileRules, ...configRules]
+  }
   // code/doc indices isolated by origin (project root dir): search only scoped to this project
   memory.codeOrigin = cwd
   // Project layer: sync .thincoder/memory/ dir to index on startup (sync if present, skip otherwise)

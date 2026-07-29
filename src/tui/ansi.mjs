@@ -33,4 +33,5 @@ export const C = {
   error: ansi.fg(1),
   dim: ansi.gray,
   warn: ansi.fg(3),
+  advisor: `${ESC}[92m`,  // bright green — visible on dark backgrounds
 }

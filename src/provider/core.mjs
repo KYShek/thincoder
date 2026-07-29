@@ -31,9 +31,11 @@ export function createProvider(config) {
 }
 
 /** Send a streaming chat completion request with automatic continuation on truncation */
-export async function chat(provider, { messages, tools, onToken, onReasoning, onWait, signal }) {
+export async function chat(provider, { messages, tools, onToken, onReasoning, onWait, signal, streamRules }) {
   const spec = specForModel(provider.model)
   messages = stripImagesForTextModel(messages, spec)
+  // Compile string-pattern rules to RegExp at call time
+  const rules = compileStreamRules(streamRules)
   const body = {
     model: provider.model,
     messages,
@@ -65,11 +67,42 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
   await rateGate(provider, estimated, onWait, signal)
 
   const response = await requestWithRetry(provider, body, signal, onWait)
-  const result = await readSSE(response, { onToken, onReasoning })
+  const result = await readSSE(response, { onToken, onReasoning, rules, signal })
   recordRate(provider, estimated, result.usage)
 
+  // Stream rule triggered or user interrupted mid-generation — return partial result
+  if (result.ruleTriggered) return result
+  if (result.interrupted) return result
+
+  // Retry on transient server overload (DeepSeek: insufficient_system_resource)
+  const MAX_OVERLOAD_RETRIES = 1
+  for (let r = 0; result.finishReason === "insufficient_system_resource" && r <= MAX_OVERLOAD_RETRIES; r++) {
+    if (r > 0) {
+      onWait?.({ phase: "overloaded", seconds: 3 })
+      await _rateHooks.sleep(3000)
+    }
+    const retryResponse = await requestWithRetry(provider, body, signal, onWait)
+    const retryResult = await readSSE(retryResponse, { onToken, onReasoning })
+    recordRate(provider, estimated, retryResult.usage)
+    if (retryResult.finishReason !== "insufficient_system_resource") {
+      // Merge any partial content from the failed attempt (streaming already showed it)
+      result.content += retryResult.content
+      result.reasoning += retryResult.reasoning ?? ""
+      for (const tc of retryResult.toolCalls ?? []) {
+        const idx = tc.index ?? result.toolCalls.length
+        const s = (result.toolCalls[idx] ??= { id: "", name: "", arguments: "" })
+        if (tc.id) s.id = tc.id
+        s.name += tc.name ?? ""
+        s.arguments += tc.arguments ?? ""
+      }
+      result.finishReason = retryResult.finishReason
+      if (retryResult.usage) result.usage = retryResult.usage
+      break
+    }
+    // Retry exhausted — keep the partial result with insufficient_system_resource finish_reason
+  }
+
   if (!spec.partialMode && !spec.prefixMode) return result
-  if (spec.prefixMode && !spec.partialMode && result.reasoning) return result
   for (let n = 0; result.finishReason === "length" && result.content && n < MAX_CONTINUATIONS; n++) {
     const continued = await chat(spec.prefixMode ? { ...provider, baseURL: betaBaseURL(provider.baseURL) } : provider, {
       messages: [
@@ -81,7 +114,7 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
               partial: true,
               ...(result.reasoning ? { reasoning_content: result.reasoning } : {}),
             }
-          : { role: "assistant", content: result.content, prefix: true },
+          : { role: "assistant", content: result.content, prefix: true, ...(result.reasoning ? { reasoning_content: result.reasoning } : {}) },
       ],
       tools,
       onToken,
@@ -151,8 +184,10 @@ export async function listModels(provider, { signal } = {}) {
 
 async function requestWithRetry(provider, body, signal, onWait) {
   let lastError
+  let lastStatus = 0
   let lastWas429 = false
   let rateLimitHits = 0
+  const totalAttempts = MAX_RETRIES + 1
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0 && !lastWas429) await _rateHooks.sleep(2 ** (attempt - 1) * 1000)
     lastWas429 = false
@@ -178,6 +213,7 @@ async function requestWithRetry(provider, body, signal, onWait) {
 
     const text = await response.text().catch(() => "")
     const message = `LLM API error ${response.status}: ${text}`
+    lastStatus = response.status
     if (isNonRetryableError(response.status, text)) throw new Error(message)
     if (response.status === 429) {
       const retryAfter = Number(response.headers.get("retry-after"))
@@ -199,7 +235,12 @@ async function requestWithRetry(provider, body, signal, onWait) {
     }
     throw new Error(message)
   }
-  throw lastError
+  // All retries exhausted — build a descriptive error
+  const verb = lastWas429 ? "Rate limit not resolved"
+    : lastStatus >= 500 ? "Server error persisted"
+    : lastStatus > 0 ? "Request failed"
+    : "Network error"
+  throw new Error(`${verb} after ${totalAttempts} attempts${lastStatus ? ` (${lastStatus})` : ""}: ${lastError?.message ?? "unknown"}`)
 }
 
 /**
@@ -210,7 +251,7 @@ function isNonRetryableError(status, text) {
   // Auth errors: never retry
   if (status === 401 || status === 403) return true
   // 400-level non-429: usually invalid params
-  if (status >= 400 && status < 500 && status !== 429) return true
+  if (status >= 400 && status < 500 && status !== 429 && !RETRYABLE_STATUS.has(status)) return true
   // For 429, check if it's actually a billing/quota error (not rate limit)
   if (status === 429) {
     const lower = text.toLowerCase()
@@ -230,11 +271,13 @@ function isNonRetryableError(status, text) {
   return false
 }
 
-async function readSSE(response, { onToken, onReasoning }) {
+export async function readSSE(response, { onToken, onReasoning, rules, signal }) {
   const result = { content: "", reasoning: "", toolCalls: [], usage: null, finishReason: null }
   const decoder = new TextDecoder()
   let buffer = ""
   let hasChoices = false
+  // Track patterns already fired this turn for repeat: "once" gating
+  const firedPatterns = new Set()
 
   const processLines = (lines) => {
     for (const line of lines) {
@@ -270,14 +313,52 @@ async function readSSE(response, { onToken, onReasoning }) {
   }
 
   if (!response.body) throw new Error("No stream response body")
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true })
-    const lines = buffer.split("\n")
-    buffer = lines.pop()
-    processLines(lines)
+  try {
+    for await (const chunk of response.body) {
+      buffer += decoder.decode(chunk, { stream: true })
+      const lines = buffer.split("\n")
+      buffer = lines.pop()
+      processLines(lines)
+
+      // Time-traveling stream rules: check accumulated content against patterns.
+      // Only triggers on text content (not during tool_call generation) to avoid
+      // interrupting structured tool use.
+      // action "abort": halt the stream immediately and retry with the rule injected.
+      // action "warn":  let the stream finish, then inject the warning after the turn (non-interrupting).
+      // repeat "once":  skip if this rule's pattern has already fired in the current turn.
+      if (rules?.length && result.content && !result.toolCalls.length) {
+        for (const rule of rules) {
+          if (rule.repeat === "once" && firedPatterns.has(rule.pattern)) continue
+          if (rule._regex.test(result.content)) {
+            if (rule.repeat === "once") firedPatterns.add(rule.pattern)
+            if (rule.action === "abort") {
+              result.ruleTriggered = true
+              result.ruleMessage = rule.message
+              result.ruleName = rule.name
+              return result
+            }
+            // warn: accumulate deduplicated by pattern, let the stream complete
+            const existing = result._warnings ??= []
+            if (!existing.some(w => w.pattern === rule.pattern)) {
+              existing.push({ name: rule.name, pattern: rule.pattern, message: rule.message })
+            }
+          }
+        }
+      }
+    }
+    buffer += decoder.decode()
+    processLines(buffer.split("\n"))
+  } catch (e) {
+    // User interrupt (Ctrl+I): controller.abort({ interrupt: true, message: "…" }).
+    // The interrupted signal.reason carries the user's message; return partial content
+    // so the agent loop can inject it as a user message and retry.
+    if (e.name === "AbortError" && signal?.reason?.interrupt) {
+      result.interrupted = true
+      result.interruptMessage = signal.reason.message
+      return result
+    }
+    throw e
   }
-  buffer += decoder.decode()
-  processLines(buffer.split("\n"))
 
   // If no SSE choices were found, the response is likely a JSON error
   if (!hasChoices) {
@@ -310,4 +391,20 @@ function betaBaseURL(baseURL) {
   // DeepSeek prefix continuation uses /beta endpoint; only handle /v1 suffix, append /beta when /v1 is missing
   if (/\/v1$/.test(baseURL)) return baseURL.replace(/\/v1$/, "/beta")
   return baseURL.endsWith("/") ? baseURL + "beta" : baseURL + "/beta"
+}
+
+/**
+ * Compile stream rules from config format (string patterns) to executable RegExp objects.
+ * Rules format: { pattern: "regex source", message: "reminder text", action: "abort"|"warn" }
+ */
+export function compileStreamRules(rules) {
+  if (!rules?.length) return null
+  return rules.map((r) => {
+    try {
+      return { ...r, _regex: new RegExp(r.pattern, r.flags ?? "") }
+    } catch {
+      // Invalid regex — skip silently so one bad rule doesn't break the whole pipeline
+      return null
+    }
+  }).filter(Boolean)
 }

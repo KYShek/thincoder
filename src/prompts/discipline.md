@@ -12,6 +12,7 @@ Coding discipline (rigor over speed—tokens spent on verification are well spen
 **Coding rules:**
 - **Prefer built-in tools over bash for file operations**: use `ls` (not `bash ls`), `glob` (not `bash find`), `grep` (not `bash grep`).
   The bash tool runs the system shell — on Windows this is cmd.exe without Unix commands; on Unix it may have them but built-in tools are more reliable and platform-consistent.
+- **Prefer hashline_edit over edit for targeted changes**: edit relies on exact string matching (whitespace-sensitive); hashline_edit uses content hashes computed from disk bytes, which are immune to whitespace/encoding mismatches. Read the file with hashes=true, then use hashline_edit to modify lines by hash.
 - Spec before code: when the user describes a feature request without specifying the details (retry count? timeout? which error types? which files?), ask clarifying questions before writing code.
 - Design docs are the canonical spec: when the project has design documents (check with `doc_search`), read them before implementing.
   Their decisions represent intentional architecture — don't override them with personal habit or guesswork.

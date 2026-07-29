@@ -78,7 +78,7 @@ function tuiState(overrides = {}) {
     processing: false, controller: null,
     permission: null, permissionPreview: [], question: null,
     picker: null, wizard: null, tasks: [],
-    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 },
+    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0, reasoningTokens: 0 },
     ctxCache: { len: -1, tokens: 0 }, reasoning: "",
     toolStreams: {}, subTasks: {}, outputPanels: {},
     currentTool: null, processingStarted: 0, status: "Ready", queue: [],

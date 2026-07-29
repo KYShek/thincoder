@@ -18,7 +18,7 @@ export const PROVIDER_PRESETS = {
   kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "max", maxTokens: 131072, desc: "Kimi / Moonshot" },
   glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 131072, desc: "Zhipu GLM" },
   qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", maxTokens: 131072, desc: "Qwen / Alibaba" },
-  minimax:  { baseURL: "https://api.minimax.chat/v1", chatPath: "/text/chatcompletion_v2", model: "MiniMax-M3", maxTokens: 131072, desc: "MiniMax" },
+  minimax:  { baseURL: "https://api.minimaxi.com/v1", model: "MiniMax-M3", thinking: { type: "adaptive" }, maxTokens: 131072, desc: "MiniMax" },
 }
 
 // Default provider matches deepseek preset (strip the desc display field)
@@ -30,8 +30,12 @@ const DEFAULTS = {
   agent: {
     maxTurns: 100,
     subagentTurns: 100,
+    goalTurns: 200,
     compactThreshold: 100000,
     verifyGuard: false,  // push model back to verify when files were mutated but verify not run (opt-in)
+    streamRules: [],      // time-traveling stream rules: [{ pattern: "regex", message: "reminder", action: "abort"|"warn", repeat: "always"|"once" }]
+    advisor: { enabled: false },  // automated code review after each tool-execution turn; optionally: { enabled: true, provider: "deepseek", model: "deepseek-chat" }
+    autoThink: false,     // auto-classify task difficulty and set reasoning effort per-turn
   },
   memory: {
     dbPath: join(configDir, "memory.db"),
@@ -59,6 +63,7 @@ const DEFAULTS = {
  * multimodal:        whether multimodal (image/vision input supported)
  * cacheMode:         context caching mode: "auto"=automatic / "prompt"=needs explicit / "none"=unsupported
  * thinkApi:          thinking API type: "type"=thinking.type field / "effort"=reasoning_effort field
+ * thinkOnValue:      when thinkApi is "type", the value used to enable thinking (default "enabled"; MiniMax uses "adaptive")
  * reasoningEcho:     reasoning_content cross-turn echo strategy: "required"=must echo (error if missing) / "optional"=echo optional (default: don't echo)
  * reasoningEffortEnum: valid reasoning_effort enum values (if undeclared, no validation — passed through as-is)
  * tempRange:         valid temperature range [min, max] (if undeclared, no clamping)
@@ -66,11 +71,11 @@ const DEFAULTS = {
 const MODEL_SPECS = [
   // DeepSeek V4 series
   ["deepseek-v4-pro",   { context: 1_000_000, maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
-  ["deepseek-v4-flash", { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
+  ["deepseek-v4-flash", { context: 1_000_000, maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   ["deepseek-reasoner", { context: 256_000,   maxOutput: 384_000, thinking: true,  prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   ["deepseek-chat",     { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   // Kimi series
-  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "prompt", thinkApi: "effort", reasoningEcho: "required", reasoningEffortEnum: ["low", "high", "max"] }],
+  ["kimi-k3",           { context: 1_000_000, maxOutput: 128_000, thinking: true,  partialMode: true, multimodal: true, cacheMode: "auto",  thinkApi: "effort", reasoningEcho: "required", reasoningEffortEnum: ["low", "high", "max"] }],
   ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none" }],
   ["moonshot",          { context: 128_000,   maxOutput: 32_000,  thinking: false, cacheMode: "none" }],
   // GLM series
@@ -88,8 +93,8 @@ const MODEL_SPECS = [
   ["qwen-plus",         { context: 1_000_000, maxOutput: 32_000,  thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
   ["qwen",              { context: 1_000_000, maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none", thinkApi: "effort", tempRange: [0, 2] }],
   // MiniMax series
-  ["MiniMax-M3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
-  ["minimax-m3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", tempRange: [0, 2] }],
+  ["MiniMax-M3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", thinkOnValue: "adaptive", tempRange: [0, 2] }],
+  ["minimax-m3",        { context: 1_000_000, maxOutput: 128_000, thinking: true,  multimodal: true, cacheMode: "auto", thinkApi: "type", thinkOnValue: "adaptive", tempRange: [0, 2] }],
   ["minimax-m1",        { context: 256_000,   maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
 ]
 const DEFAULT_SPEC = { context: 128_000, maxOutput: 32_000, cacheMode: "none" }
@@ -108,11 +113,6 @@ export function specForModel(model) {
     if (m.startsWith(prefix.toLowerCase())) return spec
   }
   return DEFAULT_SPEC
-}
-
-/** Return the context window size for a given model name */
-export function contextWindowForModel(model) {
-  return specForModel(model).context
 }
 
 /** Derive compaction threshold; explicit is the value explicitly set in config file (takes priority), otherwise auto-computed from model */

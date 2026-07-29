@@ -47,8 +47,12 @@ export async function prepareRun(agent, input, callbacks, {
       }
     if (depth === 0) {
       const tree = listWorkDir(agent.cwd)
+      const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] ?? process.platform
+      agent._sessionStart ??= new Date().toISOString()
       if (tree) {
-        agent.history.push({ role: "user", content: `[System reminder: working directory snapshot (${new Date().toISOString()}):\n<untrusted_cwd_listing>\n${escapeXml(tree)}\n</untrusted_cwd_listing>]`, transient: true })
+        agent.history.push({ role: "user", content: `[System reminder: OS: ${platform}. Working directory: ${agent.cwd}. Session start: ${agent._sessionStart}. Working directory snapshot:\n<untrusted_cwd_listing>\n${escapeXml(tree)}\n</untrusted_cwd_listing>]`, transient: true })
+      } else {
+        agent.history.push({ role: "user", content: `[System reminder: OS: ${platform}. Working directory: ${agent.cwd}. Session start: ${agent._sessionStart}.]`, transient: true })
       }
       if (agent.memory && !agent.history.some((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_INJECT_PREFIX))) {
         try {
@@ -130,9 +134,7 @@ export async function prepareRun(agent, input, callbacks, {
     : depth === 0
       ? `${base}\n\n${mainOverlay}`
       : base
-  const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] ?? process.platform
-  agent._sessionStart ??= new Date().toISOString()
-  systemPrompt += `\n\nOS: ${platform}. Working directory: ${agent.cwd}. Session start: ${agent._sessionStart}.`
+
   const projectRules = await loadProjectInstructions(agent.cwd)
   if (projectRules) {
     systemPrompt += `\n\nProject instructions (follow these as project conventions):\n<untrusted_project_instructions>\n${escapeXml(projectRules)}\n</untrusted_project_instructions>`

@@ -63,7 +63,7 @@ export async function startTUI(agent, opts = {}) {
     picker: null, // model picker { entries, lines, index, scroll, selectedLine }
     wizard: null, // first-launch config wizard { step, index, scroll, selectedLine, fields, error, lines }
     tasks: agent.tasks ?? [], // task list from task tool (progress shown in status bar); carried over on session restore, auto-collapsed when all done
-    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }, // cumulative token usage (shown in status bar)
+    tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0, reasoningTokens: 0 }, // cumulative token usage (shown in status bar)
     ctxCache: { len: -1, tokens: 0 }, // context utilization estimate cache (estimateTokens is O(n), only recompute when history grows)
     reasoning: "", // thinking stream buffer (dimmed display)
     completion: null, // Tab completion state { candidates, index }
@@ -74,6 +74,7 @@ export async function startTUI(agent, opts = {}) {
     processingStarted: 0, // current turn start time (status bar timer)
     status: "Ready",
     queue: [], // queued messages while processing: [{ text }], auto-dequeued when current turn finishes
+    interruptPrompt: null, // Ctrl+I interrupt message input: { text: "" } or null
   }
 
   // On session restore, if all tasks are completed, auto-collapse the todo panel (match runtime behavior)

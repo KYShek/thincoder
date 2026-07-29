@@ -642,3 +642,86 @@ test("question: 无回调时抛错", async () => {
   const ctx = { cwd: process.cwd() }
   await assert.rejects(() => qTool.execute({ question: "?" }, ctx), /not supported/)
 })
+
+// ---------------------------------------------------------------- hashline_edit
+
+test("hashline_edit: 按哈希定位替换单行", async () => {
+  const { hashLine } = await import("../src/tools/file.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-hashline-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    await byName.write.execute({ path: "f.mjs", content: "const x = 1\nconst y = 2\nconst z = 3\n" }, ctx)
+
+    // Read with hashes to get line hashes
+    const readOut = await byName.read.execute({ path: "f.mjs", hashes: true }, ctx)
+    // Parse hash from output: "1\t[abc123def456] const x = 1"
+    const line1Hash = readOut.split("\n")[0].match(/\[([a-f0-9]{12})\]/)[1]
+
+    // Replace line 1 with new content using hash
+    const out = await byName.hashline_edit.execute({
+      path: "f.mjs",
+      old_hashes: [line1Hash],
+      new_content: "const x = 42",
+    }, ctx)
+    assert.match(out, /replaced 1 line/)
+
+    const updated = await byName.read.execute({ path: "f.mjs" }, ctx)
+    assert.match(updated, /const x = 42/)
+    assert.match(updated, /const y = 2/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("hashline_edit: 多行替换", async () => {
+  const { hashLine } = await import("../src/tools/file.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-hashline-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    await byName.write.execute({ path: "f.mjs", content: "line1\nline2\nline3\nline4\n" }, ctx)
+
+    const readOut = await byName.read.execute({ path: "f.mjs", hashes: true }, ctx)
+    const lines = readOut.split("\n")
+    const h2 = lines[1].match(/\[([a-f0-9]{12})\]/)[1]
+    const h3 = lines[2].match(/\[([a-f0-9]{12})\]/)[1]
+
+    const out = await byName.hashline_edit.execute({
+      path: "f.mjs",
+      old_hashes: [h2, h3],
+      new_content: "replaced_A\nreplaced_B",
+    }, ctx)
+    assert.match(out, /replaced 2 line/)
+
+    const updated = await byName.read.execute({ path: "f.mjs" }, ctx)
+    assert.match(updated, /line1/)
+    assert.match(updated, /replaced_A/)
+    assert.match(updated, /replaced_B/)
+    assert.match(updated, /line4/)
+    assert.doesNotMatch(updated, /line2/)
+    assert.doesNotMatch(updated, /line3/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("hashline_edit: hash 未匹配时报错含当前哈希", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-hashline-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    await byName.write.execute({ path: "f.mjs", content: "hello world\n" }, ctx)
+
+    await assert.rejects(
+      () => byName.hashline_edit.execute({
+        path: "f.mjs",
+        old_hashes: ["deadbeef0000"],
+        new_content: "nope",
+      }, ctx),
+      /Hash sequence not found/
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

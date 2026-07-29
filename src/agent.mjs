@@ -112,13 +112,75 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     }
 
     const messages = [{ role: "system", content: systemPrompt }, ...agent.history]
-    const response = await chat(agent.provider, {
-      messages, tools: toolSchemas,
-      onToken: callbacks.onToken,
-      onReasoning: callbacks.onReasoning,
-      onWait: callbacks.onWait,
-      signal,
-    })
+    let response
+
+    // Auto-think: classify task difficulty and set reasoning effort before the real prompt.
+    // Runs only on turn 0 of user input; failure is silent — falls back to current setting.
+    if (agent.config?.agent?.autoThink && turn === 0) {
+      const { classifyAndApply } = await import("./auto-think.mjs")
+      classifyAndApply(agent, turn).catch(() => {})
+    }
+
+    try {
+      response = await chat(agent.provider, {
+        messages, tools: toolSchemas,
+        onToken: callbacks.onToken,
+        onReasoning: callbacks.onReasoning,
+        onWait: callbacks.onWait,
+        signal,
+        streamRules: agent.config.agent?.streamRules ?? [],
+      })
+    } catch (e) {
+      // User interrupt (Ctrl+I): controller.abort({ interrupt: true, message: "…" }).
+      // The abort may fire before the SSE stream starts (during rate gate or HTTP request).
+      // Inject the user's message into history and retry from the same context.
+      if (e.name === "AbortError" && signal?.reason?.interrupt) {
+        agent.history.push({
+          role: "user",
+          content: `[User interrupt: ${signal.reason.message}]`,
+        })
+        continue
+      }
+      throw e
+    }
+
+    // Stream rule triggered mid-generation (action: "abort"): halt current output,
+    // inject rule's message as a reminder, and retry from the same context.
+    if (response.ruleTriggered) {
+      if (response.content) {
+        agent.history.push({ role: "assistant", content: response.content })
+      }
+      const label = response.ruleName ? ` — stream rule "${response.ruleName}"` : ""
+      agent.history.push({
+        role: "user",
+        content: `[System reminder${label}: ${response.ruleMessage}]`,
+      })
+      continue
+    }
+
+    // Stream rule warnings (action: "warn"): the stream completed, but one or more
+    // non-interrupting rules matched. Inject warnings after the turn so the model
+    // sees them before its next response — without aborting mid-generation.
+    if (response._warnings?.length) {
+      const deDuplicated = [...new Map(response._warnings.map(w => [w.name || w.pattern, w])).values()]
+      agent.history.push({
+        role: "user",
+        content: `[System reminder — stream rule warnings from your last response:\n${deDuplicated.map(w => `- ${w.name || w.pattern}: ${w.message}`).join("\n")}]`,
+      })
+    }
+
+    // User interrupted mid-generation (Ctrl+I): the SSE stream was aborted while content
+    // was partially generated. Commit partial output + inject user message, then retry.
+    if (response.interrupted) {
+      if (response.content) {
+        agent.history.push({ role: "assistant", content: response.content })
+      }
+      agent.history.push({
+        role: "user",
+        content: `[User interrupt: ${response.interruptMessage}]`,
+      })
+      continue
+    }
 
     if (response.usage) {
       callbacks.onUsage?.(response.usage)
@@ -126,6 +188,21 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         agent._lastPromptTokens = response.usage.prompt_tokens
         agent._usageAtLen = agent.history.length
       }
+    }
+
+    // Warn on abnormal finish reasons — the model stopped for a reason other than
+    // "stop" or "tool_calls", meaning the response may be incomplete or truncated.
+    if (response.finishReason && response.finishReason !== "stop" && response.finishReason !== "tool_calls") {
+      const reasonMap = {
+        length: "output token limit reached after exhausting continuations",
+        insufficient_system_resource: "provider inference resources exhausted — consider retrying or switching models",
+        content_filter: "response blocked by provider content filtering",
+      }
+      const detail = reasonMap[response.finishReason] || `unknown reason "${response.finishReason}"`
+      agent.history.push({
+        role: "user",
+        content: `[System reminder: the previous turn ended abnormally — ${detail}. The assistant response that follows may be incomplete.]`,
+      })
     }
 
     if (response.toolCalls.length === 0) {
@@ -310,6 +387,17 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     }
 
     callbacks.onTurnEnd?.(agent, turn)
+
+    // Advisor: automated code review after each tool-execution turn.
+    // Runs asynchronously — failure is silent, main loop continues regardless.
+    if (agent.config?.advisor?.enabled) {
+      const { runAdvisor } = await import("./advisor.mjs")
+      const note = await runAdvisor(agent)
+      if (note) {
+        agent.history.push({ role: "user", content: note })
+        callbacks.onAdvisor?.(note)
+      }
+    }
   }
 
   throw new ContinueError(maxTurns)

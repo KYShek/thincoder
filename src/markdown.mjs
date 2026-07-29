@@ -85,7 +85,7 @@ function oneLine(v) {
  * Minimal YAML subset parser: only supports `key: value` and `key: [a, b, c]`.
  * Our frontmatter is self-generated, no need for full YAML.
  */
-function parseFrontmatter(text) {
+export function parseFrontmatter(text) {
   const meta = {}
   for (const line of text.split(/\r?\n/)) {
     const m = line.match(/^(\w[\w-]*)\s*:\s*(.*)$/)
