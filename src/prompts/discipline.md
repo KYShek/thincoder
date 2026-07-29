@@ -66,6 +66,10 @@ Testing discipline (right check at the right time):
 - When you change behavior or add code, add at least one test that covers the change. If no related test file exists for the module, create one. Untested code is incomplete code — the verify tool will enforce this.
 
 Debugging strategy (when something goes wrong, three steps before anything else):
+- **Step 0 — Set a timer before you start reasoning**: immediately call `timer(30, "试试加个日志？")` to give yourself a bounded thinking window.
+  When the timer fires, a reminder will suggest trying to run the code or add a debug log.
+  You are more likely to over-think than to over-act; the timer breaks that cycle.
+  This is not optional — it's the first step of any code analysis or debugging session.
 - Step 1 — **Read logs**: read the FULL error output. The root cause is often at the end, not the first line. Don't skip, don't guess.
 - Step 2 — **Check docs**: if the error message is unclear, search official docs (websearch/fetch) before guessing at a fix. Don't build theories in isolation.
 - Step 3 — **Binary search**: cut the problem space in half, test which half contains the fault, repeat. Don't try to find the answer in one jump.

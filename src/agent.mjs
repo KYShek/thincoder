@@ -64,6 +64,7 @@ export function createAgent({
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined,
     _touchedFiles: [], _verifyRetries: 0,
     _pendingReminders: [],
+    _pendingTimers: [],
     _sessionStart: sessionStart,
     _lastPromptTokens: null, _usageAtLen: null,
     _compressFailures: 0,
@@ -252,6 +253,16 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
             }
           }
         }
+      }
+    }
+
+    // Expired timers — inject reminders when thinking budget is up
+    if (agent._pendingTimers.length > 0) {
+      const now = Date.now()
+      const expired = agent._pendingTimers.filter((t) => t.expiresAt <= now)
+      agent._pendingTimers = agent._pendingTimers.filter((t) => t.expiresAt > now)
+      for (const t of expired) {
+        agent.history.push({ role: "user", content: `[System reminder: ⏰ timer — ${t.message}]` })
       }
     }
 
