@@ -3,7 +3,8 @@
  * Real-time import/export parsing, generates compact text for LLMs to understand code structure.
  * No index stored — reads and parses files on each call, ~50ms.
  */
-import { readFileSync, existsSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 
 /** Extract JS/TS file import paths (normalize by stripping .ts/.js/.mjs suffixes) */
@@ -113,17 +114,19 @@ function normalizeExt(p) {
  * Internal: scan all files, build forward dependency graph + reverse reference graph.
  * Returns { deps, importers, fileCount } shared by buildOutline / buildSummary.
  */
-function _buildDepGraph(db, cwd) {
+async function _buildDepGraph(db, cwd) {
   const allFiles = db.prepare(`SELECT DISTINCT path FROM code_chunks ORDER BY path`).all().map((r) => r.path)
   if (allFiles.length === 0) return null
 
   const deps = new Map()      // path → { imports: Set, exports: Set, size: number, dir: string }
   const importers = new Map() // importee → Set<importer>
 
-  for (const rel of allFiles) {
+  for (let i = 0; i < allFiles.length; i++) {
+    const rel = allFiles[i]
     const abs = join(cwd, ...rel.split("/"))
     if (!existsSync(abs)) continue
-    const text = readFileSync(abs, "utf8")
+    let text
+    try { text = await readFile(abs, "utf8") } catch { continue }
     const lines = text.split("\n")
     const ext = rel.slice(rel.lastIndexOf(".")).toLowerCase()
 
@@ -160,6 +163,8 @@ function _buildDepGraph(db, cwd) {
       if (!importers.has(r)) importers.set(r, new Set())
       importers.get(r).add(rel)
     }
+    // Yield the event loop every 20 files to prevent TUI freeze
+    if (i % 20 === 19) await new Promise(r => setImmediate(r))
   }
 
   return { deps, importers, fileCount: allFiles.length }
@@ -173,8 +178,8 @@ function _buildDepGraph(db, cwd) {
  *  3. Entry points (files with no importers — startup/top-level entry points)
  * Output is naturally bounded (~1000-2000 chars), no more OUTLINE_INJECT_MAX hard truncation.
  */
-export function buildSummary(db, cwd) {
-  const graph = _buildDepGraph(db, cwd)
+export async function buildSummary(db, cwd) {
+  const graph = await _buildDepGraph(db, cwd)
   if (!graph) return "(no indexed source files; run codeSync or /reindex first)"
   const { deps, importers, fileCount } = graph
 
@@ -248,8 +253,8 @@ export function buildSummary(db, cwd) {
 }
 
 /** Get known file list from code_chunks (reuse index), parse by path to generate outline text */
-export function buildOutline(db, cwd, focusPath) {
-  const graph = _buildDepGraph(db, cwd)
+export async function buildOutline(db, cwd, focusPath) {
+  const graph = await _buildDepGraph(db, cwd)
   if (!graph) return "(no indexed source files; run codeSync or /reindex first)"
   const { deps, importers } = graph
 
@@ -298,7 +303,7 @@ export function repoOutlineTool(db, cwd) {
     },
     readonly: true,
     async execute(args) {
-      const outline = buildOutline(db, cwd, args.path ?? null)
+      const outline = await buildOutline(db, cwd, args.path ?? null)
       return outline
     },
   }

@@ -18,9 +18,22 @@ export const SQLITE_BUSY_TIMEOUT = 3000
 export const CODE_EXTS = new Set([".mjs", ".js", ".ts", ".tsx", ".jsx", ".py", ".rs", ".go", ".java", ".c", ".h", ".cpp", ".hpp", ".rb", ".swift", ".kt", ".sh", ".bash", ".sql", ".yaml", ".yml", ".toml", ".json", ".css", ".html", ".vue", ".svelte"])
 // Doc index: markdown / plain text (separate index makes it easier for LLM to distinguish "design specs" from "existing code")
 export const DOC_EXTS = new Set([".md", ".mdc", ".txt", ".rst", ".adoc"])
-// Directory names always skipped
-export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage", "__pycache__", ".venv", "venv", "target", ".next", ".nuxt", ".svelte-kit"])
-// Large file threshold (lines): above this, chunk by symbol; otherwise index entire file
+// Directory names always skipped during code/doc indexing
+// NOTE: these are case-sensitive basename matches; add common platform-specific dirs
+export const SKIP_DIRS = new Set([
+  "node_modules", ".git", "dist", "build", ".turbo", "coverage",
+  "__pycache__", ".venv", "venv", "target", ".next", ".nuxt", ".svelte-kit",
+  // Windows user profile directories (never contain project code)
+  "AppData", "Application Data", "Desktop", "Documents", "Downloads",
+  "Music", "Pictures", "Videos", "OneDrive", "Contacts", "Favorites",
+  "Links", "Saved Games", "Searches",
+  // Other common non-code directories
+  "Program Files", "Program Files (x86)", "Windows", "$Recycle.Bin",
+])
+// Files larger than these limits are skipped during bulk indexing
+// (minified bundles, test fixtures, generated code, etc.)
+export const MAX_CODE_FILE_BYTES = 1024 * 1024   // 1 MB
+export const MAX_DOC_FILE_BYTES  = 512 * 1024    // 512 KB
 export const BIG_FILE_LINES = 2000
 
 /**

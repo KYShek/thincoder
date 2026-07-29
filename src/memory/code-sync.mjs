@@ -1,11 +1,10 @@
 /**
  * memory/code-sync.mjs — code index sync, retrieval, incremental update
  */
-
 import { readFile, stat } from "node:fs/promises"
 import { join, relative } from "node:path"
 import { embed, cosine, toBlob, fromBlob } from "../embedding.mjs"
-import { CODE_EXTS, DOC_EXTS, SKIP_DIRS } from "./schema.mjs"
+import { CODE_EXTS, DOC_EXTS, SKIP_DIRS, MAX_CODE_FILE_BYTES, MAX_DOC_FILE_BYTES } from "./schema.mjs"
 import { buildFtsQuery, ensureEmbeddings, EMBED_TEXT_MAX_LEN } from "./core.mjs"
 import { detectLanguage, _upsertCodeFile, _upsertDocFile, yieldTick } from "./code-index.mjs"
 
@@ -19,20 +18,25 @@ const CODE_EMBED_BATCH = 64
  * Returns { updated, removed, skipped } or null (git unavailable).
  */
 export async function gitSync(memory, dir, { onProgress } = {}) {
-  const { execSync, execFileSync } = await import("node:child_process")
-  const opts = { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }
+  const { execFile: _execFile } = await import("node:child_process")
+  const gitRun = (args) => new Promise((resolve, reject) => {
+    _execFile("git", args, { cwd: dir, encoding: "utf8", timeout: 10000, windowsHide: true }, (err, stdout) => {
+      if (err) reject(err); else resolve(stdout)
+    })
+  })
+  const mergeDiff = (text) => text.trim().split("\n").filter(Boolean)
 
   let head
-  try { head = execSync("git rev-parse HEAD", opts).trim() } catch { return null }
+  try { head = (await gitRun(["rev-parse", "HEAD"])).trim() } catch { return null }
 
   const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'last_indexed_commit'`).get()?.value
   if (!stored) return null
 
   let diffOut
   try {
-    const committed = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRTD", stored, "HEAD"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }).trim()
-    const dirty = execSync(`git diff --name-only --diff-filter=ACMRTD`, opts).trim()
-    const lines = [...new Set([...committed.split("\n").filter(Boolean), ...dirty.split("\n").filter(Boolean)])]
+    const committed = mergeDiff(await gitRun(["diff", "--name-only", "--diff-filter=ACMRTD", stored, "HEAD"]))
+    const dirty = mergeDiff(await gitRun(["diff", "--name-only", "--diff-filter=ACMRTD"]))
+    const lines = [...new Set([...committed, ...dirty])]
     diffOut = lines
   } catch {
     return null
@@ -99,43 +103,78 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
 }
 
 /**
+ * List project files matching the given extensions.
+ * Only indexes git repos — if dir isn't inside a git worktree, returns [].
+ * Uses `git ls-files --cached --others --exclude-standard` to get the file list
+ * (tracked + untracked-not-ignored, respecting .gitignore).
+ * Returns an array of { abs, rel } pairs (abs = full path, rel = path relative to dir).
+ */
+export async function listProjectFiles(dir, exts) {
+  const { execFile: _execFile } = await import("node:child_process")
+  const { join: joinPath } = await import("node:path")
+
+  // Only index git repos — if this isn't one, return empty
+  let gitTop
+  try {
+    gitTop = (await new Promise((resolve, reject) => {
+      _execFile("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8", timeout: 5000, windowsHide: true },
+        (err, stdout) => { if (err) reject(err); else resolve(stdout.trim()) })
+    })).replace(/\\/g, "/")
+  } catch {
+    return [] // not a git repo → nothing to index
+  }
+
+  const files = []
+  try {
+    const raw = await new Promise((resolve, reject) => {
+      _execFile("git", ["ls-files", "--cached", "--others", "--exclude-standard"],
+        { cwd: dir, encoding: "utf8", timeout: 15000, windowsHide: true, maxBuffer: 10 * 1024 * 1024 },
+        (err, stdout) => { if (err) reject(err); else resolve(stdout) })
+    })
+    for (const line of raw.trim().split("\n")) {
+      const p = line.trim()
+      if (!p) continue
+      const ext = p.slice(p.lastIndexOf(".")).toLowerCase()
+      if (!exts.has(ext)) continue
+      const abs = joinPath(dir, p)
+      const rel = p.replace(/\\/g, "/")
+      if (rel.split("/").some((seg) => SKIP_DIRS.has(seg) || seg.startsWith("."))) continue
+      files.push({ abs, rel })
+    }
+  } catch { /* ls-files failed */ }
+
+  return files
+}
+
+
+/**
  * Sync code index: scan all source files under dir → chunk → upsert into code_chunks.
  * Incremental by mtime — only rebuilds chunks for files that have changed.
  */
 export async function codeSync(memory, dir, { onProgress } = {}) {
-  const files = []
-  const { readdir } = await import("node:fs/promises")
-  async function walk(d) {
-    let entries
-    try { entries = await readdir(d, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue
-        await walk(join(d, e.name))
-      } else if (e.isFile()) {
-        const ext = e.name.slice(e.name.lastIndexOf(".")).toLowerCase()
-        if (CODE_EXTS.has(ext)) files.push(join(d, e.name))
-      }
-    }
+  const entries = await listProjectFiles(dir, CODE_EXTS)
+  const files = [] // { abs, rel, mtimeMs }
+  let overSizeSkipped = 0
+  for (const { abs, rel } of entries) {
+    let st
+    try { st = await stat(abs) } catch { continue }
+    if (st.size > MAX_CODE_FILE_BYTES) { overSizeSkipped++; continue }
+    files.push({ abs, rel, mtimeMs: Math.floor(st.mtimeMs) })
   }
-  await walk(dir)
 
   const indexed = new Map(
     memory.db.prepare(`SELECT path, mtime_ms FROM code_chunks WHERE origin = ?`).all(dir).map((r) => [r.path, r.mtime_ms])
   )
   const seen = new Set()
 
-  onProgress?.({ phase: "scan", total: files.length })
+  onProgress?.({ phase: "scan", total: files.length, overSizeSkipped })
 
   let updated = 0, removed = 0, skipped = 0, failed = 0
   const errors = []
   for (let i = 0; i < files.length; i++) {
-    const abs = files[i]
-    const rel = abs.slice(dir.length + 1).replaceAll("\\", "/")
+    const { abs, rel, mtimeMs } = files[i]
     seen.add(rel)
 
-    let mtimeMs
-    try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { continue }
     if (indexed.get(rel) === mtimeMs) {
       skipped++
       continue
@@ -165,18 +204,22 @@ export async function codeSync(memory, dir, { onProgress } = {}) {
     }
   }
 
-  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed })
+  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed, overSizeSkipped })
   markIndexedCommit(memory, dir)
-  return { updated, removed, skipped, failed, errors, total: files.length }
+  return { updated, removed, skipped, failed, errors, total: files.length, overSizeSkipped }
 }
 
 /** Record current HEAD as the index anchor (gitSync incremental diff baseline); silently skip non-git repos */
 export async function markIndexedCommit(memory, dir) {
   try {
-    const { execSync } = await import("node:child_process")
-    const head = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim()
+    const { execFile } = await import("node:child_process")
+    const head = await new Promise((resolve, reject) => {
+      execFile("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8", timeout: 5000, windowsHide: true }, (err, stdout) => {
+        if (err) reject(err); else resolve(stdout)
+      })
+    })
     memory.db.prepare(`INSERT INTO meta (key, value) VALUES ('last_indexed_commit', ?)
-      ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(head)
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(head.trim())
   } catch { /* not a git repo or git unavailable, skip */ }
 }
 
@@ -299,6 +342,12 @@ export async function reindexFile(memory, cwd, absPath) {
   if (rel === ".." || rel.startsWith("../")) return
   const dirs = rel.split("/").slice(0, -1)
   if (dirs.some((d) => SKIP_DIRS.has(d) || d.startsWith("."))) return
+
+  // skip oversized files (minified bundles, test fixtures, generated code)
+  const maxBytes = CODE_EXTS.has(ext) ? MAX_CODE_FILE_BYTES : DOC_EXTS.has(ext) ? MAX_DOC_FILE_BYTES : 0
+  if (maxBytes > 0) {
+    try { const st = await stat(absPath); if (st.size > maxBytes) return } catch { /* can't stat, proceed */ }
+  }
 
   let text
   try { text = await readFile(absPath, "utf8") } catch {

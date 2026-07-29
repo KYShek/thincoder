@@ -7,6 +7,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
+import { execSync } from "node:child_process"
 
 import { createMemory, put } from "../src/memory.mjs"
 import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
@@ -14,6 +15,19 @@ import { goalTool } from "../src/agent-tools.mjs"
 
 function freshMemory() {
   return createMemory({ dbPath: ":memory:" })
+}
+
+function initGitRepo(dir) {
+  execSync("git init -q", { cwd: dir, stdio: "ignore" })
+  execSync('git config user.name test', { cwd: dir, stdio: "ignore" })
+  execSync('git config user.email test@test.dev', { cwd: dir, stdio: "ignore" })
+}
+
+async function removeDir(dir) {
+  for (let i = 0; i < 5; i++) {
+    try { rmSync(dir, { recursive: true, force: true }); return }
+    catch { if (i < 4) await new Promise(r => setTimeout(r, 1000)) }
+  }
 }
 
 // ---------------------------------------------------------------- markdown
@@ -162,10 +176,10 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
 
   // 显式配置优先
   assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
-  // 未配置时按模型推导：1M 窗口 × 0.8 = 80万，但 cap 到 30万（防历史涨到打爆 TPM）
+  // 未配置时按模型推导：1M 窗口 × 0.6 = 60万，cap 到 30万（防历史涨到打爆 TPM）
   assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 300000, auto: true })
-  // 256K 窗口 × 0.8 = 20万，未触 cap
-  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 204800, auto: true })
+  // 256K 窗口 × 0.6 = 153,600，未触 cap，floor 40K 也未触
+  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 153600, auto: true })
 })
 
 // ---------------------------------------------------------------- ContinueError + resume 模式
@@ -1455,6 +1469,7 @@ test("runAgent: 依赖摘要注入（紧凑版 + 每会话只注一次）", asyn
   const { writeFile } = await import("node:fs/promises")
   const m = freshMemory()
   const dir = mkdtempSync(join(tmpdir(), "thincoder-outline-inject-"))
+  initGitRepo(dir)
   try {
     // 120 个互相 import 的文件：新版摘要天然有界，无需硬截断
     for (let i = 0; i < 120; i++) {
@@ -1480,7 +1495,7 @@ test("runAgent: 依赖摘要注入（紧凑版 + 每会话只注一次）", asyn
       server.close()
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    await removeDir(dir)
   }
 })
 

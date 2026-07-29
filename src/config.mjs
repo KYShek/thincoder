@@ -98,13 +98,13 @@ const MODEL_SPECS = [
   ["minimax-m1",        { context: 256_000,   maxOutput: 128_000, thinking: false, cacheMode: "auto" }],
 ]
 const DEFAULT_SPEC = { context: 128_000, maxOutput: 32_000, cacheMode: "none" }
-// Window utilization cap: 0.8 (DeepSeek internally uses full window; compaction itself costs an LLM call, premature compaction is pure waste.
-// Reserve 20% headroom for post-compaction tail growth and output tokens)
-// But for 1M-window models, 0.8 = 800K tokens — waiting until history grows that large would blow the TPM budget,
-// and the compaction request itself might 429. Add caps: no more than 8× maxOutput (128K×8≈1M → still large but reasonable),
-// no more than 300K (reasonable working ceiling for large-window models; beyond that cache hit rates drop)
-const COMPACT_RATIO = 0.8
+// Window utilization cap: 0.6 — triggers earlier (reserving 40% headroom) because
+// injected context (directory tree, git context, outline, project instructions, memory/doc
+// search results) can consume 30-50K tokens each turn; waiting until 80% leaves no room.
+// For 1M-window models: 600K is still too high → cap at 300K.
+const COMPACT_RATIO = 0.6
 const COMPACT_CAP_TOKENS = 300_000
+const COMPACT_FLOOR = 40_000
 
 /** Look up spec by model name prefix (case-insensitive), conservative default for unknown models */
 export function specForModel(model) {
@@ -120,8 +120,8 @@ export function resolveCompactThreshold(explicit, model) {
   if (explicit != null) return { value: explicit, auto: false }
   const spec = specForModel(model)
   const ratioBased = Math.floor(spec.context * COMPACT_RATIO)
-  // Large-window models (1M) produce too-large ratio-based values; cap them — better to compact early than let history grow until it blows the TPM budget
-  const value = Math.min(ratioBased, COMPACT_CAP_TOKENS)
+  // Cap for large-window models (1M) and floor for small-window models (<64K, should not compact too aggressively)
+  const value = Math.max(Math.min(ratioBased, COMPACT_CAP_TOKENS), COMPACT_FLOOR)
   return { value, auto: true }
 }
 

@@ -205,6 +205,15 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.8.12 (2026-07)
+- **Indexing: git-repo-only** — `codeSync` and `docSync` now only index inside git worktrees (via `git ls-files`), respecting `.gitignore`. Non-git directories get empty indexes. Prevents 2.9GB memory.db from accidentally indexing entire user profiles (AppData, browser extensions, Office add-ins, Program Files)
+- **Indexing: file-size caps** — code files >1MB and doc files >512KB are skipped during bulk indexing (minified bundles, test fixtures, generated code)
+- **Compaction: earlier trigger** — `COMPACT_RATIO` lowered from 0.8 to 0.6 (with 40K floor), so injected context (directory tree, git context, outline, memory/doc search results) doesn't starve the model for headroom before compaction fires
+- **Bugfix: event-loop blocking** — `buildOutline`/`buildSummary` in `repomap.mjs` now awaited (was sync calling async), `setup.mjs` outline injection fixed, `codeSync` walk uses `readFile` instead of `readFileSync`
+- **Feat: SKIP_DIRS expanded** — Windows profile directories (`AppData`, `Desktop`, `Documents`, `Downloads`, `Music`, `Pictures`, `Videos`, etc.) added to the skip list
+- **Feat: `listProjectFiles` shared helper** — extracted from `codeSync`/`docSync`, used by both; git-only with fallback removed
+- **Refactor: `embed-config.mjs`** — simplified to only read API key via `resolveEmbedKey()`, base URL and model are fixed constants; VSCode SecretStorage dependency removed
+
 ### 0.8.11 (2026-07)
 - **Feat**: `checklist` tool — persistent project task tracking in `.thincoder/checklist.md`. Add/mark/list items, auto-archive done items to `checklist-done.md`. Injected at session start (pending + in_progress only)
 - **Feat**: updated prompts — four-step workflow (requirements→design→development→testing), three-step debugging strategy (logs→docs→binary search), working checklist discipline

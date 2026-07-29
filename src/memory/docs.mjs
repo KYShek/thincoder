@@ -2,14 +2,14 @@
  * memory/docs.mjs — doc index sync, retrieval, agent tool generation
  */
 
-import { readFile, readdir, stat } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { embed, cosine, toBlob, fromBlob } from "../embedding.mjs"
 import { commitAndPush } from "../git/gitmem.mjs"
-import { DOC_EXTS, SKIP_DIRS } from "./schema.mjs"
+import { DOC_EXTS, SKIP_DIRS, MAX_DOC_FILE_BYTES } from "./schema.mjs"
 import { buildFtsQuery, put, search, putMarkdown } from "./core.mjs"
 import { _upsertDocFile, yieldTick } from "./code-index.mjs"
-import { markIndexedCommit } from "./code-sync.mjs"
+import { markIndexedCommit, listProjectFiles } from "./code-sync.mjs"
 
 const DOC_EMBED_BATCH = 64
 const EMBED_TEXT_MAX_LEN = 2000
@@ -19,38 +19,29 @@ const EMBED_TEXT_MAX_LEN = 2000
  * Incremental by mtime.
  */
 export async function docSync(memory, dir, { onProgress } = {}) {
-  const files = []
-  async function walk(d) {
-    let entries
-    try { entries = await readdir(d, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue
-        await walk(join(d, e.name))
-      } else if (e.isFile()) {
-        const ext = e.name.slice(e.name.lastIndexOf(".")).toLowerCase()
-        if (DOC_EXTS.has(ext)) files.push(join(d, e.name))
-      }
-    }
+  const entries = await listProjectFiles(dir, DOC_EXTS)
+  const files = [] // { abs, rel, mtimeMs }
+  let overSizeSkipped = 0
+  for (const { abs, rel } of entries) {
+    let st
+    try { st = await stat(abs) } catch { continue }
+    if (st.size > MAX_DOC_FILE_BYTES) { overSizeSkipped++; continue }
+    files.push({ abs, rel, mtimeMs: Math.floor(st.mtimeMs) })
   }
-  await walk(dir)
 
   const indexed = new Map(
     memory.db.prepare(`SELECT path, mtime_ms FROM doc_chunks WHERE origin = ?`).all(dir).map((r) => [r.path, r.mtime_ms])
   )
   const seen = new Set()
 
-  onProgress?.({ phase: "scan", total: files.length })
+  onProgress?.({ phase: "scan", total: files.length, overSizeSkipped })
 
   let updated = 0, removed = 0, skipped = 0, failed = 0
   const errors = []
   for (let i = 0; i < files.length; i++) {
-    const abs = files[i]
-    const rel = abs.slice(dir.length + 1).replaceAll("\\", "/")
+    const { abs, rel, mtimeMs } = files[i]
     seen.add(rel)
 
-    let mtimeMs
-    try { mtimeMs = Math.floor((await stat(abs)).mtimeMs) } catch { continue }
     if (indexed.get(rel) === mtimeMs) {
       skipped++
       continue
@@ -79,9 +70,9 @@ export async function docSync(memory, dir, { onProgress } = {}) {
     }
   }
 
-  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed })
+  onProgress?.({ phase: "done", total: files.length, updated, removed, skipped, failed, overSizeSkipped })
   markIndexedCommit(memory, dir)
-  return { updated, removed, skipped, failed, errors, total: files.length }
+  return { updated, removed, skipped, failed, errors, total: files.length, overSizeSkipped }
 }
 
 /**

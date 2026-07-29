@@ -57,7 +57,7 @@ export async function prepareRun(agent, input, callbacks, {
       if (agent.memory && !agent.history.some((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_INJECT_PREFIX))) {
         try {
           const { buildSummary } = await import("../tools/repomap.mjs")
-          const summary = buildSummary(agent.memory.db, agent.cwd)
+          const summary = await buildSummary(agent.memory.db, agent.cwd)
           if (summary && !summary.startsWith("(no indexed")) {
             agent.history.push({ role: "user", content: `${OUTLINE_INJECT_PREFIX}\n${summary}]`, transient: true })
           }

@@ -9,14 +9,30 @@ import assert from "node:assert/strict"
 import { join } from "node:path"
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { execSync } from "node:child_process"
 
 import { createMemory, put, search, list, remove, putMarkdown, syncDir } from "../src/memory.mjs"
 import { serializeEntry } from "../src/markdown.mjs"
 
-// ---------------------------------------------------------------- memory
+// ---------------------------------------------------------------- helpers
 
 function freshMemory() {
   return createMemory({ dbPath: ":memory:" })
+}
+
+/** Initialize a minimal git repo in dir so codeSync/docSync can operate. */
+function initGitRepo(dir) {
+  execSync("git init -q", { cwd: dir, stdio: "ignore" })
+  execSync('git config user.name test', { cwd: dir, stdio: "ignore" })
+  execSync('git config user.email test@test.dev', { cwd: dir, stdio: "ignore" })
+}
+
+/** Remove a directory with retries (Windows may hold .git handles briefly). */
+async function removeDir(dir) {
+  for (let i = 0; i < 5; i++) {
+    try { rmSync(dir, { recursive: true, force: true }); return }
+    catch { if (i < 4) await new Promise(r => setTimeout(r, 1000)) }
+  }
 }
 
 test("memory: put / search / list / remove 全流程", async () => {
@@ -217,6 +233,7 @@ test("codeSync: 索引 → 检索 FTS5 → 文件变更后重建 → 文件消�
   const m = freshMemory()
 
   const dir = mkdtempSync(join(tmpdir(), "thincoder-code-"))
+  initGitRepo(dir)
   try {
     // 写两个源文件
     await mkdir(join(dir, "src"), { recursive: true })
@@ -320,6 +337,7 @@ test("code_search 工具注册与执行", async () => {
   const m = freshMemory()
 
   const dir = mkdtempSync(join(tmpdir(), "thincoder-codetool-"))
+  initGitRepo(dir)
   try {
     await mkdir(join(dir, "lib"), { recursive: true })
     await writeFile(join(dir, "lib", "util.mjs"), `
@@ -347,6 +365,7 @@ test("docSync: 索引 markdown 文档 → 按 ## 标题分块 → 检索 → 增
   const m = freshMemory()
 
   const dir = mkdtempSync(join(tmpdir(), "thincoder-doc-"))
+  initGitRepo(dir)
   try {
     await mkdir(join(dir, "docs"), { recursive: true })
     await writeFile(join(dir, "README.md"), `# My Project\n\nWelcome to the project.\n\n## 部署\n\n用 Docker 部署，命令如下：\n\`\`\`bash\ndocker compose up\n\`\`\`\n\n## API\n\nRESTful API，base URL 是 /api/v1`)
@@ -407,6 +426,7 @@ test("repo_outline: 全量大纲 + 聚焦查询", async () => {
   const m = freshMemory()
 
   const dir = mkdtempSync(join(tmpdir(), "thincoder-repo-"))
+  initGitRepo(dir)
   try {
     await mkdir(join(dir, "src"), { recursive: true })
     await mkdir(join(dir, "src", "lib"), { recursive: true })
@@ -426,7 +446,7 @@ export function format(s) { return "[" + s + "]" }
     await codeSync(m, dir)
 
     // 全量大纲
-    const outline = buildOutline(m.db, dir, null)
+    const outline = await buildOutline(m.db, dir, null)
     assert.ok(outline.includes("app.mjs"))
     assert.ok(outline.includes("helper.mjs"))
     assert.ok(outline.includes("imports:"))
@@ -435,7 +455,7 @@ export function format(s) { return "[" + s + "]" }
     assert.ok(outline.includes("imported by"))
 
     // 聚焦查询
-    const focus = buildOutline(m.db, dir, "src/lib/helper.mjs")
+    const focus = await buildOutline(m.db, dir, "src/lib/helper.mjs")
     assert.ok(focus.includes("imported by: src/app.mjs"))
     assert.ok(focus.includes("exports: helper, VERSION"))
 
@@ -446,7 +466,7 @@ export default class App { start() {} }
 export const { x, y } = { x: 1, y: 2 }
 `)
     await codeSync(m, dir)
-    const edgeOutline = buildOutline(m.db, dir, "src/edge.mjs")
+    const edgeOutline = await buildOutline(m.db, dir, "src/edge.mjs")
     assert.ok(edgeOutline.includes("doHelp") && edgeOutline.includes("App") && edgeOutline.includes("x") && edgeOutline.includes("y"), `expected doHelp,App,x,y got: ${edgeOutline}`)
     // re-export 应产生 imports 边
     assert.ok(edgeOutline.includes("imports: src/lib/helper"))
@@ -461,7 +481,7 @@ export const { x, y } = { x: 1, y: 2 }
     assert.ok(output2.includes("util.mjs"))
 
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    await removeDir(dir)
   }
 })
 
@@ -473,6 +493,7 @@ test("reindexFile: write 后单文件增量索引", async () => {
   const m = freshMemory()
 
   const dir = mkdtempSync(join(tmpdir(), "thincoder-reidx-"))
+  initGitRepo(dir)
   try {
     await mkdir(join(dir, "src"), { recursive: true })
     // 初始索引：一个文件
@@ -498,7 +519,7 @@ test("reindexFile: write 后单文件增量索引", async () => {
     r = await codeSearch(m, "goodbye")
     assert.equal(r.length, 0)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    await removeDir(dir)
   }
 })
 
@@ -566,6 +587,7 @@ test("doc_search 工具注册与执行", async () => {
   const m = freshMemory()
 
   const dir = mkdtempSync(join(tmpdir(), "thincoder-doctool-"))
+  initGitRepo(dir)
   try {
     await writeFile(join(dir, "GUIDE.md"), `# 编码规范\n\n## 命名\n\n函数用小驼峰，类用大驼峰。`)
     await docSync(m, dir)
