@@ -129,8 +129,17 @@ export function fetchEntry(memory, uid) {
 /**
  * Lazy embedding: batch-compute vectors for entries that don't have them yet (slow first time, zero cost thereafter).
  * When the embedding model changes, clear all vectors and rebuild.
+ * Guarded by a module-level lock — concurrent fire-and-forget callers share the same promise,
+ * so embedding API calls are never duplicated.
  */
-export async function ensureEmbeddings(memory) {
+let _embedLock = null
+export function ensureEmbeddings(memory) {
+  if (_embedLock) return _embedLock
+  _embedLock = _runEnsureEmbeddings(memory).finally(() => { _embedLock = null })
+  return _embedLock
+}
+
+async function _runEnsureEmbeddings(memory) {
   const modelKey = memory.embedder.model
   const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'embedding_model'`).get()?.value
   if (stored !== modelKey) {

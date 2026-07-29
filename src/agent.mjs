@@ -240,15 +240,15 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
             const abs = join(agent.cwd, p)
             agent._touchedFiles.push(abs)
             if (agent.memory) {
-              try {
-                if (!_reindexFile) {
-                  const mod = await import("./memory.mjs")
-                  _reindexFile = mod.reindexFile
-                }
-                await _reindexFile(agent.memory, agent.cwd, abs)
-              } catch (e) { /* Index failure doesn't block agent, surface in TUI as pending reminder */
-                agent._pendingReminders.push(`[System reminder: background indexing failed for ${toolCall.name} on ${abs}: ${e.message}. This does not affect your work — the code index will catch up on next reindex.]`)
+              // Fire-and-forget: don't block the agent loop on indexing.
+              // Reuses a single cached import; errors surface as pending reminders on next turn.
+              if (!_reindexFile) {
+                const mod = await import("./memory.mjs")
+                _reindexFile = mod.reindexFile
               }
+              _reindexFile(agent.memory, agent.cwd, abs).catch((e) => {
+                agent._pendingReminders.push(`[System reminder: background indexing failed for ${toolCall.name} on ${abs}: ${e.message}. This does not affect your work — the code index will catch up on next reindex.]`)
+              })
             }
           }
         }

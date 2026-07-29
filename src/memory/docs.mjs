@@ -141,8 +141,15 @@ export async function docSearch(memory, query, { limit = 5 } = {}) {
     .filter(Boolean)
 }
 
-/** Lazily backfill missing vectors for doc_chunks */
-export async function ensureDocEmbeddings(memory) {
+/** Lazily backfill missing vectors for doc_chunks. Guarded against concurrent calls. */
+let _docEmbedLock = null
+export function ensureDocEmbeddings(memory) {
+  if (_docEmbedLock) return _docEmbedLock
+  _docEmbedLock = _runEnsureDocEmbeddings(memory).finally(() => { _docEmbedLock = null })
+  return _docEmbedLock
+}
+
+async function _runEnsureDocEmbeddings(memory) {
   if (!memory.embedder) return
   const modelKey = memory.embedder.model
   const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'doc_embedding_model'`).get()?.value

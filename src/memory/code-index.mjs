@@ -140,9 +140,9 @@ export function extractLeadingDoc(lines, lineNum, ext) {
   return text.length > 0 && text.length < 300 ? text : ""
 }
 
-/** Yield control to the event loop for one tick (allows keyboard input to be processed) */
+/** Yield control to the event loop for one tick (allows keyboard input to be processed). Uses setImmediate for lower latency than setTimeout(0). */
 export function yieldTick() {
-  return new Promise((r) => setTimeout(r, 0))
+  return new Promise((r) => setImmediate(r))
 }
 
 /** Index a single file: delete old chunks → chunk → insert new chunks */

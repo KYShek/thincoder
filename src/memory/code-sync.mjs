@@ -83,6 +83,7 @@ export async function gitSync(memory, dir, { onProgress } = {}) {
         if (errors.length < 5) errors.push(`${rel}: ${e.message}`)
       }
     }
+    await yieldTick()
     if (onProgress && i % 5 === 0) {
       onProgress({ phase: "index", current: i + 1, total: diffOut.length, updated, removed, skipped })
     }
@@ -236,8 +237,15 @@ export async function codeSearch(memory, query, { limit = 5 } = {}) {
     .filter(Boolean)
 }
 
-/** Lazily backfill missing vectors for code_chunks */
-export async function ensureCodeEmbeddings(memory) {
+/** Lazily backfill missing vectors for code_chunks. Guarded against concurrent calls. */
+let _codeEmbedLock = null
+export function ensureCodeEmbeddings(memory) {
+  if (_codeEmbedLock) return _codeEmbedLock
+  _codeEmbedLock = _runEnsureCodeEmbeddings(memory).finally(() => { _codeEmbedLock = null })
+  return _codeEmbedLock
+}
+
+async function _runEnsureCodeEmbeddings(memory) {
   if (!memory.embedder) return
   const modelKey = memory.embedder.model
   const stored = memory.db.prepare(`SELECT value FROM meta WHERE key = 'code_embedding_model'`).get()?.value
