@@ -1,25 +1,59 @@
 import { repairHistory, listWorkDir } from "../agent.mjs"
-import { execSync, spawn } from "node:child_process"
+import { execSync, spawn, spawnSync } from "node:child_process"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
+
+/**
+ * Source module → test file mapping. Heuristic: the FIRST path component
+ * after src/ determines the module. Map it to the test file that imports from it.
+ * Modules without dedicated tests map to null.
+ */
+const MODULE_TO_TEST = {
+  tools: "test/tools.test.mjs",
+  "agent-tools": "test/tools.test.mjs",
+  agent: "test/agent.test.mjs",
+  memory: "test/memory.test.mjs",
+  tui: "test/tui.test.mjs",
+  provider: "test/integration-provider.mjs",
+  config: "test/integration-provider.mjs",
+  skills: "test/tools.test.mjs",
+  distill: "test/tools.test.mjs",
+  markdown: "test/agent.test.mjs",
+  mcp: null,
+  prompts: null,
+  context: null,
+  session: null,
+}
+
+/**
+ * Extract module name from a source path.
+ * "src/tools/bash.mjs" → "tools", "src/agent.mjs" → "agent", "src/agent/helpers.mjs" → "agent"
+ */
+function moduleName(srcPath) {
+  const rel = srcPath.replace(/^src[/\\]/, "")
+  const firstSlash = rel.search(/[/\\]/)
+  if (firstSlash === -1) return rel.replace(/\.mjs$/, "")
+  return rel.slice(0, firstSlash)
+}
 
 /**
  * verify tool: pre-completion self-check. When called:
  * 1. git diff --stat — changed file list
  * 2. node --check — syntax check all changed .mjs/.js files
- * 3. npm test — run project tests only when full=true
- * 4. task list + self-review checklist
- * Default does syntax checks only (fast); full=true runs the full test suite.
+ * 3. Related tests — run test files that cover the changed modules (default)
+ * 4. npm test — run ALL project tests (only when full=true)
+ * 5. task list + self-review checklist
+ * Default runs syntax checks + related tests; full=true runs the entire test suite.
  * Agent must not say "done" before verify passes. Fix-verify loop at most MAX_VERIFY_RETRIES rounds.
  */
 export const verifyTool = {
   name: "verify",
   description:
-    "Run a pre-completion self-check. By default runs syntax checks on changed files, shows git diff and task list, and displays a self-review checklist. Set full=true to also run the project's full test suite (npm test). Call this BEFORE declaring any coding task complete — do not say 'done' until verify passes.",
+    "Run a pre-completion self-check. By default runs syntax checks on changed files AND any test files related to the changed modules, shows git diff and task list, and displays a self-review checklist. Set full=true to run the project's full test suite (npm test) instead of just related tests. Call this BEFORE declaring any coding task complete — do not say 'done' until verify passes.",
   parameters: {
     type: "object",
     properties: {
-      full: { type: "boolean", description: "Also run the full test suite (npm test). Default false — use sparingly, per the testing discipline rules." },
+      full: { type: "boolean", description: "Run the full test suite (npm test) instead of just related tests. Default false — use sparingly, per the testing discipline rules." },
     },
   },
   readonly: true,
@@ -57,11 +91,13 @@ export const verifyTool = {
         const abs = join(cwd, f)
         if (!existsSync(abs)) continue // skip deleted files
         try {
-          execSync(`node --check "${f}"`, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 })
+          const result = spawnSync("node", ["--check", abs], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 })
+          if (result.status !== 0) throw result
           lines.push(`  ✓ ${f}`)
         } catch (e) {
           syntaxFailed = true
-          const errMsg = (e.stderr || e.stdout || e.message || "").toString().split("\n").slice(0, 3).join("\n")
+          const errOutput = (e.stderr || e.stdout || e.message || "").toString()
+          const errMsg = errOutput.split("\n").slice(0, 3).join("\n")
           lines.push(`  ✗ ${f}  — syntax error`)
           lines.push(`    ${errMsg.replace(/\n/g, "\n    ")}`)
         }
@@ -69,53 +105,91 @@ export const verifyTool = {
       if (!syntaxFailed) lines.push("  All syntax checks passed.")
     }
 
-    // 3. Run project tests (only when full=true)
+    // 3. Identify related test files for changed source modules
+    const srcFiles = changedFiles.filter((f) => /^src[/\\].+\.mjs$/i.test(f) && existsSync(join(cwd, f)))
+    const modules = [...new Set(srcFiles.map(moduleName))]
+    const relatedTests = [...new Set(modules.map((m) => MODULE_TO_TEST[m]).filter(Boolean))]
+
+    // 4. Run tests
+    const pkgPath = join(cwd, "package.json")
+    const hasTestScript = existsSync(pkgPath) && (() => { try { return !!JSON.parse(readFileSync(pkgPath, "utf8")).scripts?.test } catch { return false } })()
+
     if (args.full) {
-      try {
-        const pkgPath = join(cwd, "package.json")
-        if (existsSync(pkgPath)) {
-          const pkg = JSON.parse(readFileSync(pkgPath, "utf8"))
-          const testCmd = pkg.scripts?.test
-          if (testCmd) {
-            lines.push("")
-            lines.push(`Tests (${testCmd}):`)
-            try {
-              const result = await runTestSuite(cwd, ctx)
-              const tail = result.stdout.split("\n").slice(-8).join("\n")
-              lines.push(tail || "(tests completed)")
-              lines.push("")
-              lines.push("✓ Tests passed.")
-              ctx.agent._verifyPassed = !syntaxFailed // even if tests happen to pass, syntax failure still counts as fail
-            } catch (e) {
-              const output = e.stdout ? (e.stdout + (e.stderr ? "\n" + e.stderr : "")) : e.message
-              const tail = output.split("\n").slice(-15).join("\n")
-              lines.push(tail || "(no output)")
-              lines.push("")
-              lines.push("✗ Tests FAILED. Review the output above, fix the issues, then run verify again.")
-              ctx.agent._verifyPassed = false
-            }
-          } else {
-            lines.push("")
-            lines.push("Tests: no test script in package.json — skipped.")
-            ctx.agent._verifyPassed = !syntaxFailed
-          }
+      // Full mode: run the entire test suite
+      if (hasTestScript) {
+        lines.push("")
+        lines.push("Tests (full suite):")
+        const result = await runTestSuite(cwd, ctx)
+        if (result.passed) {
+          lines.push("✓ All tests passed.")
+          ctx.agent._verifyPassed = !syntaxFailed
+        } else {
+          lines.push("✗ Tests FAILED. Review the output above, fix the issues, then run verify again.")
+          ctx.agent._verifyPassed = false
         }
-      } catch {
-        lines.push("Tests: (unable to run — no package.json or npm unavailable)")
+      } else {
+        lines.push("")
+        lines.push("Tests: no test script in package.json — skipped.")
+        ctx.agent._verifyPassed = !syntaxFailed
+      }
+    } else if (relatedTests.length > 0) {
+      // Default mode: run only related test files
+      lines.push("")
+      lines.push(`Related tests (${relatedTests.length} file(s) for modules: ${modules.join(", ")}):`)
+      let anyTestFailed = false
+      for (const testFile of relatedTests) {
+        const abs = join(cwd, testFile)
+        if (!existsSync(abs)) {
+          lines.push(`  ? ${testFile} — file not found, skipping`)
+          continue
+        }
+        try {
+          const result = await runTestFile(cwd, testFile, ctx)
+          if (result.passed) {
+            lines.push(`  ✓ ${testFile}`)
+          } else {
+            anyTestFailed = true
+            lines.push(`  ✗ ${testFile} — FAILED`)
+            lines.push(`    ${result.tail.replace(/\n/g, "\n    ")}`)
+          }
+        } catch (e) {
+          anyTestFailed = true
+          lines.push(`  ✗ ${testFile} — error: ${e.message}`)
+        }
+      }
+      if (anyTestFailed) {
+        lines.push("")
+        lines.push("✗ Related tests FAILED. Review the output above, fix the issues, then run verify again.")
+        ctx.agent._verifyPassed = false
+      } else {
+        lines.push("  All related tests passed.")
+        ctx.agent._verifyPassed = !syntaxFailed
       }
     } else {
-      // Quick mode: skip tests but hint that full verification is available
-      const pkgPath = join(cwd, "package.json")
-      if (existsSync(pkgPath)) {
-        try {
-          const pkg = JSON.parse(readFileSync(pkgPath, "utf8"))
-          if (pkg.scripts?.test) {
-            lines.push("")
-            lines.push("Tests: skipped (default quick mode). Run verify with full=true or npm test to run the full suite.")
-          }
-        } catch { /* ignore */ }
+      // No related tests found for the changed modules
+      const uncovered = modules.filter((m) => MODULE_TO_TEST[m] === null)
+      const untested = modules.filter((m) => !(m in MODULE_TO_TEST))
+      lines.push("")
+      if (uncovered.length > 0) {
+        lines.push(`Related tests: NONE for module(s) ${uncovered.join(", ")} — these modules have no dedicated test file.`)
+        lines.push("ACTION REQUIRED: write a test that covers the change you just made.")
+        lines.push("Do NOT proceed to 'done' — a test file is required before this change is complete.")
+      } else if (untested.length > 0) {
+        lines.push(`Related tests: NONE for module(s) ${untested.join(", ")} — unknown module, no test mapping exists.`)
+        lines.push("ACTION REQUIRED: determine which test file covers this code and add it to MODULE_TO_TEST, or write a new test.")
+      } else if (srcFiles.length === 0) {
+        lines.push("Related tests: no source .mjs files changed — nothing to test.")
+        ctx.agent._verifyPassed = !syntaxFailed
+      } else {
+        lines.push("Related tests: none matched. Run verify with full=true to run the full suite.")
+        ctx.agent._verifyPassed = !syntaxFailed
       }
-      ctx.agent._verifyPassed = !syntaxFailed // quick mode: syntax failure must not count as pass
+    }
+
+    // Show full-suite hint when not run
+    if (!args.full && hasTestScript) {
+      lines.push("")
+      lines.push("Note: full test suite not run. Use verify full=true to run ALL tests before committing.")
     }
 
     // 4. Task list
@@ -152,9 +226,48 @@ export const verifyTool = {
 }
 
 /**
+ * Run a single test file with node --test, no maxBuffer limit.
+ * Returns { passed: boolean, tail: string } — the last few lines of output.
+ */
+function runTestFile(cwd, testPath, ctx) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("node", ["--test", testPath], {
+      cwd, shell: true, stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, FORCE_COLOR: "0" },
+    })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (d) => {
+      const s = d.toString()
+      stdout += s
+      ctx.callbacks?.onToolOutput?.("verify", s)
+    })
+    child.stderr.on("data", (d) => {
+      const s = d.toString()
+      stderr += s
+      ctx.callbacks?.onToolOutput?.("verify", s)
+    })
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      reject(new Error(`Test ${testPath} timed out after 120s`))
+    }, 120000)
+    child.on("error", (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      const output = (stdout + stderr).trim()
+      const tail = output.split("\n").slice(-8).join("\n")
+      resolve({ passed: code === 0, tail })
+    })
+  })
+}
+
+/**
  * Run npm test via spawn, no maxBuffer limit.
  * Test output is streamed through ctx.callbacks.onToolOutput (TUI can display progress in real time).
- * On success returns { stdout, stderr }; on non-zero exit throws (with stdout/stderr for caller to extract tail).
+ * Returns { passed: boolean, tail: string }.
  */
 function runTestSuite(cwd, ctx) {
   return new Promise((resolve, reject) => {
@@ -187,13 +300,9 @@ function runTestSuite(cwd, ctx) {
     })
     child.on("close", (code) => {
       clearTimeout(timer)
-      if (code === 0) resolve({ stdout, stderr })
-      else {
-        const err = new Error(`Tests exited with code ${code}`)
-        err.stdout = stdout
-        err.stderr = stderr
-        reject(err)
-      }
+      const output = (stdout + stderr).trim()
+      const tail = output.split("\n").slice(-8).join("\n")
+      resolve({ passed: code === 0, tail })
     })
   })
 }

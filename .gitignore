@@ -13,3 +13,7 @@ coverage/
 
 # Env / secrets
 .env
+
+# Auto-generated agent state
+.thincoder/index/
+.thincoder/tmp/
