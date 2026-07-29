@@ -218,6 +218,14 @@ export async function runAgentTurn(ctx, text) {
     } catch (error) {
       flushStream()
       if (error.name === "AbortError" || state.controller?.signal.aborted) {
+        // Ctrl+I inject: the signal was aborted with an interrupt message — the agent loop
+        // may have already injected it into history, but the aborted signal prevents retry.
+        // Recreate the controller and resume from the same context.
+        if (state.controller?.signal?.reason?.interrupt) {
+          state.controller = new AbortController()
+          resume = true
+          continue
+        }
         pushLine("[stopped]", C.warn)
         break
       }

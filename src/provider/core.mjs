@@ -10,7 +10,7 @@ import {
   estimateRequestTokens, rateGate, recordRate,
 } from "./rate.mjs"
 
-const FETCH_TIMEOUT_MS = 120000
+const FETCH_TIMEOUT_MS = 600_000
 
 /** Create a validated provider config object from raw config */
 export function createProvider(config) {
@@ -315,6 +315,13 @@ export async function readSSE(response, { onToken, onReasoning, rules, signal })
   if (!response.body) throw new Error("No stream response body")
   try {
     for await (const chunk of response.body) {
+      // Active signal check: Ctrl+I abort should halt stream immediately, not wait for
+      // the underlying fetch stream to propagate the abort (delayed on Windows).
+      if (signal?.aborted) {
+        const e = new DOMException("The operation was aborted", "AbortError")
+        e.reason = signal.reason
+        throw e
+      }
       buffer += decoder.decode(chunk, { stream: true })
       const lines = buffer.split("\n")
       buffer = lines.pop()

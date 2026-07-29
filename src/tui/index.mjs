@@ -191,7 +191,7 @@ export async function startTUI(agent, opts = {}) {
       // Can't close? fine, process is exiting anyway
     }
     process.stdin.setRawMode(false)
-    process.stdout.write(ansi.mouseOff + ansi.bracketedPasteOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
+    process.stdout.write(ansi.clearScreen + ansi.mouseOff + ansi.bracketedPasteOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
   }
   process.on("exit", cleanup)
 
@@ -313,6 +313,7 @@ export async function startTUI(agent, opts = {}) {
         const safeDuringProcessing = new Set(["/help", "/exit", "/model", "/think", "/config", "/skills", "/mcp", "/goal", "/session"])
         if (safeDuringProcessing.has(resolved0)) {
           await handleSlash(text)
+          render()
         } else {
           state.queue.push({ text })
           render()
@@ -320,6 +321,7 @@ export async function startTUI(agent, opts = {}) {
         return
       }
       await handleSlash(text)
+      render()
       return
     }
 

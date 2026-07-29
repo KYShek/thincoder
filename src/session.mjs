@@ -161,6 +161,7 @@ export function saveSession(agent, display) {
     planMode: agent.planMode ?? false,
     autoApprove: agent.autoApprove ?? false,
     goal: agent.goal ?? null,
+    advisor: agent.config?.advisor ?? null,
     pendingReminders: agent._pendingReminders ?? [],
     sessionStart: agent._sessionStart ?? null,
   }
@@ -214,6 +215,9 @@ export function applySession(agent, data) {
   agent.goal = data.goal ?? null
   agent._pendingReminders = data.pendingReminders ?? []
   agent._sessionStart = data.sessionStart ?? null
+  if (data.advisor) {
+    agent.config.advisor = { ...data.advisor }
+  }
   // Reset stall/compaction state on session switch
   agent._compressFailures = 0
   agent._verifyRetries = 0
@@ -234,7 +238,7 @@ export function clearSession(cwd) {
   try {
     archiveCurrent(cwd)
     const p = sessionPath(cwd)
-    writeSessionFile(p, { version: 2, cwd, history: [], tasks: [], display: [], goal: null, autoApprove: false, pendingReminders: [], sessionStart: null })
+    writeSessionFile(p, { version: 2, cwd, history: [], tasks: [], display: [], goal: null, autoApprove: false, advisor: null, pendingReminders: [], sessionStart: null })
   } catch {
     // Can't clear, oh well — next save will overwrite
   }

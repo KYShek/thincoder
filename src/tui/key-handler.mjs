@@ -114,8 +114,8 @@ export function createKeyHandler(ctx) {
       setTimeout(() => process.exit(0), 100)
     }
 
-    // Ctrl+I: interrupt current generation and inject a message (time-travel inject)
-    if (key.ctrl && !key.alt && key.name === "i") {
+    // Ctrl+I (or Tab during processing): interrupt and inject a message
+    if ((key.ctrl && !key.alt && key.name === "i") || (key.name === "tab" && state.processing && !state.interruptPrompt)) {
       if (state.processing && state.controller && !state.interruptPrompt) {
         state.interruptPrompt = { text: "" }
         render()

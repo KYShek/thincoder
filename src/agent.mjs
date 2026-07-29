@@ -118,7 +118,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     // Runs only on turn 0 of user input; failure is silent — falls back to current setting.
     if (agent.config?.agent?.autoThink && turn === 0) {
       const { classifyAndApply } = await import("./auto-think.mjs")
-      classifyAndApply(agent, turn).catch(() => {})
+      await classifyAndApply(agent, turn).catch(() => {})
     }
 
     try {
@@ -132,14 +132,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       })
     } catch (e) {
       // User interrupt (Ctrl+I): controller.abort({ interrupt: true, message: "…" }).
-      // The abort may fire before the SSE stream starts (during rate gate or HTTP request).
-      // Inject the user's message into history and retry from the same context.
+      // Inject the message into history and let the outer loop recreate the controller.
       if (e.name === "AbortError" && signal?.reason?.interrupt) {
         agent.history.push({
           role: "user",
           content: `[User interrupt: ${signal.reason.message}]`,
         })
-        continue
       }
       throw e
     }
@@ -170,7 +168,8 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     }
 
     // User interrupted mid-generation (Ctrl+I): the SSE stream was aborted while content
-    // was partially generated. Commit partial output + inject user message, then retry.
+    // was partially generated. Commit partial output + inject user message, then signal
+    // the outer loop to recreate the controller and resume.
     if (response.interrupted) {
       if (response.content) {
         agent.history.push({ role: "assistant", content: response.content })
@@ -179,7 +178,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         role: "user",
         content: `[User interrupt: ${response.interruptMessage}]`,
       })
-      continue
+      throw Object.assign(new Error("User interrupted"), { name: "AbortError" })
     }
 
     if (response.usage) {

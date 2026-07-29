@@ -1,12 +1,9 @@
 /**
  * agent/setup.mjs — runAgent pre-flight setup: context injection, system prompt construction, tool injection
  */
-import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT } from "../context.mjs"
 import { search as memorySearch, docSearch } from "../memory.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
 import { loadSkills, formatSkillListing } from "../skills.mjs"
-import { specForModel } from "../config.mjs"
-import { join } from "node:path"
 import {
   escapeXml, repairHistory, listWorkDir, readonlyToolNames,
   collectGitContext, loadProjectInstructions, OUTLINE_INJECT_PREFIX,

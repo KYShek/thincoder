@@ -154,9 +154,9 @@ export function renderFrame(state, agent, opts) {
   // ---- input box ----
   const { borderColor, title } = inputBoxStyle(state)
   let topBorder
-  if (title === " Input " || title === " Question " || title === " Inject Message ") {
+  if (title === " Input " || title === " Question " || title === " Inject Message " || title === " Processing... ") {
     const parts = []
-    if (title === " Input ") parts.push(" Ctrl+U clear ")
+    if (title === " Input " || title === " Processing... ") parts.push(" Ctrl+U clear ")
     if (title === " Question ") parts.push(" Enter submit ")
     if (title === " Inject Message ") parts.push(" Enter send, Esc cancel ")
     parts.push(" Ctrl+V paste ")

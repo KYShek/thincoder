@@ -7,12 +7,11 @@ import { join } from "node:path"
 import { embed, cosine, toBlob, fromBlob } from "../embedding.mjs"
 import { commitAndPush } from "../git/gitmem.mjs"
 import { DOC_EXTS, SKIP_DIRS, MAX_DOC_FILE_BYTES } from "./schema.mjs"
-import { buildFtsQuery, put, search, putMarkdown } from "./core.mjs"
+import { buildFtsQuery, put, search, putMarkdown, EMBED_TEXT_MAX_LEN } from "./core.mjs"
 import { _upsertDocFile, yieldTick } from "./code-index.mjs"
 import { markIndexedCommit, listProjectFiles } from "./code-sync.mjs"
 
 const DOC_EMBED_BATCH = 64
-const EMBED_TEXT_MAX_LEN = 2000
 
 /**
  * Sync doc index: scan all .md/.mdc/.txt/.rst/.adoc under dir → chunk → upsert into doc_chunks.

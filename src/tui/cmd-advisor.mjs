@@ -56,11 +56,11 @@ async function openAdvisorModelPicker(ctx) {
           // Same as main — clear override (use main pool)
           delete cfg.provider
           delete cfg.model
-          pushLine(`Advisor: 使用主模型 (${agent.activeProvider}/${agent.provider.model})`)
+          pushLine(`Advisor: 使用主模型 (${agent.activeProvider}/${agent.provider.model})`, C.dim)
         } else {
           cfg.provider = e.provider
           cfg.model = e.model
-          pushLine(`Advisor: ${e.provider}/${e.model}`)
+          pushLine(`Advisor: ${e.provider}/${e.model}`, C.dim)
         }
       }
     },
