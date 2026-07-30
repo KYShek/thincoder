@@ -146,12 +146,29 @@ export function renderPicker(state, cols, panel, overlay) {
   if (!panel || !overlay) return []
   const out = []
   const winH = panel.h - 1
-  const start = Math.max(0, Math.min(overlay.scroll, Math.max(0, overlay.lines.length - winH)))
+  const total = overlay.lines.length
+  const start = Math.max(0, Math.min(overlay.scroll, Math.max(0, total - winH)))
   const shown = overlay.lines.slice(start, start + winH)
-  const title = state.picker ? ` ❯ ${state.picker.title} ` : " ❯ Setup "
-  out.push(`${ansi.bold}${C.tool}${title}${ansi.reset}${ansi.dim}${state.picker ? "(↑↓ navigate, Enter confirm, Esc cancel)" : ""}${ansi.reset}`)
-  for (const l of shown) {
-    out.push(`${l.color}${sliceByWidth(l.text, cols - 1)}${ansi.reset}`)
+  // 标题行：左侧标题 + filter（截断防撑破帧），右侧位置指示（按键提示在状态栏，不重复）
+  const p = state.picker
+  const right = p && p.filteredItems?.length ? `${p.index + 1}/${p.filteredItems.length} ` : ""
+  const rawLeft = p ? ` ❯ ${p.title}${p.filter ? `  filter: ${p.filter}` : ""} ` : " ❯ Setup "
+  const left = sliceByWidth(rawLeft, Math.max(1, cols - 2 - stringWidth(right)))
+  const titlePad = " ".repeat(Math.max(1, cols - 1 - stringWidth(left) - stringWidth(right)))
+  out.push(`${ansi.bold}${C.tool}${left}${ansi.reset}${ansi.dim}${titlePad}${right}${ansi.reset}`)
+  const hasMoreAbove = start > 0
+  const hasMoreBelow = start + winH < total
+  for (let i = 0; i < shown.length; i++) {
+    const l = shown[i]
+    // 可视窗上方/下方有更多内容时，在首行/末行右侧给 dim 提示；单行窗口两个方向都有则合并指示
+    const moreAbove = i === 0 && hasMoreAbove
+    const moreBelow = i === shown.length - 1 && hasMoreBelow
+    const ind = moreAbove && moreBelow ? "↑↓ more" : moreAbove ? "↑ more" : moreBelow ? "↓ more" : ""
+    const maxW = cols - 1 - (ind ? stringWidth(ind) + 1 : 0)
+    // 超宽行截断并加省略号
+    const text = stringWidth(l.text) > maxW ? sliceByWidth(l.text, Math.max(0, maxW - 1)) + "…" : l.text
+    const pad = ind ? " ".repeat(Math.max(1, cols - 1 - stringWidth(text) - stringWidth(ind))) : ""
+    out.push(`${l.color}${text}${ansi.reset}${ind ? `${ansi.dim}${pad}${ind}${ansi.reset}` : ""}`)
   }
   for (let i = shown.length; i < winH; i++) out.push("")
   return out
@@ -406,7 +423,7 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
       ? " y: continue │ n: stop"
       : " y: approve │ n: deny │ a: approve all (AUTO)"
   }
-  if (state.picker) return " ↑↓: select │ Enter: confirm │ Esc: cancel"
+  if (state.picker) return " type: filter │ ↑↓/PgUp/PgDn: select │ Enter: confirm │ Esc: cancel"
   if (state.wizard) {
     return state.wizard.step === "provider"
       ? " ↑↓: select │ Enter: confirm │ Esc: skip"

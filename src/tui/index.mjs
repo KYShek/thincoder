@@ -29,7 +29,7 @@ import {
   renderInputBox, renderStatus,
 } from "./render-frame.mjs"
 import { computeLayout } from "./layout.mjs"
-import { SLASH_COMMANDS, createSlashCommands } from "./slash-commands.mjs"
+import { SLASH_COMMANDS, SLASH_ALIASES, createSlashCommands } from "./slash-commands.mjs"
 import { createWizard } from "./wizard.mjs"
 import { createPickers } from "./pickers.mjs"
 import { runDistill as runDistillImpl } from "./distill-cmd.mjs"
@@ -39,6 +39,17 @@ import { runAgentTurn } from "./agent-turn.mjs"
 import { createKeyHandler } from "./key-handler.mjs"
 import { showStartup, backgroundIndex } from "./startup.mjs"
 import { createConfigHelpers } from "./config-helpers.mjs"
+
+/** 升级失败提示文案：附 npm 输出尾部（最多 3 行），方便定位失败原因。 */
+export function upgradeFailureText(code, output) {
+  const tail = (output ?? "").trimEnd().split("\n").slice(-3).join("\n")
+  return `✗ Upgrade failed (exit ${code}). Run \`thincoder upgrade\` manually.${tail ? `\n${tail}` : ""}`
+}
+
+/** 后台更新提示可弹出的条件：无任何交互弹层（picker/permission/question）激活。 */
+export function pendingNoticeReady(state) {
+  return Boolean(state.pendingNotice && !state.picker && !state.permission && !state.question)
+}
 
 /**
  * Start the TUI, taking over the terminal until exit.
@@ -65,7 +76,9 @@ export async function startTUI(agent, opts = {}) {
     permission: null, // { name, args, resolve }
     permissionPreview: [], // content preview lines for permission approval (rendered above input box, without separation)
     question: null, // { text, options, resolve } — agent question tool callback
-    picker: null, // model picker { entries, lines, index, scroll, selectedLine }
+    picker: null, // active picker (stack top) { title, entries, lines, index, scroll, selectedLine, filter }
+    pickerStack: [], // picker 栈：showPicker push，Enter/Esc pop；state.picker 始终指向栈顶
+    pendingNotice: null, // 后台更新提示：有 picker 打开时挂起，picker 全部关闭后再弹
     wizard: null, // first-launch config wizard { step, index, scroll, selectedLine, fields, error, lines }
     tasks: agent.tasks ?? [], // task list from task tool (progress shown in status bar); carried over on session restore, auto-collapsed when all done
     tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0, reasoningTokens: 0 }, // cumulative token usage (shown in status bar)
@@ -313,6 +326,14 @@ export async function startTUI(agent, opts = {}) {
         state.ctxCache = { len: agent.history.length, tokens: estimateTokens(agent.history) }
       }
 
+      // 后台更新提示：等 picker/权限确认/提问弹层全部关闭后再弹，不硬抢
+      // （key-handler 分支顺序 permission → question → picker，任一激活时弹了也摸不到）
+      if (pendingNoticeReady(state)) {
+        const notice = state.pendingNotice
+        state.pendingNotice = null
+        showUpdateNotice(notice).catch((e) => pushLine(`[error] ${e.message}`, C.error))
+      }
+
       // Terminal resize or panel layout shift → full redraw (using legacy renderFrame).
       // Don't clear panelCache — update positions so the next incremental check
       // sees correct Y/h. Content keys will be stale, forcing a one-time rewrite
@@ -330,6 +351,7 @@ export async function startTUI(agent, opts = {}) {
         // Content + cursor in a single write. Hardware cursor stays hidden —
         // the visual cursor is drawn in the input box as SGR reverse video.
         // Position for IME, hide for visual (matching pi-tui).
+        const { frame, cursorRow, cursorCol } = renderFrame(state, agent, { cols: dims.cols, rows: dims.rows, slashCommands: SLASH_COMMANDS })
         if (isStreaming) {
           process.stdout.write(ansi.syncUpdateStart + ansi.home + frame + ansi.clearToEnd + ansi.syncUpdateEnd + `\x1b[${cursorRow};${cursorCol}H${ansi.hideCursor}`)
         } else if (isWizard) {
@@ -422,11 +444,10 @@ export async function startTUI(agent, opts = {}) {
     // Slash commands: handled locally, don't enter agent loop
     if (text.startsWith("/")) {
       if (state.processing) {
-        // While processing: read-only commands (switch/view/help) execute directly;
-        // side-effect commands (clear/new/reindex/extract) are queued
-        const cmd0 = text.split(/\s+/)[0]
-        const ALIASES = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
-        const resolved0 = ALIASES[cmd0] ?? cmd0
+        // While processing: allowlisted commands execute directly (they only touch
+        // local TUI/agent config, never the in-flight turn); the rest are queued
+        const cmd0 = text.split(/\s+/)[0].toLowerCase()
+        const resolved0 = SLASH_ALIASES[cmd0] ?? cmd0
         const safeDuringProcessing = new Set(["/help", "/exit", "/model", "/think", "/config", "/skills", "/mcp", "/goal", "/session"])
         if (safeDuringProcessing.has(resolved0)) {
           await handleSlash(text)
@@ -477,7 +498,7 @@ export async function startTUI(agent, opts = {}) {
   const { persistRaw, syncProviderField, maskKey } = createConfigHelpers(agent)
 
   // Model picker + generic picker: implemented in pickers.mjs
-  const { openPicker, closePicker, showPicker, resolvePicker, renderPickerLines, openModelPicker, setProviderKey } = createPickers({
+  const { closePicker, showPicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey } = createPickers({
     agent, state, render, ansi, C, pushLine, pushLabel, persistRaw, askQuestion, maskKey,
   })
 
@@ -494,9 +515,10 @@ export async function startTUI(agent, opts = {}) {
   const { handleSlash, completions, handleTab } = createSlashCommands({
     agent, state, distillOpts,
     pushLine, pushLabel, render,
-    openPicker, showPicker, closePicker, askQuestion, askPermission,
+    showPicker, closePicker, askQuestion, askPermission,
     persistRaw, syncProviderField, maskKey,
     openModelPicker: () => openModelPicker(),
+    selectModel,
     setProviderKey,
     runDistill,
     exit: () => { cleanup(); setTimeout(() => process.exit(0), 100) },
@@ -508,7 +530,7 @@ export async function startTUI(agent, opts = {}) {
 
   // keypress is attached to filtered keyStream: mouse sequences already intercepted and stripped upstream
   const onKeypress = createKeyHandler({
-    agent, state, render, closePicker, resolvePicker, renderPickerLines,
+    agent, state, render, popPicker, renderPickerLines,
     handleSlash, handleTab, submit, pasteClipboardImage,
     wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
     renderWizard, pushLine, cleanup,
@@ -528,6 +550,30 @@ export async function startTUI(agent, opts = {}) {
   backgroundIndex({ agent, state, render })
 
   // Check for updates (non-blocking, after startup screen)
+  // 有 picker 打开时不硬抢：挂到 state.pendingNotice，picker 全部关闭后由 doRender 弹出
+  const showUpdateNotice = async (result) => {
+    const sel = await showPicker(`Update available: ${result.local} → ${result.latest}`, [
+      { type: "header", text: `thincoder ${result.latest} is available (current: ${result.local})` },
+      { type: "item", text: "Upgrade now", action: "upgrade" },
+      { type: "item", text: "Later", action: "later" },
+    ])
+    if (sel?.action !== "upgrade") return
+    pushLabel(`❯ Upgrade`, ansi.bold + C.tool)
+    pushLine(`Upgrading to ${result.latest}...`, C.tool)
+    const { exec } = await import("node:child_process")
+    const cp = exec("npm install -g thincoder@latest", { windowsHide: true })
+    let stdout = ""
+    cp.stdout?.on("data", (d) => { stdout += d })
+    cp.stderr?.on("data", (d) => { stdout += d })
+    cp.on("close", (code) => {
+      if (code === 0) {
+        pushLine(`✓ Upgraded to ${result.latest}. Restart to apply.`, C.tool)
+      } else {
+        pushLine(upgradeFailureText(code, stdout), C.error)
+      }
+      render()
+    })
+  }
   ;(async () => {
     try {
       const { readFileSync } = await import("node:fs")
@@ -540,33 +586,8 @@ export async function startTUI(agent, opts = {}) {
           pushLine(`Tip: thincoder ${result.latest} is available (run /upgrade later or restart)`, C.dim)
           render()
         } else {
-          openPicker({
-            title: `Update available: ${result.local} → ${result.latest}`,
-            entries: [
-              { type: "header", text: `thincoder ${result.latest} is available (current: ${result.local})` },
-              { type: "item", text: "Upgrade now", action: "upgrade" },
-              { type: "item", text: "Later", action: "later" },
-            ],
-            onSelect: async (sel) => {
-              if (sel.action === "upgrade") {
-                pushLabel(`❯ Upgrade`, ansi.bold + C.tool)
-                pushLine(`Upgrading to ${result.latest}...`, C.tool)
-                const { exec } = await import("node:child_process")
-                const cp = exec("npm install -g thincoder@latest", { windowsHide: true })
-                let stdout = ""
-                cp.stdout?.on("data", (d) => { stdout += d })
-                cp.stderr?.on("data", (d) => { stdout += d })
-                cp.on("close", (code) => {
-                  if (code === 0) {
-                    pushLine(`✓ Upgraded to ${result.latest}. Restart to apply.`, C.tool)
-                  } else {
-                    pushLine(`✗ Upgrade failed (exit ${code}). Run \`thincoder upgrade\` manually.`, C.error)
-                  }
-                  render()
-                })
-              }
-            },
-          })
+          state.pendingNotice = result
+          render()
         }
       }
     } catch { /* network error or timeout — silently skip */ }

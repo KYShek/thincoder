@@ -3,10 +3,9 @@
  */
 import { C } from "./ansi.mjs"
 
-export async function handleFoldCommand(ctx) {
+export async function handleFoldCommand(ctx, args = []) {
   const { state } = ctx
-  const text = state.input.join("").trim()
-  const arg = text.split(/\s+/)[1]
+  const arg = args[0]?.toLowerCase()
   if (arg === "on") {
     state.foldEnabled = true
     ctx.pushLine("Folding: on (long tool results are collapsed)", C.dim)

@@ -2,9 +2,9 @@ import { clearSession } from "../session.mjs"
 import { C } from "./ansi.mjs"
 
 /** /new command: start new session (old session archived to slot).
- *  ctx: { agent, state, pushLine, openPicker, render } */
+ *  ctx: { agent, state, pushLine, showPicker, render } */
 export async function handleNewCommand(ctx) {
-  const { agent, state, pushLine, openPicker, render } = ctx
+  const { agent, state, pushLine, showPicker, render } = ctx
 
   const doNewSession = () => {
     agent.history = []
@@ -21,17 +21,11 @@ export async function handleNewCommand(ctx) {
   }
 
   if (agent.history.length > 0) {
-    openPicker({
-      title: "Start new session?",
-      entries: [
-        { type: "item", text: "Yes, archive current and start new", action: "yes" },
-        { type: "item", text: "Cancel", action: "no" },
-      ],
-      defaultIndex: 1,
-      onSelect: (e) => {
-        if (e.action === "yes") doNewSession()
-      },
-    })
+    const e = await showPicker("Start new session?", [
+      { type: "item", text: "Yes, archive current and start new", action: "yes" },
+      { type: "item", text: "Cancel", action: "no" },
+    ], { defaultIndex: 1 })
+    if (e?.action === "yes") doNewSession()
     return
   }
   doNewSession()

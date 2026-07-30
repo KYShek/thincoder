@@ -4,6 +4,8 @@
  * Docs: https://ai.google.dev/gemini-api/docs
  */
 
+import { proxyFetch } from "../proxy.mjs"
+
 /** Convert OpenAI-format tools to Gemini format */
 export function normalizeTools(tools) {
   if (!tools?.length) return null
@@ -86,14 +88,14 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
 
   if (signal?.aborted) throw Object.assign(new DOMException("Aborted", "AbortError"), { reason: signal.reason })
 
-  const response = await fetch(url, {
+  const response = await proxyFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)])
       : AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  })
+  }, provider.proxyUri)
 
   if (!response.ok) {
     const text = await response.text().catch(() => "")

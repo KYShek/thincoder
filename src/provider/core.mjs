@@ -31,7 +31,7 @@ export function createProvider(config) {
     format: config.format,
     chatPath: config.chatPath,
     proxy: config.proxy,
-    proxyUri: config._proxyUri,
+    proxyUri: config.proxyUri,
   }
 }
 

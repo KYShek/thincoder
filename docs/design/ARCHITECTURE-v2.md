@@ -177,15 +177,15 @@ thincoder distill           # 从当前会话提取候选条目，逐条 y/n 后
 ### 通用选择器
 
 ```js
-// 打开选择器：entries 含 { type:"header"|"item", text, ...extra }，
-// onSelect 收到选中条目（含 extra 字段透传）
-openPicker({ title, entries, onSelect, onCancel?, defaultIndex? })
+// 打开选择器（Promise 式，选中即关闭）：entries 含 { type:"header"|"item", text, ...extra }，
+// resolve 选中条目（含 extra 字段透传），Esc/取消 → null
+const entry = await showPicker(title, entries, { defaultIndex? })
 
-// 关闭（Esc 或 Enter 后自动调用）
+// 关闭所有 picker：清空栈，挂起者全部 resolve(null)
 closePicker()
 ```
 
-选择器状态存储在 `state.picker`，键盘处理统一在输入循环中：方向键移动索引、Enter 调 `onSelect` 后关闭、Esc 调 `onCancel` 后关闭。
+选择器为栈结构：`state.pickerStack`，`state.picker` 始终指向栈顶。`showPicker` 入栈前有互斥保护（挂起的旧 picker 全部 resolve(null)，消除 Promise 悬挂）；嵌套菜单用顺序 `await`（上一层返回后再开下一层），子菜单 Esc 返回 null 由调用方 while 循环重开主菜单。键盘处理统一在输入循环中：↑↓ 循环移动、PgUp/PgDn 翻页、Home/End 跳首尾、可打印字符进入 `picker.filter`（大小写不敏感子串过滤，Backspace 删除）、Enter 选中过滤后列表的当前项并关闭、Esc/Ctrl+C 取消当前层。
 
 ### 需要文本输入的操作
 

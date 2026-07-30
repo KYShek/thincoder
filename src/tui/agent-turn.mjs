@@ -10,6 +10,9 @@ import { ansi, C } from "./ansi.mjs"
  *         handleSlash, summarize } */
 export async function runAgentTurn(ctx, text) {
   const { agent, state, pushLine, pushLabel, render, scheduleRender, ensureAssistantLabel, askPermission, askQuestion, handleSlash, summarize } = ctx
+  // 可注入覆盖（测试用）；默认走真实实现
+  const runAgentImpl = ctx.runAgent ?? runAgent
+  const saveSessionImpl = ctx.saveSession ?? saveSession
   pushLabel(`❯ You:`, ansi.bold + C.user)
   pushLine(text, C.text)
 
@@ -205,14 +208,14 @@ export async function runAgentTurn(ctx, text) {
       let n = 0
       return () => {
         if (++n % 5 !== 0) return
-        try { saveSession(agent, state.lines) } catch (e) { console.error(`[session] incremental save failed: ${e.message}`) }
+        try { saveSessionImpl(agent, state.lines) } catch (e) { console.error(`[session] incremental save failed: ${e.message}`) }
       }
     })(),
   }
 
   for (let resume = false; ; resume = true) {
     try {
-      await runAgent(agent, text, callbacks, { signal: state.controller.signal, resume })
+      await runAgentImpl(agent, text, callbacks, { signal: state.controller.signal, resume })
       flushStream()
       break // Normal completion, exit loop
     } catch (error) {
@@ -268,28 +271,24 @@ export async function runAgentTurn(ctx, text) {
   }
   // Save session after every turn (survives crashes)
   try {
-    saveSession(agent, state.lines)
+    saveSessionImpl(agent, state.lines)
   } catch {
     // Save failure doesn't interrupt usage
   }
   render()
 
   // Queued messages: auto-process next one
-  if (state.queue.length > 0) {
+  while (state.queue.length > 0 && !state.processing) {
     const next = state.queue.shift()
-    // Queued slash commands execute directly
+    // Queued slash commands execute directly — check every item, not just the first
     if (next.text.startsWith("/")) {
       await handleSlash(next.text)
       render()
-      // After slash command completes, continue checking queue
-      if (state.queue.length > 0 && !state.processing) {
-        const next2 = state.queue.shift()
-        await runAgentTurn(ctx, next2.text)
-      }
-    } else {
-      pushLabel(`❯ You: (from queue)`, ansi.bold + C.user)
-      await runAgentTurn(ctx, next.text)
+      continue
     }
+    pushLabel(`❯ You: (from queue)`, ansi.bold + C.user)
+    await runAgentTurn(ctx, next.text)
+    return
   }
 }
 

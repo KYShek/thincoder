@@ -1,14 +1,15 @@
 import { ansi, C } from "./ansi.mjs"
 import { readClipboardText, insertPastedText } from "./clipboard.mjs"
+import { computeLayout } from "./layout.mjs"
 
 /** Keyboard event dispatch: permission confirm / question / picker / wizard / edit / scroll / history / paste.
  *  Extracted from index.mjs.
- *  ctx: { agent, state, render, renderPickerLines, closePicker,
+ *  ctx: { agent, state, render, renderPickerLines, popPicker,
  *         handleSlash, handleTab, submit, pasteClipboardImage,
  *         wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
  *         renderWizard, pushLine, cleanup } */
 export function createKeyHandler(ctx) {
-  const { agent, state, render, closePicker, resolvePicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup } = ctx
+  const { agent, state, render, popPicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup } = ctx
 
   return function onKeypress(str, key = {}) {
     // permission confirm state: y approve / n deny / a approve + turn ON AUTO (no further prompts)
@@ -104,6 +105,11 @@ export function createKeyHandler(ctx) {
     }
 
     if (key.ctrl && key.name === "c") {
+      // picker 打开时 Ctrl+C = 取消当前 picker（等同 Esc），不杀进程
+      if (state.picker) {
+        popPicker(null)
+        return
+      }
       if (state.processing && state.controller) {
         state.controller.abort()
         pushLine("[Aborting…]", C.warn)
@@ -111,7 +117,9 @@ export function createKeyHandler(ctx) {
         return
       }
       cleanup()
-      setTimeout(() => process.exit(0), 100)
+      // 延迟退出可注入（测试传大值并清理定时器，避免定时器在 mock 恢复后调到真 process.exit）
+      ctx.exitTimer = setTimeout(() => process.exit(0), ctx.exitDelay ?? 100)
+      ctx.exitTimer.unref?.()
     }
 
     // Ctrl+I (or Tab during processing): interrupt and inject a message
@@ -146,39 +154,47 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // generic list picker
+    // generic list picker: ↑↓/PgUp/PgDn/Home/End 导航，输入即过滤，Enter 选中，Esc 取消
     if (state.picker) {
-      const items = state.picker?.entries.filter((e) => e.type === "item") ?? []
+      const p = state.picker
+      const items = p.filteredItems ?? p.entries.filter((e) => e.type === "item")
+      // 可视窗高度：直接取 layout 算出的实际 picker 面板高（含小终端 pickerFinalH 压缩），减标题行。
+      // 单一数据源，避免与 layout.mjs 公式漂移
+      const winH = Math.max(1, (computeLayout(state, { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }).panels.picker?.h ?? p.lines.length + 1) - 1)
+      const applyFilter = (f) => {
+        p.filter = f
+        p.index = 0
+        p.scroll = 0
+        renderPickerLines()
+      }
       if (key.name === "escape") {
-        if (state._pickerResolve) {
-          const resolve = state._pickerResolve
-          state._pickerResolve = null
-          state.picker = null
-          render()
-          resolve(null)
-        } else {
-          closePicker()
-        }
+        popPicker(null)
       } else if (key.name === "up" && items.length) {
-        state.picker.index = (state.picker.index - 1 + items.length) % items.length
+        p.index = (p.index - 1 + items.length) % items.length
         renderPickerLines()
       } else if (key.name === "down" && items.length) {
-        state.picker.index = (state.picker.index + 1) % items.length
+        p.index = (p.index + 1) % items.length
         renderPickerLines()
+      } else if (key.name === "pageup" && items.length) {
+        p.index = Math.max(0, p.index - winH)
+        renderPickerLines()
+      } else if (key.name === "pagedown" && items.length) {
+        p.index = Math.min(items.length - 1, p.index + winH)
+        renderPickerLines()
+      } else if (key.name === "home" && items.length) {
+        p.index = 0
+        renderPickerLines()
+      } else if (key.name === "end" && items.length) {
+        p.index = items.length - 1
+        renderPickerLines()
+      } else if (key.name === "backspace") {
+        if (p.filter) applyFilter(p.filter.slice(0, -1))
       } else if ((key.name === "return" || key.name === "enter" || str === "\r") && items.length) {
-        const selected = items[state.picker.index]
-        if (state._pickerResolve) {
-          const resolve = state._pickerResolve
-          state._pickerResolve = null
-          state.picker = null
-          render()
-          resolve(selected)
-        } else {
-          const handler = state.picker.onSelect
-          Promise.resolve(handler?.(selected)).catch((err) => {
-            pushLine(`[error] ${err.message}`, C.error)
-          }).finally(() => render())
-        }
+        popPicker(items[p.index]) // 选中即关闭
+      } else if (str && !key.ctrl && !key.meta) {
+        // 输入即过滤；粘贴的多行文本先去换行（与输入框清洗口径一致），仍含控制字符则整段丢弃
+        const text = str.replace(/[\r\n]+/g, "")
+        if (text && !/[\x00-\x1f\x7f]/.test(text)) applyFilter(p.filter + text)
       }
       return
     }

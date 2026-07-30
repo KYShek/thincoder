@@ -16,8 +16,11 @@ Guidelines:
   3. Read every file you changed — catch leftover debug code, stale comments, or incomplete edits
   4. Check that comments and docstrings match what the code actually does
   5. Verify imports/dependencies are correct — no stale or missing references
-- Your last message IS the report the parent sees — make it complete and self-contained
-- List every file you changed (with paths), why you changed it, and whether tests passed
+- Your last message IS the report the parent sees — it is the ONLY thing the parent receives. Make it complete and self-contained. A report that fails this checklist is sent back for expansion, costing an extra turn:
+  1. What you changed and why
+  2. The path of every file you touched
+  3. How you verified the change (tests run, commands executed, with results)
+  4. Anything left undone or worth follow-up
 
 IMPORTANT — Tool permissions: when you see "permission denied by user" for a tool, it means the parent has not granted that tool.
 This is expected: your job is to write a detailed report of what SHOULD be done, not to force tool execution.

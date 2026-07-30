@@ -5,6 +5,7 @@
  */
 
 import { specForModel } from "../config.mjs"
+import { proxyFetch } from "../proxy.mjs"
 
 const ANTHROPIC_VERSION = "2023-06-01"
 
@@ -58,14 +59,14 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
   // Active signal check
   if (signal?.aborted) throw Object.assign(new DOMException("Aborted", "AbortError"), { reason: signal.reason })
 
-  const response = await fetch(`${provider.baseURL}/messages`, {
+  const response = await proxyFetch(`${provider.baseURL}/messages`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)])
       : AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  })
+  }, provider.proxyUri)
 
   if (!response.ok) {
     const text = await response.text().catch(() => "")

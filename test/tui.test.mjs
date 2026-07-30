@@ -10,7 +10,7 @@ import { computeLayout } from "../src/tui/layout.mjs"
 import {
   renderFrame, countConvLines, convCacheKey,
   renderHeader, renderConversation, renderTodo, renderSubagent,
-  renderOutput, renderPermission, renderQueue,
+  renderOutput, renderPermission, renderQueue, renderPicker,
   renderInputBox, renderStatus,
 } from "../src/tui/render-frame.mjs"
 import { createKeyHandler } from "../src/tui/key-handler.mjs"
@@ -316,7 +316,7 @@ function noop() {}
 function keyCtx(state, agent = null) {
   return {
     agent: agent || tuiAgent(), state,
-    render: noop, closePicker: noop, renderPickerLines: noop,
+    render: noop, popPicker: () => false, renderPickerLines: noop,
     handleSlash: noop, handleTab: noop,
     submit: async () => {}, pasteClipboardImage: async () => {},
     wizardChooseProvider: noop, wizardSubmitText: noop, cancelWizard: noop,
@@ -449,16 +449,16 @@ test("keyHandler: printable during processing adds to input (queued messages)", 
   assert.equal(state.input.join(""), "x")
 })
 
-test("keyHandler: escape in picker closes it", () => {
-  let closed = false
+test("keyHandler: escape in picker pops it (resolve null)", () => {
+  let popped = false
   const state = tuiState({
     picker: { entries: [{ type: "item", value: "x", label: "x" }], index: 0, lines: [], scroll: 0 },
   })
   const handler = createKeyHandler({
-    ...keyCtx(state), closePicker: () => { closed = true },
+    ...keyCtx(state), popPicker: (v) => { popped = true; assert.equal(v, null); return true },
   })
   handler("", { name: "escape" })
-  assert.ok(closed)
+  assert.ok(popped)
 })
 
 // ---------------------------------------------------------------- panel render functions (incremental rendering)
@@ -683,4 +683,219 @@ test("streaming simulation: new line in middle pushes lines up", () => {
   }
   // Adding a new history line pushes all visible lines up — up to visibleH diffs
   assert.ok(diffs >= 1 && diffs <= visibleH, `expected 1-${visibleH} diffs, got ${diffs}`)
+})
+
+// ====================================================================
+// picker 重构（Phase A/B/C）：renderFrame 回归 / key-handler picker 分支 / renderPicker / layout 约束
+// ====================================================================
+
+const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "")
+
+/** picker 状态工厂：20 个 item，lines 已构建（winH 依赖 lines.length） */
+function pickerState(overrides = {}) {
+  const items = Array.from({ length: 20 }, (_, i) => ({ type: "item", text: `item${i}` }))
+  return {
+    title: "Demo", entries: items,
+    lines: items.map((it, i) => ({ text: `   ${it.text}`, color: "" })),
+    index: 0, scroll: 0, selectedLine: 0, filter: "", filteredItems: items,
+    ...overrides,
+  }
+}
+
+test("renderFrame: picker 打开时全量重绘返回 frame/cursorRow/cursorCol 且含 picker 标题（Phase A 回归）", () => {
+  const state = tuiState({ picker: pickerState() })
+  const { frame, cursorRow, cursorCol } = renderFrame(state, tuiAgent(), { cols: 80, rows: 24, slashCommands: [] })
+  assert.ok(stripAnsi(frame).includes("Demo"), "frame 应包含 picker 标题")
+  assert.equal(typeof cursorRow, "number")
+  assert.equal(typeof cursorCol, "number")
+})
+
+test("keyHandler: picker 中可打印字符进入 filter，控制字符（Tab）不进", () => {
+  const state = tuiState({ picker: pickerState() })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("a", { name: "a" })
+  handler("b", { name: "b" })
+  assert.equal(state.picker.filter, "ab")
+  handler("\t", { name: "tab" })
+  assert.equal(state.picker.filter, "ab", "Tab 不应进入 filter")
+})
+
+test("keyHandler: picker filter 变化重置 index/scroll；Backspace 删 filter 字符", () => {
+  const state = tuiState({ picker: pickerState({ index: 5, scroll: 3 }) })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("x", { name: "x" })
+  assert.equal(state.picker.filter, "x")
+  assert.equal(state.picker.index, 0, "filter 变化重置 index")
+  assert.equal(state.picker.scroll, 0, "filter 变化重置 scroll")
+  handler("", { name: "backspace" })
+  assert.equal(state.picker.filter, "")
+  handler("", { name: "backspace" }) // 空 filter 时 backspace 无副作用、不抛错
+  assert.equal(state.picker.filter, "")
+})
+
+test("keyHandler: picker PgUp/PgDn/Home/End 导航与边界", () => {
+  const state = tuiState({ picker: pickerState() })
+  const handler = createKeyHandler(keyCtx(state))
+  // 与 key-handler 同一数据源：layout 实际 picker 面板高减标题行
+  const winH = computeLayout(state, { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }).panels.picker.h - 1
+  handler("", { name: "pagedown" })
+  assert.equal(state.picker.index, Math.min(19, winH))
+  handler("", { name: "pageup" })
+  assert.equal(state.picker.index, 0)
+  handler("", { name: "end" })
+  assert.equal(state.picker.index, 19)
+  handler("", { name: "pagedown" })
+  assert.equal(state.picker.index, 19, "PgDn 到底后 clamp")
+  handler("", { name: "home" })
+  assert.equal(state.picker.index, 0)
+  handler("", { name: "pageup" })
+  assert.equal(state.picker.index, 0, "PgUp 到顶后 clamp")
+})
+
+test("keyHandler: picker PgDn 步长跟随 layout 小终端压缩后的实际可视窗", () => {
+  const state = tuiState({ picker: pickerState() })
+  const handler = createKeyHandler(keyCtx(state))
+  const origRows = process.stdout.rows
+  process.stdout.rows = 9 // 触发 pickerFinalH 压缩（6 → 3）
+  try {
+    const h = computeLayout(state, { cols: 80, rows: 9 }).panels.picker.h
+    assert.equal(h, 3, "小终端 picker 被压到 3 行")
+    handler("", { name: "pagedown" })
+    assert.equal(state.picker.index, h - 1, "PgDn 按实际可视窗（2 行）跳，而不是未压缩的 5 行")
+  } finally {
+    process.stdout.rows = origRows
+  }
+})
+
+test("layout: 极端小终端（rows=9 + picker + tasks + permission）不抛异常，按序压缩", () => {
+  const state = tuiState({
+    picker: pickerState(),
+    tasks: [{ title: "t1", status: "in_progress" }, { title: "t2", status: "pending" }],
+    permission: { name: "write", args: {} },
+    permissionPreview: ["preview line 1", "preview line 2"],
+  })
+  const layout = computeLayout(state, { cols: 80, rows: 9 })
+  assert.equal(layout.panels.conversation.h, 1, "conversation 先压到最小 1 行")
+  assert.equal(layout.panels.picker.h, 3, "picker 再压到最小 3 行")
+  // best-effort 语义：其余面板不裁剪，总行数允许超过 rows（锁定当前行为）
+  const total = Object.values(layout.panels).reduce((s, p) => s + (p ? p.h : 0), 0)
+  assert.ok(total > 9, `极端情况补偿后仍溢出（total=${total} > 9）`)
+})
+
+test("keyHandler: picker Enter 调 popPicker(选中项)、Esc 调 popPicker(null)", () => {
+  const pops = []
+  const state = tuiState({ picker: pickerState({ index: 3 }) })
+  const handler = createKeyHandler({ ...keyCtx(state), popPicker: (v) => { pops.push(v); return true } })
+  handler("", { name: "return" })
+  assert.equal(pops[0], state.picker.filteredItems[3], "Enter resolve 过滤后列表的当前项")
+  handler("", { name: "escape" })
+  assert.equal(pops[1], null, "Esc resolve null")
+})
+
+test("keyHandler: Ctrl+C 在 picker 打开时取消 picker 而不是退出", () => {
+  const pops = []
+  let cleaned = false
+  const state = tuiState({ picker: pickerState() })
+  const handler = createKeyHandler({ ...keyCtx(state), popPicker: (v) => { pops.push(v); return true }, cleanup: () => { cleaned = true } })
+  handler("", { name: "c", ctrl: true })
+  assert.deepEqual(pops, [null], "Ctrl+C = 取消当前 picker")
+  assert.equal(cleaned, false, "不应触发退出")
+})
+
+test("keyHandler: Ctrl+C 无 picker 时保持原退出行为", () => {
+  let cleaned = false
+  const state = tuiState()
+  // 注入超大退出延迟，定时器永远不会在测试进程内触发；结束时清理
+  const ctx = { ...keyCtx(state), cleanup: () => { cleaned = true }, exitDelay: 60_000 }
+  const handler = createKeyHandler(ctx)
+  try {
+    handler("", { name: "c", ctrl: true })
+    assert.equal(cleaned, true, "无 picker 时走 cleanup 退出路径")
+    assert.ok(ctx.exitTimer, "退出定时器已创建")
+  } finally {
+    clearTimeout(ctx.exitTimer)
+  }
+})
+
+test("renderPicker: 位置指示 / filter 标题 / ↑ more / ↓ more", () => {
+  const picker = pickerState({ index: 2, scroll: 5, filter: "ab" })
+  const state = tuiState({ picker })
+  const out = renderPicker(state, 60, { y: 0, h: 6 }, picker).map(stripAnsi)
+  assert.ok(out[0].includes("❯ Demo"), "标题行含 picker 标题")
+  assert.ok(out[0].includes("filter: ab"), "标题行含 filter")
+  assert.ok(out[0].includes("3/20"), "标题行右侧含位置指示")
+  assert.ok(out[1].includes("↑ more"), "窗口上方有更多内容时首行提示")
+  assert.ok(out[5].includes("↓ more"), "窗口下方有更多内容时末行提示")
+})
+
+test("renderPicker: 超长 filter 的标题行被截断，右侧位置指示保留", () => {
+  const picker = pickerState({ index: 2, filter: "x".repeat(200) })
+  const state = tuiState({ picker })
+  const out = renderPicker(state, 40, { y: 0, h: 3 }, picker).map(stripAnsi)
+  assert.ok(stringWidth(out[0]) <= 39, `标题行不超终端宽（实际 ${stringWidth(out[0])}）`)
+  assert.ok(out[0].includes("3/20"), "右侧位置指示保留")
+})
+
+test("renderStatus: picker 激活时提示输入即过滤与 PgUp/PgDn", () => {
+  const state = tuiState({ picker: pickerState() })
+  const agent = { provider: { model: "test" }, cwd: "/test", planMode: false, autoApprove: false, config: {} }
+  const line = stripAnsi(renderStatus(state, agent, 120, []))
+  assert.ok(line.includes("filter"), "提示输入即过滤")
+  assert.ok(line.includes("PgUp/PgDn"), "提示翻页导航")
+})
+
+test("keyHandler: picker 中粘贴多行文本先清洗换行再进 filter", () => {
+  const state = tuiState({ picker: pickerState() })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("ab\ncd\r\nef", {})
+  assert.equal(state.picker.filter, "abcdef", "换行被清洗，其余字符进入 filter")
+  // 清洗后仍含其他控制字符的整段丢弃
+  handler("x\x07y", {})
+  assert.equal(state.picker.filter, "abcdef", "含控制字符的输入仍被丢弃")
+})
+
+test("renderPicker: 单行可视窗时上下都有更多内容显示合并指示 ↑↓ more", () => {
+  const picker = pickerState({ scroll: 5 }) // 20 项，窗口夹在中间
+  const state = tuiState({ picker })
+  const out = renderPicker(state, 60, { y: 0, h: 2 }, picker).map(stripAnsi) // h=2 → winH=1
+  assert.ok(out[1].includes("↑↓ more"), "首行即末行时两个方向的 more 指示合并")
+  assert.ok(out[1].includes("item5"), "条目内容仍正常显示")
+})
+
+test("pendingNoticeReady: picker/permission/question 任一激活时不弹后台更新提示", async () => {
+  const { pendingNoticeReady } = await import("../src/tui/index.mjs")
+  const base = { pendingNotice: { newer: true }, picker: null, permission: null, question: null }
+  assert.equal(pendingNoticeReady(base), true, "无弹层时可弹")
+  assert.equal(pendingNoticeReady({ ...base, picker: {} }), false, "picker 激活时不弹")
+  assert.equal(pendingNoticeReady({ ...base, permission: {} }), false, "权限确认激活时不弹")
+  assert.equal(pendingNoticeReady({ ...base, question: {} }), false, "提问弹层激活时不弹")
+  assert.equal(pendingNoticeReady({ ...base, pendingNotice: null }), false, "无挂起提示不弹")
+})
+
+test("upgradeFailureText: 失败提示附 npm 输出尾部（最多 3 行）", async () => {
+  const { upgradeFailureText } = await import("../src/tui/index.mjs")
+  const text = upgradeFailureText(1, "line1\nline2\nline3\nnpm ERR! code EACCES\n")
+  assert.ok(text.includes("exit 1"))
+  assert.ok(text.includes("npm ERR! code EACCES"), "含输出尾部，方便定位失败原因")
+  assert.ok(!text.includes("line1"), "只保留最后 3 行")
+  assert.ok(!upgradeFailureText(1, "").includes("\n"), "无输出时不加尾巴")
+})
+
+test("renderPicker: 超宽行截断加省略号且不超宽", () => {
+  const picker = pickerState({ lines: [{ text: "x".repeat(200), color: "" }], scroll: 0 })
+  const state = tuiState({ picker })
+  const out = renderPicker(state, 40, { y: 0, h: 3 }, picker).map(stripAnsi)
+  assert.ok(out[1].endsWith("…"), "截断行末尾加省略号")
+  assert.ok(stringWidth(out[1]) <= 39, "不超终端宽")
+})
+
+test("layout: 小终端全局约束 — 总行数 ≤ rows，conversation ≥ 1，picker ≥ 3", () => {
+  for (const rows of [9, 10, 14]) {
+    const state = tuiState({ picker: pickerState() })
+    const layout = computeLayout(state, { cols: 80, rows })
+    const total = Object.values(layout.panels).reduce((s, p) => s + (p ? p.h : 0), 0)
+    assert.ok(total <= rows, `rows=${rows}: 总高 ${total} 不应超过 ${rows}`)
+    assert.ok(layout.panels.conversation.h >= 1, `rows=${rows}: conversation 最小 1 行`)
+    if (layout.panels.picker) assert.ok(layout.panels.picker.h >= 3 || layout.panels.picker.h >= state.picker.lines.length + 1, `rows=${rows}: picker 最小 3 行`)
+  }
 })

@@ -176,9 +176,9 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
 
   // 显式配置优先
   assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
-  // 未配置时按模型推导：1M 窗口 × 0.6 = 60万，cap 到 30万（防历史涨到打爆 TPM）
-  assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 300000, auto: true })
-  // 256K 窗口 × 0.6 = 153,600，未触 cap，floor 40K 也未触
+  // 未配置时按模型推导：1M 窗口 × 0.6 = 60万
+  assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 600000, auto: true })
+  // 256K 窗口 × 0.6 = 153,600
   assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 153600, auto: true })
 })
 

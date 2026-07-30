@@ -24,7 +24,7 @@ Design docs in `docs/design/`. Complete pipeline: [`PHILOSOPHY.md`](docs/design/
 ## Key Modules
 
 ```
-bin/thincoder.mjs    CLI entry
+bin/thincoder.cjs    CLI entry
 src/agent.mjs        main loop + reminder injection + verifyGuard (opt-in) + incremental indexing
 src/agent/           loop helpers (dispatch, setup, helpers)
 src/agent-tools/     self-discipline tools (task/plan/goal/verify/subagent/skill)

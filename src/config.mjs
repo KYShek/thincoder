@@ -154,6 +154,15 @@ export function findProvider(providers, name) {
   return providers[0] ?? { name: "default", baseURL: "", model: "" }
 }
 
+/** Normalize proxy config to { uri, web, model } or undefined (uri/url both accepted; invalid types dropped) */
+export function normalizeProxy(proxy) {
+  if (typeof proxy === "string") return proxy ? { uri: proxy, web: true, model: false } : undefined
+  if (!proxy || typeof proxy !== "object" || Array.isArray(proxy)) return undefined
+  const uri = proxy.uri || proxy.url || ""
+  if (typeof uri !== "string" || !uri) return undefined
+  return { uri, web: proxy.web !== false, model: proxy.model === true }
+}
+
 /**
  * Load configuration.
  * Env var priority: THINCODER_ACTIVE_PROVIDER > config file activeProvider
@@ -183,6 +192,10 @@ export function loadConfig() {
   for (const p of merged.providers) {
     if (p.baseURL) p.baseURL = p.baseURL.replace(/\/+$/, "")
   }
+
+  // Normalize proxy: string → { uri, web:true, model:false }; object 补默认值；非法类型丢弃。
+  // 保证 agent.config.proxy 永远是规范形态或 undefined
+  merged.proxy = normalizeProxy(merged.proxy)
 
   // Env var overrides activeProvider
   if (process.env.THINCODER_ACTIVE_PROVIDER) {

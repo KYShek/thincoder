@@ -41,7 +41,7 @@ export function snapshotForUndo(agent, toolName, args, cwd) {
 }
 
 export async function handleUndoCommand(ctx) {
-  const { agent, pushLine, openPicker } = ctx
+  const { agent, pushLine, showPicker } = ctx
   const stack = agent._undoStack ?? []
 
   if (stack.length === 0) {
@@ -65,27 +65,23 @@ export async function handleUndoCommand(ctx) {
     }),
   ]
 
-  openPicker({
-    title: "Undo",
-    entries,
-    onSelect: async (e) => {
-      const item = stack[e.idx]
-      const abs = join(agent.cwd, ...item.path.split("/"))
+  const e = await showPicker("Undo", entries)
+  if (!e) return
+  const item = stack[e.idx]
+  const abs = join(agent.cwd, ...item.path.split("/"))
 
-      try {
-        if (item.backup === null) {
-          // File was created — undo deletes it
-          if (existsSync(abs)) unlinkSync(abs)
-        } else {
-          // File was modified — undo restores original
-          writeFileSync(abs, item.backup, "utf8")
-        }
-        // Remove this and all newer entries (can't undo out of order)
-        stack.splice(e.idx)
-        pushLine(`[undo] Reverted: ${item.tool} ${item.path}`, C.tool)
-      } catch (err) {
-        pushLine(`[undo] Failed to revert ${item.path}: ${err.message}`, C.error)
-      }
-    },
-  })
+  try {
+    if (item.backup === null) {
+      // File was created — undo deletes it
+      if (existsSync(abs)) unlinkSync(abs)
+    } else {
+      // File was modified — undo restores original
+      writeFileSync(abs, item.backup, "utf8")
+    }
+    // Remove this and all newer entries (can't undo out of order)
+    stack.splice(e.idx)
+    pushLine(`[undo] Reverted: ${item.tool} ${item.path}`, C.tool)
+  } catch (err) {
+    pushLine(`[undo] Failed to revert ${item.path}: ${err.message}`, C.error)
+  }
 }

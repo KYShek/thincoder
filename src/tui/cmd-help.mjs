@@ -1,10 +1,12 @@
 import { ansi, C } from "./ansi.mjs"
+import { SLASH_ALIASES } from "./slash-commands.mjs"
 
 /** /help command: list all slash commands and aliases.
  *  ctx: { pushLine, pushLabel, SLASH_COMMANDS } */
 export async function handleHelpCommand(ctx) {
   const { pushLine, pushLabel, SLASH_COMMANDS } = ctx
-  const aliasList = { "/help": "/h", "/exit": "/x", "/model": "/m", "/plan": "/p", "/think": "/t", "/clear": "/c", "/new": "/n" }
+  // reverse the shared alias table: command → alias
+  const aliasList = Object.fromEntries(Object.entries(SLASH_ALIASES).map(([alias, cmd]) => [cmd, alias]))
   const order = ["Agent", "Session", "Project", "System"]
   const byGroup = new Map()
   for (const c of SLASH_COMMANDS) {

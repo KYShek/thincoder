@@ -13,14 +13,11 @@ export async function assembleAgent() {
   const provider = config.provider
   const providers = config.providersList
 
-  // Resolve proxy URI globally; inject into all providers so per-model proxy flag works
-  const { resolveProxyConfig } = await import("../proxy.mjs")
-  const proxyCfg = resolveProxyConfig({ agent: { config } })
-  if (proxyCfg.uri) {
-    for (const p of providers) {
-      p._proxyUri = p.proxy ? proxyCfg.uri : undefined
-    }
-  }
+  // Inject proxy URI into providers (double opt-in: provider.proxy + config.proxy.model)
+  const { injectProxy } = await import("../proxy.mjs")
+  injectProxy(providers, config)
+  // config.provider 是 loadConfig 里的独立拷贝，同步注入结果
+  provider.proxyUri = providers.find((p) => p.name === config.activeProvider)?.proxyUri
 
   const memory = createMemory({ dbPath: config.memory.dbPath })
   // Vector retrieval: enabled if embedding is configured (lazy vector generation, computed on first search)

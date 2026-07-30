@@ -4,11 +4,12 @@
  *
  * ctx object is injected by index.mjs and forwarded to each handler:
  *   { agent, state, distillOpts, pushLine, pushLabel, render,
- *     openPicker, openModelPicker, setProviderKey, runDistill,
+ *     showPicker, closePicker, openModelPicker, setProviderKey, runDistill,
  *     persistRaw, syncProviderField, maskKey, exit, SLASH_COMMANDS }
  */
 
 import { C } from "./ansi.mjs"
+import { specForModel } from "../config.mjs"
 import { handleClearCommand } from "./cmd-clear.mjs"
 import { handleNewCommand } from "./cmd-new.mjs"
 import { handleExitCommand } from "./cmd-exit.mjs"
@@ -55,8 +56,11 @@ export const SLASH_COMMANDS = [
   { name: "/help", group: "System", desc: "this list" },
 ]
 
-/** Command → handler mapping table */
-const HANDLERS = {
+/** High-frequency command aliases (single source of truth — also used by index.mjs and cmd-help.mjs) */
+export const SLASH_ALIASES = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
+
+/** Command → handler mapping table (exported for tests) */
+export const HANDLERS = {
   "/clear": handleClearCommand,
   "/new": handleNewCommand,
   "/exit": handleExitCommand,
@@ -90,27 +94,29 @@ export function createSlashCommands(ctx) {
   const handlerCtx = { ...ctx, SLASH_COMMANDS }
 
   async function handleSlash(text) {
-    const [cmd] = text.split(/\s+/)
-    // high-frequency command aliases
-    const aliases = { "/h": "/help", "/x": "/exit", "/m": "/model", "/p": "/plan", "/t": "/think", "/c": "/clear", "/n": "/new" }
-    const resolved = aliases[cmd] ?? cmd
+    const [rawCmd, ...args] = text.split(/\s+/)
+    // case-insensitive matching + alias resolution
+    const cmd = rawCmd.toLowerCase()
+    const resolved = SLASH_ALIASES[cmd] ?? cmd
     const handler = HANDLERS[resolved]
     if (handler) {
-      await handler(handlerCtx)
+      await handler(handlerCtx, args)
       return
     }
-    ctx.pushLine(`Unknown command: ${cmd} (/help for available commands)`, C.error)
+    ctx.pushLine(`Unknown command: ${rawCmd} (/help for available commands)`, C.error)
   }
 
   /** Tab completion candidates: command names / subcommands / provider names / preset names / think params */
   function completions(input) {
     if (!input.startsWith("/")) return []
     const parts = input.split(/\s+/)
-    // still typing the first token: complete command names
+    // still typing the first token: complete command names (case-insensitive)
     if (parts.length === 1) {
-      return SLASH_COMMANDS.filter((c) => c.name.startsWith(parts[0])).map((c) => c.name)
+      const prefix = parts[0].toLowerCase()
+      return SLASH_COMMANDS.filter((c) => c.name.startsWith(prefix)).map((c) => c.name)
     }
-    const cmd = parts[0]
+    // aliases resolve to their target command, so `/m <Tab>` completes /model args
+    const cmd = SLASH_ALIASES[parts[0].toLowerCase()] ?? parts[0].toLowerCase()
     const last = parts.at(-1) // when trailing space, list all candidates
     const head = parts.slice(0, -1).join(" ")
     const argIndex = parts.length - 2 // which parameter is being typed (0-based)
@@ -118,13 +124,17 @@ export function createSlashCommands(ctx) {
     if (cmd === "/model" && argIndex === 0) return match(agent.providers.map((p) => p.name))
     if (cmd === "/think") {
       if (argIndex === 0) return match(["on", "off", "effort"])
-      if (argIndex === 1 && parts[1] === "effort") return match(["low", "high", "max"])
+      if (argIndex === 1 && parts[1].toLowerCase() === "effort") {
+        // effort enum is model-specific — take it from the current model's spec
+        const levels = specForModel(agent.provider?.model).reasoningEffortEnum ?? ["high", "max"]
+        return match(levels)
+      }
     }
-    if (cmd === "/config" && argIndex === 0) return match(["embedkey", "set"])
+    if (cmd === "/config" && argIndex === 0) return match(["embedkey"])
     if (cmd === "/goal" && argIndex === 0) return match(["set", "cancel"])
     if (cmd === "/mcp") {
-      if (argIndex === 0) return match(["add", "url", "ws", "remove", "connect", "list"])
-      if (argIndex === 1 && (parts[1] === "remove" || parts[1] === "connect")) return match((agent.config?.mcp?.servers ?? []).map((s) => s.name))
+      if (argIndex === 0) return match(["add", "http", "ws", "stdio", "ai", "remove", "connect", "list"])
+      if (argIndex === 1 && (parts[1]?.toLowerCase() === "remove" || parts[1]?.toLowerCase() === "connect")) return match((agent.config?.mcp?.servers ?? []).map((s) => s.name))
     }
     return []
   }

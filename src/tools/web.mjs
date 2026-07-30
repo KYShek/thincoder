@@ -2,10 +2,10 @@ import { DESC, truncate, stripTags, htmlToText } from "./shared.mjs";
 import { URL } from "node:url";
 import { resolveWebProxy, proxyFetch } from "../proxy.mjs";
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+export const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 const FETCH_TIMEOUT = 15_000
 
-// ── Web search (direct fetch, no proxy needed for Bing) ──
+// ── Web search (Bing; direct by default, through proxy when configured and web toggle on) ──
 
 function extractBing(html) {
   const results = []
@@ -28,14 +28,14 @@ function bingUrl(query, page) {
 const ENGINES = [{ name: "bing", label: "Bing", url: bingUrl, extract: extractBing, ua: UA }]
 const ENGINE_NAMES = ENGINES.map(e => e.name)
 
-async function fetchEngine(engine, query, page) {
+async function fetchEngine(engine, query, page, ctx) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT)
   try {
-    const response = await globalThis.fetch(engine.url(query, page), {
+    const response = await proxyFetch(engine.url(query, page), {
       headers: { "User-Agent": engine.ua, "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8" },
       signal: ctrl.signal,
-    })
+    }, resolveWebProxy(ctx))
     if (!response.ok) return null
     const html = await response.text()
     const results = engine.extract(html)
@@ -64,11 +64,11 @@ export const websearchTool = {
     if (args.engine) {
       const engine = ENGINES.find(e => e.name === args.engine)
       if (!engine) return `Unknown engine '${args.engine}'. Available: ${ENGINE_NAMES.join(", ")}`
-      const fetched = await fetchEngine(engine, args.query, page)
+      const fetched = await fetchEngine(engine, args.query, page, ctx)
       if (!fetched || fetched.results.length === 0) return `(no results from ${engine.label})`
       return truncate(fetched.results.slice(0, limit).map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}\n   ${r.snippet}`).join("\n\n"))
     }
-    const promises = ENGINES.map(e => fetchEngine(e, args.query, 1))
+    const promises = ENGINES.map(e => fetchEngine(e, args.query, 1, ctx))
     const fetched = (await Promise.all(promises)).filter(Boolean)
     if (fetched.length === 0) return "(no results — all search engines failed)"
     const merged = [], indexes = fetched.map(() => 0)
@@ -101,6 +101,15 @@ function isPrivateUrl(urlStr) {
   return false
 }
 
+// proxyFetch returns a native Response (Headers object, needs .get()) without proxy,
+// but a Response-like with a plain lowercase-keyed Record through the CONNECT tunnel — handle both.
+function headerOf(res, name) {
+  const h = res.headers
+  if (!h) return null
+  if (typeof h.get === "function") return h.get(name)
+  return h[name.toLowerCase()] ?? null
+}
+
 export const fetchTool = {
   name: "fetch",
   description: DESC("fetch"),
@@ -114,18 +123,18 @@ export const fetchTool = {
       const response = await proxyFetch(args.url, { headers: { "User-Agent": UA } }, proxyUri)
       if (!response.ok) {
         if ([301, 302, 307, 308].includes(response.status)) {
-          const loc = response.headers?.location || response.headers?.Location
+          const loc = headerOf(response, "location")
           if (loc) {
             const r2 = await proxyFetch(loc, { headers: { "User-Agent": UA } }, proxyUri)
             if (!r2.ok) throw new Error(`fetch failed: HTTP ${r2.status}`)
-            const ct2 = r2.headers?.["content-type"] || r2.headers?.["Content-Type"] || ""
+            const ct2 = headerOf(r2, "content-type") ?? ""
             const b2 = await r2.text()
             return ct2.includes("text/html") ? truncate(htmlToText(b2)) : truncate(b2)
           }
         }
         throw new Error(`fetch failed: HTTP ${response.status}`)
       }
-      const ct = response.headers?.["content-type"] || response.headers?.["Content-Type"] || ""
+      const ct = headerOf(response, "content-type") ?? ""
       const body = await response.text()
       return ct.includes("text/html") ? truncate(htmlToText(body)) : truncate(body)
     } catch (e) { throw new Error(`fetch failed: ${e.cause?.code ?? e.message}`) }

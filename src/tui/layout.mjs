@@ -92,7 +92,17 @@ export function computeLayout(state, { cols, rows }) {
 
   // --- elastic panel: conversation takes remaining space ---
   const fixedH = headerH + inputBoxH + statusH + pickerH + taskPanelH + subPanelH + outputPanelsH + permPreviewH + queueH
-  const convH = Math.max(1, rows - fixedH)
+  let convH = Math.max(1, rows - fixedH)
+
+  // 小终端高度补偿（best-effort，不保证总行数 ≤ rows）：先压 conversation 到最小 1 行，
+  // 仍超出再压 picker 到最小 3 行。极端情况（permission preview + tasks 等同屏）补偿后仍可能
+  // 溢出 —— 其余面板不强行裁剪，由渲染层自行截断
+  let pickerFinalH = pickerH
+  const overflow = fixedH + convH - rows
+  if (overflow > 0 && pickerH > 0) {
+    pickerFinalH = Math.max(Math.min(3, pickerH), pickerH - overflow)
+    convH = Math.max(1, rows - (fixedH - pickerH + pickerFinalH))
+  }
 
   // --- Y coordinates (0-indexed, +1 when used with ANSI) ---
   let y = 0
@@ -101,7 +111,7 @@ export function computeLayout(state, { cols, rows }) {
   const subagent = subPanelH > 0 ? { y, h: subPanelH } : null; y += subPanelH
   const output = outputPanelsH > 0 ? { y, h: outputPanelsH } : null; y += outputPanelsH
   const todo = taskPanelH > 0 ? { y, h: taskPanelH } : null; y += taskPanelH
-  const picker = pickerH > 0 ? { y, h: pickerH } : null; y += pickerH
+  const picker = pickerFinalH > 0 ? { y, h: pickerFinalH } : null; y += pickerFinalH
   const permission = permPreviewH > 0 ? { y, h: permPreviewH } : null; y += permPreviewH
   const queue = queueH > 0 ? { y, h: queueH } : null; y += queueH
   const inputBox = { y, h: inputBoxH }; y += inputBoxH
