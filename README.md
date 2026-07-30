@@ -205,6 +205,11 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.10.0 (2026-07)
+- **LSP tool** — `lsp` tool provides code intelligence via Language Server Protocol: go-to-definition, find-references, hover info, document symbols, diagnostics. Zero-dependency JSON-RPC 2.0 over stdio client. Lazy-starts language servers on first call. Configurable via `lsp.servers` in config.json (defaults: `typescript-language-server` for JS/TS, `pyright-langserver` for Python).
+- **Smart context: compaction checkpoint** — `compressIfNeeded` now auto-creates a git checkpoint before compaction. A checkpoint reference is injected after compaction so the model can reconstruct context from git diff + recent messages + task progress. Prevents information loss during long sessions.
+- **CodeMode: sandboxed JS execution** — `execute` tool backed by `vm.Script.runInNewContext`. Compose multiple file operations (read/write/glob/grep/log) into a single script, reducing API round-trips and keeping intermediate results out of context. Sandbox strips all Node APIs, limits output to 50KB, enforces 30s timeout, and blocks private IPs in fetch. Script size capped at 50KB.
+
 ### 0.9.0 (2026-07)
 - **Config JSON Schema** — `saveConfig` auto-injects `$schema` reference; `docs/schemas/config.schema.json` provides editor autocompletion/validation for all config fields including the new `hooks` section.
 - **Lifecycle Hooks** — `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `Notification` events. User-defined shell commands in config, with per-tool regex matching, timeout control, and `block`/`allow`/`notify` actions. Implemented in `src/hooks.mjs`, integrated into tool dispatch.
