@@ -33,7 +33,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ADVISOR_MD_PATH = ".thincoder/advisor.md"
 const MAX_TASK_SUMMARY = 500
 const GIT_TIMEOUT = 5_000
-const MAX_ADVISOR_TOOL_TURNS = 20
 
 const DEFAULT_CRITERIA = `Review the code changes, focusing on:
 1. Correctness: logic errors, edge cases, off-by-one, incomplete modifications
@@ -286,16 +285,16 @@ export function buildAdvisorUserMessage(agent, _prior) {
 
 /**
  * Run the advisor's tool loop: chat → execute tools → repeat.
- * Stops when the model produces text without tool calls, or max turns reached.
+ * Stops when the model produces text without tool calls.
  */
 async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, cwd) {
-  for (let turn = 0; turn < MAX_ADVISOR_TOOL_TURNS; turn++) {
+  while (true) {
     const response = await chat(provider, {
       messages,
       tools: ADVISOR_TOOL_SCHEMAS,
       signal: (signal && !signal.aborted) ? signal : new AbortController().signal,
       onToken: onOutput,
-      onReasoning: onOutput,  // keep user informed — panel shows thinking as feedback during exploration
+      onReasoning: onOutput,
     })
 
     // No tool calls — this is the final review text
@@ -336,23 +335,6 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       messages.push({ role: "tool", tool_call_id: tc.id, content: String(result) })
     }
   }
-
-  // Max turns exhausted — strip bloated context, ask for final review with clean slate
-  const slimMessages = [
-    messages[0],  // system prompt
-    messages[1],  // original user message
-    {
-      role: "user",
-      content: `Exploration limit reached (${MAX_ADVISOR_TOOL_TURNS} tool turns). Based on everything you have already examined, produce your final review now. Do not call any tools.`,
-    },
-  ]
-  const final = await chat(provider, {
-    messages: slimMessages,
-    tools: [],
-    signal: signal ?? new AbortController().signal,
-  })
-  if (!final.content?.trim()) return "Advisor: (empty response — review was inconclusive)"
-  return final.content.trim()
 }
 
 // ────────────────────────────────────────
