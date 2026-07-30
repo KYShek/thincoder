@@ -137,8 +137,8 @@ export async function runAgentTurn(ctx, text) {
       const panel = state.outputPanels[name]
       if (panel) {
         delete state.toolStreams[name]
-        panel.done = true
-        scheduleRender()  // flush final frame before panel collapses
+        panel._pendingDone = true  // defer done until next render cycle flushes it
+        scheduleRender()  // trigger one final render while panel is still alive
         if (name === "advisor") {
           const text = String(result ?? "")
           const lines = text.split("\n")

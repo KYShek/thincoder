@@ -407,6 +407,11 @@ export async function startTUI(agent, opts = {}) {
       if (panels.picker) push(buildPanel("picker", panels.picker, renderPicker(state, dims.cols, panels.picker, overlay)))
       else panelCache.delete("picker")
 
+      // Finalize any output panels that were pending done — they got their last render
+      for (const p of Object.values(state.outputPanels)) {
+        if (p._pendingDone) { p.done = true; delete p._pendingDone }
+      }
+
       // Determine cursor suffix — appended to the same write() as the sync block.
       // MUST position the cursor at the input box even when hidden: the terminal's
       // cursor position determines where the IME candidate window appears.
