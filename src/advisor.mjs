@@ -295,7 +295,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       tools: ADVISOR_TOOL_SCHEMAS,
       signal: (signal && !signal.aborted) ? signal : new AbortController().signal,
       onToken: onOutput,
-      // Reasoning is not streamed — advisor's thinking is verbose and drowns out the review table
+      onReasoning: onOutput,  // keep user informed — panel shows thinking as feedback during exploration
     })
 
     // No tool calls — this is the final review text
