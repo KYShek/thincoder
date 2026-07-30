@@ -138,13 +138,11 @@ export async function runAgentTurn(ctx, text) {
       if (panel) {
         delete state.toolStreams[name]
         panel.done = true
-        // Advisor: push full review into conversation (output panel is transient)
+        // Advisor: push full review into conversation in advisor color
         if (name === "advisor") {
           const text = String(result ?? "")
           const lines = text.split("\n")
-          const maxShow = Math.min(24, lines.length)
-          for (let i = 0; i < maxShow; i++) pushLine(`  ${lines[i].slice(0, 160)}`, C.dim)
-          if (lines.length > maxShow) pushLine(`  ... (${lines.length - maxShow} more lines)`, C.dim)
+          for (let i = 0; i < lines.length; i++) pushLine(`  ${lines[i].slice(0, 200)}`, C.advisor)
         } else {
           const summary = formatPanelSummary(name, result)
           if (summary) pushLine(`  ${summary}`, C.dim)
