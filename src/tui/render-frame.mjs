@@ -7,12 +7,13 @@
  * The legacy renderFrame() wrapper is kept for compatibility.
  */
 import { ansi, C, ESC } from "./ansi.mjs"
-import { computeLayout, MAX_SUB_LINES } from "./layout.mjs"
-import {
-  sliceByWidth, stringWidth, wrapText, formatTables, sanitizeDisplay,
-} from "./render.mjs"
+import { convCacheKey, renderConversation, countConvLines } from "./render-conversation.mjs"
+import { sliceByWidth, stringWidth, wrapText, formatTables, sanitizeDisplay } from "./render.mjs"
 import { specForModel } from "../config.mjs"
+import { computeLayout, MAX_SUB_LINES } from "./layout.mjs"
 import { basename } from "node:path"
+
+export { convCacheKey, renderConversation, countConvLines } from "./render-conversation.mjs"
 
 // ---------- status bar slash-command hints ----------
 const SLASH_HINTS = {
@@ -46,28 +47,6 @@ export function renderHeader(agent, cols) {
 
 /**
  * Compute a cheap cache key for the conversation panel.
- * Structural hints that change ONLY when the conversation actually changes.
- * Used by the incremental renderer to skip rebuilding convLines when nothing changed.
- */
-export function convCacheKey(state) {
-  const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
-  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${Object.keys(state.toolStreams).length}|${state.foldEnabled !== false ? "f" : "u"}`
-}
-
-/** Conversation panel (scrollable, variable height). Returns exactly `visibleH` lines. */
-export function renderConversation(state, cols, visibleH, scroll) {
-  const convLines = buildConvLines(state, cols)
-  const maxScroll = Math.max(0, convLines.length - visibleH)
-  const clamped = Math.min(scroll, maxScroll)
-  const end = convLines.length - clamped
-  const visible = convLines.slice(Math.max(0, end - visibleH), end)
-  const pad = visibleH - visible.length
-  const out = []
-  for (let i = 0; i < pad; i++) out.push("")
-  for (const l of visible) out.push(`${l.color}${l.text}${ansi.reset}`)
-  return out
-}
-
 /** Todo/task panel. Returns empty array when no tasks visible. */
 export function renderTodo(visibleTasks, cols) {
   return visibleTasks.map((t) => {
@@ -332,78 +311,6 @@ export function renderFrame(state, agent, opts) {
 // ====================================================================
 // Internal helpers (unchanged from original)
 // ====================================================================
-
-export function countConvLines(state, cols) {
-  return buildConvLines(state, cols).length
-}
-
-let _convCache = { key: "", cols: 0, lines: [] }
-function buildConvLines(state, cols) {
-  const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
-  const key = convCacheKey(state)
-  if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
-
-  const convLines = []
-  for (const l of state.lines) {
-    for (const line of formatTables(sanitizeDisplay(l.text), cols - 1)) {
-      for (const wrapped of wrapText(line, cols - 1)) {
-        convLines.push({ text: wrapped, color: l.color, _foldId: l._foldId })
-      }
-    }
-  }
-  // Messages after the conversation (streaming / thinking / tool output):
-  // appended after history lines so they appear at the bottom.
-  if (state.reasoning) {
-    for (const wrapped of wrapText(sanitizeDisplay(state.reasoning), cols - 1)) {
-      convLines.push({ text: wrapped, color: C.reason })
-    }
-  }
-  if (state.streaming) {
-    for (const line of formatTables(sanitizeDisplay(state.streaming), cols - 1)) {
-      for (const wrapped of wrapText(line, cols - 1)) {
-        convLines.push({ text: wrapped, color: C.text })
-      }
-    }
-  }
-  const allStreams = Object.values(state.toolStreams).join("")
-  if (allStreams) {
-    const tail = sanitizeDisplay(allStreams.slice(-4000))
-    for (const wrapped of wrapText(tail, cols - 1)) {
-      convLines.push({ text: wrapped, color: C.dim })
-    }
-  }
-
-  // ---- Fold long blocks (> 8 consecutive dim lines) ----
-  const FOLD_LINES = 8
-  let foldCounter = 0
-  const folded = []
-  let i = 0
-  while (i < convLines.length) {
-    const line = convLines[i]
-    // Only fold dim-colored lines (tool results, subagent previews)
-    if (line.color === C.dim) {
-      let j = i
-      while (j < convLines.length && convLines[j].color === C.dim) j++
-      const blockLen = j - i
-      if (blockLen > FOLD_LINES) {
-        const foldKey = `fold-${foldCounter++}`
-        if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
-          // Show first 2 lines + fold hint
-          folded.push(convLines[i])
-          if (blockLen > 2) folded.push(convLines[i + 1])
-          folded.push({ text: `  … ${blockLen - 2} more lines — Enter to expand`, color: C.fold, _foldToggle: foldKey })
-          i = j
-          continue
-        }
-      }
-    }
-    folded.push(line)
-    i++
-  }
-
-  _convCache = { key, cols, lines: folded }
-  return folded
-}
 
 function inputBoxStyle(state) {
   let borderColor = C.tool
