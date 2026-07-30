@@ -62,7 +62,7 @@ export function createAgent({
     overlay, tasks, history,
     planMode, autoApprove, goal,
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined, _calledAdvisorThisRun: false,
-    _touchedFiles: [], _verifyRetries: 0,
+    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0,
     _pendingReminders: [],
     _pendingTimers: [],
     _sessionStart: sessionStart,
