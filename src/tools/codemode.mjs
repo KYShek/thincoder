@@ -30,25 +30,30 @@ const MAX_OUTPUT = 50_000
 const MAX_SCRIPT = 50_000
 const DEFAULT_TIMEOUT = 30_000
 
-/** SSRF-safe fetch: only http/https, private IP rejection, 10s timeout */
+/** SSRF-safe fetch: only http/https, private IP rejection, 10s timeout.
+ *  Uses the same logic as isPrivateUrl in web.mjs — kept in sync manually. */
 async function sandboxFetch(url) {
   const parsed = new URL(url)
   if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`CodeMode fetch: protocol not allowed: ${parsed.protocol}`)
   }
-  // Block private network IPs (aligns with isPrivateUrl in web.mjs)
-  const hostname = parsed.hostname.toLowerCase()
-  if (hostname.startsWith("192.168.") || hostname.startsWith("10.") ||
-      hostname.startsWith("172.16.") || hostname.startsWith("172.17.") ||
-      hostname.startsWith("172.18.") || hostname.startsWith("172.19.") ||
-      hostname.startsWith("172.20.") || hostname.startsWith("172.21.") ||
-      hostname.startsWith("172.22.") || hostname.startsWith("172.23.") ||
-      hostname.startsWith("172.24.") || hostname.startsWith("172.25.") ||
-      hostname.startsWith("172.26.") || hostname.startsWith("172.27.") ||
-      hostname.startsWith("172.28.") || hostname.startsWith("172.29.") ||
-      hostname.startsWith("172.30.") || hostname.startsWith("172.31.") ||
-      hostname.endsWith(".local")) {
-    throw new Error(`CodeMode fetch: private/internal host not allowed: ${hostname}`)
+
+  function isPrivate(hostname) {
+    const h = hostname.toLowerCase()
+    if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost")) return false
+    if (h === "127.0.0.1" || h.startsWith("127.")) return false
+    if (h === "169.254.169.254" || h === "metadata.google.internal") return true
+    if (h === "::1" || h === "fe80::1" || h.startsWith("fc") || h.startsWith("fd")) return true
+    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+    if (m) {
+      const [a, b] = [Number(m[1]), Number(m[2])]
+      if (a === 10 || (a === 172 && b >= 16 && b <= 31) || a === 192 && b === 168 || a === 169 && b === 254 || a === 0) return true
+    }
+    return false
+  }
+
+  if (isPrivate(parsed.hostname)) {
+    throw new Error(`CodeMode fetch: private/internal host not allowed: ${parsed.hostname}`)
   }
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
