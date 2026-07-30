@@ -140,8 +140,14 @@ export function createKeyHandler(ctx) {
         const msg = (state.interruptPrompt.text ?? "").trim()
         state.interruptPrompt = null
         if (msg) {
-          pushLine(`  [inject] ${msg}`, C.warn)
-          state.controller.abort({ interrupt: true, message: msg })
+          // Guard: if the turn already finished while the user was typing, the controller
+          // may have been replaced or already aborted — don't abort a live turn by mistake.
+          if (state.processing && state.controller && !state.controller.signal.aborted) {
+            pushLine(`  [inject] ${msg}`, C.warn)
+            state.controller.abort({ interrupt: true, message: msg })
+          } else {
+            pushLine(`  [inject — turn ended, message queued] ${msg}`, C.dim)
+          }
           render()
         }
       } else if (key.name === "backspace") {

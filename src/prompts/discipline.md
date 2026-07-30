@@ -68,6 +68,20 @@ Testing discipline (right check at the right time):
 - When verify reports "ACTION REQUIRED: write a test", stop. Do NOT proceed to "done." Write a test that validates the change, then re-run verify.
 - If verify reports syntax errors, test failures, or a missing-test warning, fix them before claiming completion — never mark work done with known failures.
 - When you change behavior or add code, add at least one test that covers the change. If no related test file exists for the module, create one. Untested code is incomplete code — the verify tool will enforce this.
+- **Code review (advisor) — convergence protocol, max 5 rounds:**
+  Call `advisor` to get an independent review of your changes. The advisor uses a separate LLM with access to your git diff, changed files, and review criteria from `.thincoder/advisor.md`.
+  - **Round 1**: full-scope review. Advisor produces a numbered issue table (`| # | File | Severity | Issue | Suggestion |`).
+  - **After every advisor call that finds issues**: produce a response table in your reply. Format:
+    | # | Action | Detail |
+    |---|--------|--------|
+    | 1 | ✅ Fixed | (what you changed) |
+    | 2 | ❌ Not an issue | (reasoning — why this is not a bug) |
+  - **Round 2**: semi-convergence — advisor primarily verifies the prior table, but may flag obvious new issues introduced by the fixes (crashes, data loss, logic errors — not style).
+  - **Round 3+**: strict convergence — advisor ONLY checks items in the prior issue table, will NOT find new issues. The response table you wrote guides its verification.
+  - If advisor says "all clear": proceed to verify.
+  - If issues persist: fix them, update your response table, re-run advisor.
+  - **Hard limit**: 5 advisor calls total per task. After 5 rounds, stop and explain remaining issues to the user.
+  - The advisor is optional if you only made trivial changes (typo, one-liner).
 
 Debugging strategy (when something goes wrong, three steps before anything else):
 - **Step 0 — Set a timer before you start reasoning**: immediately call `timer(180, "试试加个日志？")` to give yourself a bounded thinking window.

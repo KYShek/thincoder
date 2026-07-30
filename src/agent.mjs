@@ -31,7 +31,7 @@ export const EXPLORE_OVERLAY = _EXPLORE
 export const CODER_OVERLAY = _CODER
 export const PLAN_OVERLAY = _PLAN
 
-// Re-exported for consumption by agent-tools.mjs
+// exported for consumption by agent-tools.mjs
 export {
   ContinueError,
   repairHistory, listWorkDir, loadProjectInstructions,
@@ -49,6 +49,7 @@ const STALL_THRESHOLD = 3
 const GOAL_BUDGET_WARN_RATIO = 0.75
 const MAX_VERIFY_PUSHBACKS = 2
 const MAX_VERIFY_RETRIES = 3
+const MAX_ADVISOR_ROUNDS = 5  // hard cap on advisor calls per runAgent
 
 /** Create a new agent state object with all fields initialized to defaults */
 export function createAgent({
@@ -61,7 +62,7 @@ export function createAgent({
     provider, tools, config, cwd, memory, _role: role,
     overlay, tasks, history,
     planMode, autoApprove, goal,
-    _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined,
+    _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined, _calledAdvisorThisRun: false,
     _touchedFiles: [], _verifyRetries: 0,
     _pendingReminders: [],
     _pendingTimers: [],
@@ -81,8 +82,11 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   agent._mutatedThisRun = false
   agent._verifiedThisRun = false
   agent._verifyPassed = undefined
+  agent._calledAdvisorThisRun = false
   agent._touchedFiles = []
   agent._verifyRetries = 0
+  agent._advisorRound = 0
+  agent._advisorExhaustedReminded = false
   let guardPushbacks = 0
   let honestReminderInjected = false
   const recentCallSigs = []
@@ -157,10 +161,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       // User interrupt (Ctrl+I): controller.abort({ interrupt: true, message: "…" }).
       // Inject the message into history and let the outer loop recreate the controller.
       if (e.name === "AbortError" && signal?.reason?.interrupt) {
-        agent.history.push({
-          role: "user",
-          content: `[User interrupt: ${signal.reason.message}]`,
-        })
+        const msg = `[User interrupt: ${signal.reason.message}]`
+        // Dedup: if the interrupt was already handled during tool execution (L302-310),
+        // don't push a duplicate — the outer loop will still recreate the controller.
+        if (agent.history.at(-1)?.content !== msg) {
+          agent.history.push({ role: "user", content: msg })
+        }
       }
       throw e
     }
@@ -242,6 +248,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           role: "user",
           content: `[System reminder: you still have pending tasks: ${pending}. Update their status with the task tool before finishing — if they're done, mark them done; if they're not applicable, remove them.]`,
         })
+        callbacks.onTurnEnd?.(agent, turn)
         continue
       }
       // --- verify guard: push model to verify mutated files before completion ---
@@ -253,15 +260,15 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
             role: "user",
             content: "[System reminder: you modified files in this run but have not verified the changes. Before finishing: call the verify tool to run syntax checks and tests. If verify reports failures, fix them and run verify again. If verification is genuinely impossible here, say so explicitly in your reply.]",
           })
+          callbacks.onTurnEnd?.(agent, turn)
           continue
-        }
-        if (agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries < MAX_VERIFY_RETRIES) {
           agent._verifyRetries++
           agent.history.push({ role: "assistant", content: response.content })
           agent.history.push({
             role: "user",
             content: `[System reminder: verify reported test failures (retry ${agent._verifyRetries}/${MAX_VERIFY_RETRIES}). Review the failures, fix the issues, then run verify again. If you cannot fix after ${MAX_VERIFY_RETRIES} attempts, explain honestly what's blocking you.]`,
           })
+          callbacks.onTurnEnd?.(agent, turn)
           continue
         }
         if (agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
@@ -275,6 +282,34 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
             role: "user",
             content: `[System reminder: ${MAX_VERIFY_RETRIES} verify attempts exhausted and tests are still failing. In your response to the user, you MUST state explicitly: (1) what tests are still failing, (2) what you tried, (3) what you believe the root cause is. Do not present this as complete — the user needs to know the work is unfinished.]`,
           })
+          callbacks.onTurnEnd?.(agent, turn)
+          continue
+        }
+      }
+      // --- advisor guard: push model to review changes before completion ---
+      // When advisor is enabled and guard is not explicitly disabled, mutated files
+      // must be reviewed before the turn ends. MAX_ADVISOR_ROUNDS (5) caps total advisor
+      // calls per runAgent — the convergence protocol limits divergence.
+      if (depth === 0 && agent.config?.advisor?.enabled && agent.config?.advisor?.guard !== false) {
+        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && agent._advisorRound < MAX_ADVISOR_ROUNDS) {
+          agent.history.push({ role: "assistant", content: response.content })
+          agent.history.push({
+            role: "user",
+            content: `[System reminder: you changed code in this run but haven't reviewed with advisor (round ${agent._advisorRound + 1}/${MAX_ADVISOR_ROUNDS}). Call the \`advisor\` tool to get an independent code review. After the review, produce a response table for every issue found (see discipline rules for format). If the changes are trivial (typo, one-liner, formatting only), you may skip and explain why in your reply.]`,
+          })
+          callbacks.onTurnEnd?.(agent, turn)
+          continue
+        }
+        // Rounds exhausted — notify once, then let the agent finish
+        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun &&
+            agent._advisorRound >= MAX_ADVISOR_ROUNDS && !agent._advisorExhaustedReminded) {
+          agent._advisorExhaustedReminded = true
+          agent.history.push({ role: "assistant", content: response.content })
+          agent.history.push({
+            role: "user",
+            content: `[System reminder: ${MAX_ADVISOR_ROUNDS} advisor rounds exhausted this task. Remaining issues will be reported to the user as unresolved. You may proceed to verify and finish.]`,
+          })
+          callbacks.onTurnEnd?.(agent, turn)
           continue
         }
       }
@@ -298,6 +333,17 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     })
 
     const results = await executeToolCalls(agent, toolByName, response.toolCalls, callbacks, depth, signal)
+
+    // Ctrl+I interrupt during tool execution: skip committing partial results —
+    // the tool failure messages would mislead the model. Inject the interrupt and retry.
+    if (signal?.reason?.interrupt) {
+      agent.history.push({
+        role: "user",
+        content: `[User interrupt: ${signal.reason.message}]`,
+      })
+      callbacks.onTurnEnd?.(agent, turn)
+      continue
+    }
 
     // Model is executing tools → doing real work, reset guard pushback counter
     guardPushbacks = 0
@@ -331,8 +377,16 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       }
       agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: result })
       if (tool && ok) {
-        if (!tool.readonly && !tool.sideEffectExempt) agent._mutatedThisRun = true
+        if (!tool.readonly && !tool.sideEffectExempt) {
+          agent._mutatedThisRun = true
+          // Any mutation after advisor invalidates the review — need re-review
+          if (agent._calledAdvisorThisRun) agent._calledAdvisorThisRun = false
+        }
         if (toolCall.name === "verify") agent._verifiedThisRun = true
+        if (toolCall.name === "advisor") {
+          agent._calledAdvisorThisRun = true
+          agent._advisorRound++  // advance convergence round
+        }
         if (FILE_MUTATORS.has(toolCall.name)) {
           const args = JSON.parse(toolCall.arguments)
           const paths = tool.touchedPaths ? tool.touchedPaths(args) : [args.path]
@@ -409,17 +463,6 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     }
 
     callbacks.onTurnEnd?.(agent, turn)
-
-    // Advisor: automated code review after each tool-execution turn.
-    // Runs asynchronously — failure is silent, main loop continues regardless.
-    if (agent.config?.advisor?.enabled) {
-      const { runAdvisor } = await import("./advisor.mjs")
-      const note = await runAdvisor(agent)
-      if (note) {
-        agent.history.push({ role: "user", content: note })
-        callbacks.onAdvisor?.(note)
-      }
-    }
   }
 
   throw new ContinueError(maxTurns)

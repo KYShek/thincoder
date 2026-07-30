@@ -19,6 +19,7 @@ const MODULE_TO_TEST = {
   skills: "test/tools.test.mjs",
   distill: "test/tools.test.mjs",
   markdown: "test/agent.test.mjs",
+  advisor: "test/advisor.test.mjs",
   mcp: null,
   prompts: null,
   context: null,

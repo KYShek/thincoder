@@ -204,17 +204,36 @@ export function renderInputBox(state, W, boxLines, cols, inputLayout, inputOffse
 
   for (let li = 0; li < boxLines.length; li++) {
     const l = boxLines[li]
-    let content = sliceByWidth(l, W - 4)
-    const fill = " ".repeat(Math.max(0, W - 4 - stringWidth(content)))
+    const original = sliceByWidth(l, W - 4)
+    let content = original
+    const contentWidth = stringWidth(original)
+    let fillLen = W - 4 - contentWidth
 
     if (li === curLine && curCol >= 0) {
-      const beforeWidth = Math.min(curCol, stringWidth(content))
+      const beforeWidth = Math.min(curCol, contentWidth)
       const before = sliceByWidth(content, beforeWidth)
       const atIdx = before.length   // character index (not display width — CJK chars diverge)
       const at = content[atIdx] ?? " "
       const after = content.slice(atIdx + 1)
       content = before + `${ansi.reset}\x1b[7m${at}\x1b[27m${ansi.reset}` + after
+      // Cursor at end of input: at=[\x20] adds one display column — compensate fill.
+      // When fill is already 0 (content fills the line), don't add the extra space at all
+      // — instead, move the cursor to the last real character.
+      if (atIdx >= original.length) {
+        if (fillLen > 0) {
+          fillLen = Math.max(0, fillLen - 1)
+        } else {
+          // No room for extra space: place cursor on last character instead
+          const lastIdx = original.length - 1
+          if (lastIdx >= 0) {
+            const before2 = sliceByWidth(original, stringWidth(original.slice(0, lastIdx)))
+            const at2 = original[lastIdx] ?? " "
+            content = before2 + `${ansi.reset}\x1b[7m${at2}\x1b[27m${ansi.reset}`
+          }
+        }
+      }
     }
+    const fill = " ".repeat(Math.max(0, fillLen))
 
     out.push(`${borderColor}│${ansi.reset} ${content}${fill} ${borderColor}│${ansi.reset}`)
   }

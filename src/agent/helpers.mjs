@@ -26,7 +26,7 @@ const GIT_TIMEOUT_MS = 5000
 const MAX_GIT_CHANGES_DISPLAY = 20
 
 export const OUTLINE_INJECT_PREFIX = "[System reminder: project dependency outline:"
-export const FILE_MUTATORS = new Set(["write", "edit", "insert_after", "apply_patch", "delete"])
+export const FILE_MUTATORS = new Set(["write", "edit", "insert_after", "apply_patch", "delete", "hashline_edit"])
 
 /** Escape XML special characters in a string for safe embedding in XML/HTML */
 export function escapeXml(s) {

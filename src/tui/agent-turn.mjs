@@ -136,12 +136,19 @@ export async function runAgentTurn(ctx, text) {
       const stream = state.toolStreams[name]
       const panel = state.outputPanels[name]
       if (panel) {
-        // Tool with output panel: mark panel as done, conversation gets only summary
-        panel.done = true
         delete state.toolStreams[name]
-        const summary = formatPanelSummary(name, result)
-        if (summary) pushLine(`  ${summary}`, C.dim)
-        // Clear panel after 3 seconds
+        panel.done = true
+        // Advisor: push full review into conversation (output panel is transient)
+        if (name === "advisor") {
+          const text = String(result ?? "")
+          const lines = text.split("\n")
+          const maxShow = Math.min(24, lines.length)
+          for (let i = 0; i < maxShow; i++) pushLine(`  ${lines[i].slice(0, 160)}`, C.dim)
+          if (lines.length > maxShow) pushLine(`  ... (${lines.length - maxShow} more lines)`, C.dim)
+        } else {
+          const summary = formatPanelSummary(name, result)
+          if (summary) pushLine(`  ${summary}`, C.dim)
+        }
         setTimeout(() => {
           delete state.outputPanels[name]
           if (state.processing) render()
@@ -199,9 +206,6 @@ export async function runAgentTurn(ctx, text) {
       const current = items.find((i) => i.status === "in_progress")
       pushLine(`  [task] ${done}/${items.length}${current ? ` ▶ ${current.title}` : ""}`, C.dim)
       render()
-    },
-    onAdvisor: (note) => {
-      pushLine(`  [advisor] ${note.replace(/\n/g, "\n  ")}`, C.advisor)
     },
     // Incremental save: flush to disk every 5 tool turns — mid-crash loss window shrinks from an entire round to a few turns
     onTurnEnd: (() => {
