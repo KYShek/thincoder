@@ -15,7 +15,6 @@ export function convCacheKey(state) {
 function buildConvLines(state, cols) {
   const key = convCacheKey(state)
   if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
-  if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
 
   const convLines = []
   for (const l of state.lines) {
