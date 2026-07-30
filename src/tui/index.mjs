@@ -7,7 +7,6 @@
  *   agent-turn.mjs    — agent loop + callback construction
  *   render-loop.mjs  — frame scheduler + incremental panel rendering
  *   startup.mjs       — startup screen + session restore + background indexing
- *   startup.mjs       — startup screen + session restore + background indexing
  *   interaction.mjs   — permission approval + Q&A
  *   pickers.mjs       — generic list picker + model picker
  *   wizard.mjs        — first-launch config wizard
