@@ -356,20 +356,20 @@ test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
     git("commit", "-qm", "init")
 
     // create → list 能查到
-    const created = await byName.checkpoint.execute({ action: "create" }, ctx)
+    const created = await byName.git.execute({ action: "checkpoint", checkpointAction: "create" }, ctx)
     const id = created.match(/Checkpoint (\S+) created/)[1]
-    const listed = await byName.checkpoint.execute({ action: "list" }, ctx)
+    const listed = await byName.git.execute({ action: "checkpoint", checkpointAction: "list" }, ctx)
     assert.ok(listed.includes(id))
 
     // 改坏 → rewind 恢复
     writeFileSync(join(dir, "app.js"), "const v = 999\n")
-    await byName.checkpoint.execute({ action: "rewind", id }, ctx)
+    await byName.git.execute({ action: "checkpoint", checkpointAction: "rewind", checkpointId: id }, ctx)
     assert.equal(readFileSync(join(dir, "app.js"), "utf8").replace(/\r\n/g, "\n"), "const v = 1\n")
 
     // rewind 缺 id 报错；非 git 仓库报错
-    await assert.rejects(() => byName.checkpoint.execute({ action: "rewind" }, ctx), /id is required/)
+    await assert.rejects(() => byName.git.execute({ action: "checkpoint", checkpointAction: "rewind" }, ctx), /checkpointId is required/)
     const plain = mkdtempSync(join(tmpdir(), "thincoder-cptool-plain-"))
-    await assert.rejects(() => byName.checkpoint.execute({ action: "list" }, { cwd: plain }), /Not a git repository/)
+    await assert.rejects(() => byName.git.execute({ action: "checkpoint", checkpointAction: "list" }, { cwd: plain }), /Not a git repository/)
     rmSync(plain, { recursive: true, force: true })
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -603,16 +603,14 @@ test("git_diff / git_status / git_log: 只读 git 工具", async () => {
     writeFileSync(join(dir, "b.js"), "3\n")
 
     const ctx = { cwd: dir }
-    const gitDiff = builtinTools.find((t) => t.name === "git_diff")
-    const gitStatus = builtinTools.find((t) => t.name === "git_status")
-    const gitLog = builtinTools.find((t) => t.name === "git_log")
+    const git = builtinTools.find((t) => t.name === "git")
 
-    // git_diff
-    const diff = await gitDiff.execute({}, ctx)
+    // git diff
+    const diff = await git.execute({ action: "diff" }, ctx)
     assert.ok(diff.includes("a.js"))
 
-    // git_status — 验证文件出现即可（Staged/Unstaged 分类取决于 git 平台行为）
-    const status = await gitStatus.execute({}, ctx)
+    // git status
+    const status = await git.execute({ action: "status" }, ctx)
     assert.ok(status.includes("a.js"), `missing a.js: ${status}`)
     assert.ok(status.includes("b.js"), `missing b.js: ${status}`)
     assert.ok(
@@ -621,8 +619,8 @@ test("git_diff / git_status / git_log: 只读 git 工具", async () => {
     )
     assert.ok(status.includes("Untracked"), `missing Untracked: ${status}`)
 
-    // git_log
-    const log = await gitLog.execute({ count: 1 }, ctx)
+    // git log
+    const log = await git.execute({ action: "log", count: 1 }, ctx)
     assert.ok(log.includes("first"))
   } finally {
     rmSync(dir, { recursive: true, force: true })

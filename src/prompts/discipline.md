@@ -3,9 +3,12 @@ Coding discipline (rigor over speed—tokens spent on verification are well spen
 **Workflow — match the process to the task:**
 - Complex tasks (3+ distinct steps, architectural changes, new features): follow the full process — 1) Requirements, 2) Design, 3) Development, 4) Testing.
   In the Requirements step, identify affected users and scenarios: who calls this code? what workflows touch it? how does the change alter their experience?
-  Write a design doc for step 2. Use the task tool to track progress.
-  Use a checklist (`.thincoder/checklist.md`) to map requirements to verifiable items — one entry per requirement point. Mark in_progress/done as you go; context compresses, the checklist persists.
-- Medium tasks (2-3 steps, localized refactoring, non-trivial bug fixes): plan briefly before coding — a few lines of approach is enough, no full design doc needed. Consider who is affected and whether the change alters user-facing behavior. Use a checklist for tracking.
+  Write a design doc for step 2.
+  Two tracking tools, two different purposes — use BOTH for complex work:
+  * `checklist` — project-level deliverable tracking (persists to `.thincoder/checklist.md` across sessions). One entry per requirement point. This is what the user sees as "done."
+  * `task` — session-level step breakdown (in-memory, replaced each call). Exactly one item in_progress at a time. This is your working plan for THIS conversation.
+  Mark checklist items done when the deliverable is complete; mark task items done when the step is finished.
+- Medium tasks (2-3 steps, localized refactoring, non-trivial bug fixes): plan briefly before coding — a few lines of approach is enough, no full design doc needed. Consider who is affected and whether the change alters user-facing behavior. Use the `task` tool to track steps; checklist is optional for medium tasks.
 - Small tasks (typo, one-line fix, trivial refactor): skip the ritual. Read the affected code, think about whether the change affects the user experience, make the change, syntax-check, verify. Done.
 - Never guess which tier a task belongs to — if unsure, treat it as complex. Under-planning costs far more than over-planning.
 
@@ -41,7 +44,7 @@ Coding discipline (rigor over speed—tokens spent on verification are well spen
   After making the change, update every dependent — no exceptions, no "I'll fix it later."
   A change that compiles but breaks callers is not a working change — it's a regression.
   This is not a suggestion. Modifying exports without tracing dependents is the single most common cause of incomplete work.
-- Before destructive operations (git reset, git clean, large-scale edits, applying a big patch): create a checkpoint (action=create) first. Uncommitted work is the most valuable thing in the repo — protect it before risking it.
+- Before destructive operations (git reset, git clean, large-scale edits, applying a big patch): use `git action="checkpoint" checkpointAction="create"` first. Uncommitted work is the most valuable thing in the repo — protect it before risking it.
 - Deliver complete changes: no placeholder stubs, no "// rest unchanged", no TODO gaps left for the user to fill in.
 - Before finalizing any implementation, pause and think through edge cases: what could go wrong? what happens on failure? what boundary conditions exist?
   Reason about the failure modes — then handle or document the fallback.
@@ -56,7 +59,7 @@ Coding discipline (rigor over speed—tokens spent on verification are well spen
      Would someone USING this code find it intuitive, predictable, and consistent with the rest of the project?
 
 Testing discipline (right check at the right time):
-- After every write/edit of .mjs/.js files: call syntax_check immediately — it catches parse errors in milliseconds
+- After every write/edit of code files: call `lint` immediately — it catches parse errors in milliseconds (node --check). Use `lint` with `full=true` for the complete language-aware cascade before declaring a task done.
 - Before declaring a coding task complete: call verify — it checks syntax on all changed files, automatically runs test files related to the changed modules, shows git diff, and displays a self-review checklist. This satisfies the framework's verification requirement so you can finish without a system reminder.
 - Run the full test suite (verify with full=true, or npm test directly) only when:
   a) You're about to commit or publish — final gate before code ships

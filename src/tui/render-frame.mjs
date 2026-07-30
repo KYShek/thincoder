@@ -35,7 +35,7 @@ const SLASH_HINTS = {
 export function renderHeader(agent, cols) {
   const model = agent.provider.model
   const spec = specForModel(model)
-  const thinkOnValue = spec.thinkOnValue ?? "enabled"
+  const thinkOnValue = spec.thinkEnabledValue ?? "enabled"
   const t = agent.provider.thinking
   const effort = agent.provider.reasoningEffort
   const thinkBadge = t?.type === "disabled" ? "│ think: off"
@@ -193,7 +193,7 @@ export function renderInputBox(state, W, boxLines, cols, inputLayout, inputOffse
     if (li === curLine && curCol >= 0) {
       const beforeWidth = Math.min(curCol, stringWidth(content))
       const before = sliceByWidth(content, beforeWidth)
-      const atIdx = beforeWidth
+      const atIdx = before.length   // character index (not display width — CJK chars diverge)
       const at = content[atIdx] ?? " "
       const after = content.slice(atIdx + 1)
       content = before + `${ansi.reset}\x1b[7m${at}\x1b[27m${ansi.reset}` + after
@@ -434,10 +434,11 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
   const elapsed = state.processing ? ` ${Math.floor((Date.now() - state.processingStarted) / 1000)}s` : ""
   const toolHint = state.currentTool ? ` ${state.currentTool}…` : ""
   const statusText = state.processing ? `${state.status}${toolHint}${elapsed}` : state.status
-  const ctxThreshold = agent.config?.agent?.compactThreshold ?? 100_000
-  const ctxPct = Math.round((state.ctxCache.tokens / ctxThreshold) * 100)
+  const modelContext = specForModel(agent.provider.model).context
+  const ctxPct = Math.round((state.ctxCache.tokens / modelContext) * 100)
+  const ctxTokensHint = state.ctxCache.tokens > 0 ? ` ${fmtK(state.ctxCache.tokens)}` : ""
   const ctxHint = ctxPct > 0
-    ? ctxPct >= 80 ? ` │ ${ansi.reset}${C.warn}context ${ctxPct}%${ansi.reset}${ansi.dim}` : ` │ context ${ctxPct}%` : ""
+    ? ctxPct >= 80 ? ` │ ${ansi.reset}${C.warn}context ${ctxPct}%${ctxTokensHint}${ansi.reset}${ansi.dim}` : ` │ context ${ctxPct}%${ctxTokensHint}` : ""
   const queueHint = state.queue.length > 0 ? ` │ queue: ${state.queue.length}` : ""
   return ` ${statusText}${taskHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+I: inject │ Ctrl+C: exit`
 }

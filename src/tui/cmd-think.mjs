@@ -7,7 +7,7 @@ export async function handleThinkCommand(ctx) {
   const { specForModel } = await import("../config.mjs")
   const spec = specForModel(cur.model)
   const isEffortOnly = spec.thinkApi === "effort"
-  const thinkOnValue = spec.thinkOnValue ?? "enabled"
+  const thinkOnValue = spec.thinkEnabledValue ?? "enabled"
   const isCustomThink = thinkOnValue !== "enabled"
   // "enabled" when thinking.type matches the model's enabled value, or when thinking is absent and the model is NOT a custom-think model (defaults to on for standard models)
   const thinkingEnabled = cur.thinking?.type === thinkOnValue || (cur.thinking?.type === undefined && !isCustomThink)

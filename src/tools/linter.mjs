@@ -1,38 +1,66 @@
 import { DESC, resolveInCwd } from "./shared.mjs"
+import { execFileSync } from "node:child_process"
+import { existsSync } from "node:fs"
+import { join, relative } from "node:path"
 
-export const linterTool = {
-  name: "linter",
-  description: DESC("linter"),
+export const lintTool = {
+  name: "lint",
+  description:
+    "Run the appropriate linter/checker for a file. Auto-detects based on file extension and project config.\n" +
+    "Without 'full', runs a fast node --check (JS/TS syntax only, catches parse errors in milliseconds).\n" +
+    "With 'full', runs the language-aware cascade: eslint → tsc –noEmit → node --check (JS/TS/TSX); ruff (Python); cargo check (Rust); go vet (Go).\n" +
+    "Use the fast default after every write/edit; use 'full' before declaring a task complete.",
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "File path (default: most recently modified file)" },
+      path: { type: "string", description: "File to check (default: most recently modified file)" },
+      full: { type: "boolean", description: "Run the full language-aware cascade instead of just node --check (default false)" },
     },
+    required: [],
   },
   readonly: true,
   async execute(args, ctx) {
-    const { execFileSync } = await import("node:child_process")
-    const { existsSync } = await import("node:fs")
-    const { join, relative } = await import("node:path")
-    const abs = args.path ? resolveInCwd(ctx, args.path) : (ctx.agent?._touchedFiles?.at(-1) || null)
-    if (!abs) return "linter: no file specified and no recently modified file to check"
+    const abs = args.path
+      ? resolveInCwd(ctx, args.path)
+      : (ctx.agent?._touchedFiles?.at(-1) || null)
+    if (!abs) return "lint: no file specified and no recently modified file to check"
 
+    if (!args.full) {
+      // Fast path: node --check only
+      return nodeCheckResult(abs)
+    }
+
+    // Full cascade: language-aware (eslint → tsc → node --check, etc.)
     const ext = abs.split(".").pop()?.toLowerCase()
     const checkers = LANG_CHECKERS[ext]
-    if (!checkers) return `linter: no linter configured for .${ext} files. Supported: ${Object.keys(LANG_CHECKERS).map(e => `.${e}`).join(", ")}`
+    if (!checkers) return nodeCheckResult(abs) // fall back to node --check
 
     for (const checker of checkers) {
       const result = await checker(abs, { cwd: ctx.cwd, existsSync, execFileSync, join, relative })
       if (result !== null) return result
     }
-    return `linter: no linter available for ${args.path || abs}. Install one?`
+    return `lint: no linter available for ${abs}. Install one?`
   },
 }
 
-// ─── Checker definitions ──────────────────────
+function nodeCheckResult(abs) {
+  if (!/\.(?:m?js|cjs|m?ts|cts|jsx|tsx)$/.test(abs)) {
+    return `lint (check): only JS/TS-family files supported for fast syntax check; use full=true for other languages. Path: ${abs}`
+  }
+  try {
+    execFileSync(process.execPath, ["--check", abs], {
+      encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+    })
+    return `Syntax OK: ${abs}`
+  } catch (e) {
+    const msg = (e.stderr || e.stdout || e.message || "").trim()
+    return `Syntax error in ${abs}:\n${msg || "(unknown)"}`
+  }
+}
+
+// ─── Full-check cascade checkers ──────────────────────
 
 async function eslintCheck(file, { cwd, existsSync, execFileSync, join, relative }) {
-  // Walk up to find eslint config
   let dir = file.split(/[\\/]/).slice(0, -1).join("/") || "."
   while (true) {
     for (const cfg of [".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yaml", ".eslintrc.yml", "eslint.config.js", "eslint.config.mjs"]) {
@@ -73,18 +101,6 @@ async function tscCheck(file, { cwd, existsSync, execFileSync, join }) {
   }
 }
 
-async function nodeCheck(file, { execFileSync, cwd }) {
-  if (!/\.(m?js|cjs)$/.test(file)) return null
-  try {
-    execFileSync(process.execPath, ["--check", file], {
-      cwd, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
-    })
-    return "✓ node --check: Syntax OK"
-  } catch (e) {
-    return `✗ node --check: ${(e.stderr || e.message).slice(0, 500)}`
-  }
-}
-
 async function ruffCheck(file, { cwd, execFileSync }) {
   if (!/\.py$/.test(file)) return null
   try {
@@ -93,7 +109,7 @@ async function ruffCheck(file, { cwd, execFileSync }) {
     })
     return "✓ ruff: no issues"
   } catch (e) {
-    if (e.code === "ENOENT") return "linter: ruff not installed. Run: pip install ruff"
+    if (e.code === "ENOENT") return "lint: ruff not installed. Run: pip install ruff"
     const stdout = (e.stdout || "").trim()
     if (stdout) return stdout
     return `✗ ruff: ${(e.stderr || e.message).slice(0, 500)}`
@@ -129,13 +145,11 @@ async function goVet(file, { cwd, execFileSync }) {
   }
 }
 
-// ─── Language → checkers (first available wins) ──
-
 const LANG_CHECKERS = {
-  js:  [eslintCheck, nodeCheck],
-  mjs: [eslintCheck, nodeCheck],
-  cjs: [eslintCheck, nodeCheck],
-  jsx: [eslintCheck, nodeCheck],
+  js:  [eslintCheck],
+  mjs: [eslintCheck],
+  cjs: [eslintCheck],
+  jsx: [eslintCheck],
   ts:  [eslintCheck, tscCheck],
   tsx: [eslintCheck, tscCheck],
   mts: [eslintCheck, tscCheck],

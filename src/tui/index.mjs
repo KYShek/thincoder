@@ -95,6 +95,11 @@ export async function startTUI(agent, opts = {}) {
   const keyStream = new PassThrough()
   let mousePending = "" // incomplete mouse sequence tail spanning chunks
   let lastRenderedScroll = 0
+  // Capture terminal dimensions before raw mode & alt buffer switch.
+  // On Windows, process.stdout.columns/rows can briefly return falsy after the mode switch
+  // (ConPTY buffer transition), causing the ||80/||24 fallback to produce a cramped initial layout.
+  const startupCols = process.stdout.columns || 80
+  const startupRows = process.stdout.rows || 24
   emitKeypressEvents(keyStream)
   process.stdin.setRawMode(true)
   process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn + ansi.bracketedPasteOn)
@@ -292,7 +297,7 @@ export async function startTUI(agent, opts = {}) {
 
   function doRender() {
     try {
-      const dims = { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }
+      const dims = { cols: process.stdout.columns || startupCols, rows: process.stdout.rows || startupRows }
       const layout = computeLayout(state, dims)
       const { W, panels, inputLayout, inputOffset, boxLines, visibleTasks, allSubs, permPreviewLines, overlay } = layout
 

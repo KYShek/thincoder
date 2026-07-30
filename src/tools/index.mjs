@@ -2,27 +2,27 @@
 export { toOpenAISchema } from "./shared.mjs";
 
 import { readTool, writeTool, editTool, insertAfterTool, readImageTool, hashlineEditTool } from "./file.mjs";
-import { applyPatchTool, syntaxCheckTool, deleteTool } from "./patch.mjs";
+import { applyPatchTool, deleteTool } from "./patch.mjs";
 import { bashTool, globTool, grepTool, lsTool } from "./system.mjs";
 import { websearchTool, fetchTool } from "./web.mjs";
-import { gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool } from "./git.mjs";
+import { gitTool, questionTool } from "./git.mjs";
 import { checklistTool } from "./checklist.mjs";
-import { linterTool } from "./linter.mjs";
+import { lintTool } from "./linter.mjs";
 import { lspTool } from "./lsp.mjs";
 import { codeModeTool } from "./codemode.mjs";
 
 export const builtinTools = [
   readTool, writeTool, editTool, insertAfterTool, hashlineEditTool, applyPatchTool,
-  syntaxCheckTool, readImageTool, bashTool, globTool, grepTool,
+  readImageTool, bashTool, globTool, grepTool,
   websearchTool, lsTool, fetchTool, deleteTool,
-  gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool,
-  checklistTool, linterTool, lspTool, codeModeTool,
+  gitTool, questionTool,
+  checklistTool, lintTool, lspTool, codeModeTool,
 ];
 
 export {
   readTool, writeTool, editTool, insertAfterTool, hashlineEditTool, applyPatchTool,
-  syntaxCheckTool, readImageTool, bashTool, globTool, grepTool,
+  readImageTool, bashTool, globTool, grepTool,
   websearchTool, lsTool, fetchTool, deleteTool,
-  gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool,
-  checklistTool, linterTool, lspTool, codeModeTool,
+  gitTool, questionTool,
+  checklistTool, lintTool, lspTool, codeModeTool,
 };

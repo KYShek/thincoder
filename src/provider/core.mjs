@@ -27,11 +27,35 @@ export function createProvider(config) {
     reasoningEffort: config.reasoningEffort,
     tpm: config.tpm,
     rpm: config.rpm,
+    format: config.format,
+    chatPath: config.chatPath,
   }
 }
 
 /** Send a streaming chat completion request with automatic continuation on truncation */
 export async function chat(provider, { messages, tools, onToken, onReasoning, onWait, signal, streamRules }) {
+  // Format dispatch: delegate to non-OpenAI transports
+  if (provider.format === "anthropic") {
+    const { chat: anthropicChat } = await import("./anthropic.mjs")
+    const { normalizeTools } = await import("./anthropic.mjs")
+    const result = await anthropicChat(provider, {
+      messages,
+      tools: tools?.length ? normalizeTools(tools) : null,
+      onToken, onReasoning, signal,
+    })
+    return result
+  }
+  if (provider.format === "google") {
+    const { chat: geminiChat } = await import("./google.mjs")
+    const { normalizeTools } = await import("./google.mjs")
+    const result = await geminiChat(provider, {
+      messages,
+      tools: tools?.length ? normalizeTools(tools) : null,
+      onToken, onReasoning, signal,
+    })
+    return result
+  }
+
   const spec = specForModel(provider.model)
   messages = stripImagesForTextModel(messages, spec)
   // Compile string-pattern rules to RegExp at call time
@@ -40,8 +64,9 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
     model: provider.model,
     messages,
     stream: true,
-    stream_options: { include_usage: true },
   }
+  // Skip usage stream for models that don't support it (GLM, MiniMax, Gemini)
+  if (!spec.noUsageStream) body.stream_options = { include_usage: true }
   if (provider.maxTokens) body.max_tokens = provider.maxTokens
   if (provider.temperature != null) {
     let t = provider.temperature
@@ -52,7 +77,7 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
     body.temperature = t
   }
   if (provider.thinking) body.thinking = provider.thinking
-  if (provider.reasoningEffort) {
+  if (provider.reasoningEffort && provider.format !== "anthropic" && provider.format !== "google") {
     if (spec.reasoningEffortEnum && !spec.reasoningEffortEnum.includes(provider.reasoningEffort)) {
       throw new Error(
         `reasoning_effort "${provider.reasoningEffort}" not supported by model "${provider.model}"; ` +

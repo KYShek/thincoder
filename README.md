@@ -295,7 +295,7 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 - **git-driven incremental indexing**: new `gitSync` uses `git diff` at startup to find files changed since the last index and rebuilds only their FTS5 chunks. Non-git repos / first run / large changesets (>200 files) automatically fall back to full scans. `codeSync` + `docSync` startup parallelized
 - **Embeddings backfilled right after reindexFile**: incremental indexing after each agent write/edit no longer leaves vector NULLs — `ensureEmbeddings` runs immediately, so freshly changed files are semantically searchable at once
 - **Project-instruction injection hardening**: AGENTS.md content wrapped with `escapeXml` + `<untrusted_project_instructions>`, closing the prompt-injection hole from malicious project instructions
-- **Compaction threshold cap**: for 1M-window models the compaction threshold drops from 800K to 300K tokens (`COMPACT_CAP_TOKENS`), preventing history from blowing the TPM budget and the compaction request itself from hitting 429
+- **Compaction threshold**: triggers at 60% of model context window, reserving 40% headroom for injected context
 - **readSSE tool_calls name dedup**: some APIs (GLM occasionally) resend the full name instead of deltas in the stream, and `+=` produced `readread`. Now only the first non-empty value is taken
 - **Edge-case thinking across all prompt layers**: plan/explore/coder/main overlays each gained an edge-case recognition rule (open-ended, no scenario enumeration)
 - **Testing discipline refined**: full-test trigger changed from "touched core infrastructure files" to "changed core infrastructure behavior" — adding a helper to memory.mjs no longer triggers the full suite
