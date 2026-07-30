@@ -119,20 +119,16 @@ function runBash(command, cwd, { timeout, signal, onOutput }) {
 
     child.stdout.on("data", (d) => {
       const s = sanitizeOutput(outDecoder(d))
-      if (s) {
-        onOutput?.(s)
-        if (outBuf.length < MAX_STREAM_BUF) outBuf += s
-        else if (!truncatedNote) truncatedNote =
-          "\n[... output exceeded 2MB, remainder discarded — redirect to a file if you need the full output]"
-      }
+      if (s) onOutput?.(s)
+      if (outBuf.length < MAX_STREAM_BUF) outBuf += s
+      else if (!truncatedNote) truncatedNote =
+        "\n[... output exceeded 2MB, remainder discarded — redirect to a file if you need the full output]"
     })
 
     child.stderr.on("data", (d) => {
       const s = sanitizeOutput(errDecoder(d))
-      if (s) {
-        onOutput?.(s)
-        if (errBuf.length < MAX_STREAM_BUF) errBuf += s
-      }
+      if (s) onOutput?.(s)
+      if (errBuf.length < MAX_STREAM_BUF) errBuf += s
     })
 
     const timer = setTimeout(killTree, timeout)
@@ -145,9 +141,13 @@ function runBash(command, cwd, { timeout, signal, onOutput }) {
 
     child.on("close", (code, exitSignal) => {
       clearTimeout(timer)
-      // Flush decoder tails (trailing multi-byte sequences that incomplete buffers left pending)
-      outBuf += sanitizeOutput(outDecoder(Buffer.alloc(0), true))
-      errBuf += sanitizeOutput(errDecoder(Buffer.alloc(0), true))
+      // Flush decoder tails — also push final bytes to panel
+      const outFlush = sanitizeOutput(outDecoder(Buffer.alloc(0), true))
+      const errFlush = sanitizeOutput(errDecoder(Buffer.alloc(0), true))
+      outBuf += outFlush
+      errBuf += errFlush
+      if (outFlush) onOutput?.(outFlush)
+      if (errFlush) onOutput?.(errFlush)
 
       // Windows has no POSIX signals — check signal.aborted for user interrupts
       const status = (exitSignal || signal?.aborted)
