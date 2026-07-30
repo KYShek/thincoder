@@ -399,7 +399,8 @@ export async function startTUI(agent, opts = {}) {
       // Conditional panels
       push(buildPanel("todo", panels.todo, renderTodo(visibleTasks, dims.cols)))
       push(buildPanel("subagent", panels.subagent, renderSubagent(allSubs, W)))
-      push(buildPanel("output", panels.output, renderOutput(state, W, panels.output?.h ?? 0)))
+      push(buildPanel("output", panels.output, renderOutput(state, W, panels.output?.h ?? 0),
+        Object.values(state.outputPanels).filter(p => !p.done).map(p => p.text?.length ?? 0).join(",")))
       push(buildPanel("permission", panels.permission, renderPermission(permPreviewLines)))
       if (panels.queue) push(buildPanel("queue", panels.queue, [renderQueue(state, W)]))
       else panelCache.delete("queue")

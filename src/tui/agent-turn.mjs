@@ -138,7 +138,7 @@ export async function runAgentTurn(ctx, text) {
       if (panel) {
         delete state.toolStreams[name]
         panel.done = true
-        // Advisor: push review into conversation in advisor color (cap at 60 lines)
+        scheduleRender()  // flush final frame before panel collapses
         if (name === "advisor") {
           const text = String(result ?? "")
           const lines = text.split("\n")
