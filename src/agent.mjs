@@ -289,7 +289,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       // must be reviewed before the turn ends. No hard round cap — convergence protocol
       // (round 3+ strict verification) naturally limits divergence.
       if (depth === 0 && agent.config?.advisor?.enabled && agent.config?.advisor?.guard !== false) {
-        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun) {
+        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && (agent._touchedFiles ?? []).length > 0) {
           agent.history.push({ role: "assistant", content: response.content })
           agent.history.push({
             role: "user",
