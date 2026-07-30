@@ -18,7 +18,7 @@ Design docs in `docs/design/`. Complete pipeline: [`PHILOSOPHY.md`](docs/design/
 - **Prefix caching**: the system prompt must be byte-stable across runs — per-turn varying content goes in user messages, not the system prompt.
 - **Thinking echo**: `reasoning_content` in assistant tool_calls messages depends on the model's `reasoningEcho` spec field.
 - **Commit messages**: `type: summary` (feat / fix / release / docs), single English line.
-- **Release flow**: bump `package.json` version → `npm publish` → commit + `git tag vX.Y.Z` → `git push origin main --tags`. Manual smoke pass before release.
+- **Release flow**: bump `package.json` version → `npm publish` → commit + `git tag vX.Y.Z` → `git push origin main --tags`. Manual smoke pass before release. **Version bumps default to patch (third digit) only** — never bump minor/major unless the user explicitly says so.
 - **Discussion → docs**: design decisions, architecture choices, and naming conventions discussed in chat don't exist until they're in a doc file. After any design discussion, write the conclusions to the relevant document immediately — not "later". Chat context compresses; docs persist.
 
 ## Key Modules

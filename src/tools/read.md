@@ -1,4 +1,11 @@
 Read a text file. Returns numbered lines. Use offset/limit to page large files.
+
+**Routing:**
+- Don't know which file? → `repo_outline` / `code_search` / `glob` first
+- Know the symbol but not the location? → `code_search` or `lsp definition`
+- Know the file but not the lines? → `grep` to find line numbers, then read that range with offset/limit
+- Reading an image? → `read_image` instead
+
 Parameters:
 - path (required): File path, relative to cwd or absolute (alias: filePath)
 - offset: 1-based line number to start reading from

@@ -111,6 +111,24 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       }
     }
 
+    // Plan-mode reminder cadence: re-inject constraint reminders while plan mode is active
+    // (sparse every 2 turns, full every 5 turns or when the user sends a new message),
+    // so the read-only restriction never fades from context.
+    if (agent.planMode) {
+      const lastMsg = agent.history.at(-1)
+      const realUserMsg = lastMsg?.role === "user"
+        && typeof lastMsg.content === "string"
+        && !lastMsg.content.startsWith("[System reminder:")
+        && !lastMsg.content.startsWith("[User interrupt:")
+      const newUserSince = realUserMsg && agent.history.length > (agent._planReminderAtLen ?? 0)
+      const { planReminderForTurn } = await import("./agent-tools/plan.mjs")
+      const reminder = planReminderForTurn(agent, newUserSince)
+      if (reminder) {
+        agent._planReminderAtLen = agent.history.length + 1
+        agent.history.push({ role: "user", content: reminder, transient: true })
+      }
+    }
+
     const messages = [{ role: "system", content: systemPrompt }, ...agent.history]
     let response
 

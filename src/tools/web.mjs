@@ -9,18 +9,30 @@ const FETCH_TIMEOUT = 15_000
 
 function extractBing(html) {
   const results = []
-  const blocks = html.split('<li class="b_algo"').slice(1)
-  for (const block of blocks) {
-    const link = block.match(/<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/)
-    if (!link) continue
-    const snippet = block.match(/<p[^>]*>([\s\S]*?)<\/p>/)
-    results.push({ href: link[1], title: stripTags(link[2]), snippet: snippet ? stripTags(snippet[1]) : "" })
+  // RSS format: <item><title>..</title><link>..</link><description>..</description></item>
+  for (const m of html.matchAll(/<item>([\s\S]*?)<\/item>/gi)) {
+    const block = m[1]
+    const title = block.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? ""
+    const href = block.match(/<link>([\s\S]*?)<\/link>/)?.[1] ?? ""
+    const snippet = block.match(/<description>([\s\S]*?)<\/description>/)?.[1] ?? ""
+    if (!href) continue
+    results.push({ href, title: stripTags(title), snippet: stripTags(snippet) })
+  }
+  // Fallback: HTML b_algo blocks (older server-rendered pages)
+  if (results.length === 0) {
+    const blocks = html.split('<li class="b_algo"').slice(1)
+    for (const block of blocks) {
+      const link = block.match(/<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/)
+      if (!link) continue
+      const snippet = block.match(/<p[^>]*>([\s\S]*?)<\/p>/)
+      results.push({ href: link[1], title: stripTags(link[2]), snippet: snippet ? stripTags(snippet[1]) : "" })
+    }
   }
   return results
 }
 
 function bingUrl(query, page) {
-  let u = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=en&setmkt=en-US`
+  let u = `https://www.bing.com/search?q=${encodeURIComponent(query)}&format=rss&setlang=en`
   if (page > 1) u += `&first=${(page - 1) * 10 + 1}`
   return u
 }

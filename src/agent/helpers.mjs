@@ -12,8 +12,12 @@ export const DEFAULT_SUBAGENT_TURNS = 100
 export const DEFAULT_GOAL_TURNS = 200
 export const MIN_REPORT_CHARS = 200
 export const REPORT_CONTINUATION =
-  "Your report is too brief to be a complete handoff — the parent agent sees nothing else from your run. " +
-  "Expand it: what you did and why, the path of every file you touched, how you verified (commands/tests run, with results), and anything left undone."
+  "Your report was sent back: too brief to be a complete handoff — the parent agent sees nothing else from your run. " +
+  "Rewrite your final message as a checklist:\n" +
+  "1. What you changed and why\n" +
+  "2. The path of every file you touched\n" +
+  "3. How you verified (tests run, commands executed, with results)\n" +
+  "4. Anything left undone or worth follow-up"
 
 const TOOL_RESULT_OFFLOAD_LIMIT = 16_000
 const TOOL_RESULT_PREVIEW = 2_000

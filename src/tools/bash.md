@@ -1,5 +1,13 @@
 Execute a shell command and return stdout+stderr. Use for running commands, builds, tests.
 
+**Route to a dedicated tool instead of bash:**
+- `cat file` / `head` / `tail` → `read`
+- `ls` / `dir` → `ls`
+- `find` / glob search → `glob`
+- `grep` / `rg` → `grep`
+- `echo >` / `sed` / `printf >` / `cat << EOF` → `write` / `edit` / `hashline_edit` / `apply_patch` (enforced: redirection is blocked)
+- `git diff` / `git status` / `git log` → `git` tool
+
 Parameters:
 - command (required): Shell command to execute
 - timeout: Timeout in milliseconds (default 120000, max ~300000)

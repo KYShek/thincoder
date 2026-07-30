@@ -1,5 +1,13 @@
 Edit a file by exact string replacement. old_string must match exactly once unless replace_all is set.
 
+**Routing — pick the right edit tool:**
+- Precise line-targeted change → `hashline_edit` (hash-based, immune to whitespace/encoding drift — preferred)
+- One exact-string swap → this tool
+- Add a function/block after a known line → `insert_after`
+- Same change across multiple files or many spots → `apply_patch`
+- Rewrite an entire file → `write`
+- Rename a symbol project-wide → `lsp` or `grep` first to map every caller
+
 Parameters:
 - path (required): File path
 - old_string (required): Exact text to find and replace
