@@ -8,13 +8,15 @@ import { websearchTool, fetchTool } from "./web.mjs";
 import { gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool } from "./git.mjs";
 import { checklistTool } from "./checklist.mjs";
 import { linterTool } from "./linter.mjs";
+import { lspTool } from "./lsp.mjs";
+import { codeModeTool } from "./codemode.mjs";
 
 export const builtinTools = [
   readTool, writeTool, editTool, insertAfterTool, hashlineEditTool, applyPatchTool,
   syntaxCheckTool, readImageTool, bashTool, globTool, grepTool,
   websearchTool, lsTool, fetchTool, deleteTool,
   gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool,
-  checklistTool, linterTool,
+  checklistTool, linterTool, lspTool, codeModeTool,
 ];
 
 export {
@@ -22,5 +24,5 @@ export {
   syntaxCheckTool, readImageTool, bashTool, globTool, grepTool,
   websearchTool, lsTool, fetchTool, deleteTool,
   gitDiffTool, gitStatusTool, gitLogTool, questionTool, checkpointTool,
-  checklistTool, linterTool,
+  checklistTool, linterTool, lspTool, codeModeTool,
 };
