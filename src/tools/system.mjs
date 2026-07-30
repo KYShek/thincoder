@@ -129,7 +129,10 @@ function runBash(command, cwd, { timeout, signal, onOutput }) {
 
     child.stderr.on("data", (d) => {
       const s = sanitizeOutput(errDecoder(d))
-      if (errBuf.length < MAX_STREAM_BUF) errBuf += s
+      if (s) {
+        onOutput?.(s)
+        if (errBuf.length < MAX_STREAM_BUF) errBuf += s
+      }
     })
 
     const timer = setTimeout(killTree, timeout)
@@ -146,7 +149,8 @@ function runBash(command, cwd, { timeout, signal, onOutput }) {
       outBuf += sanitizeOutput(outDecoder(Buffer.alloc(0), true))
       errBuf += sanitizeOutput(errDecoder(Buffer.alloc(0), true))
 
-      const status = exitSignal
+      // Windows has no POSIX signals — check signal.aborted for user interrupts
+      const status = (exitSignal || signal?.aborted)
         ? `killed: ${signal?.aborted ? "user interrupted" : "timeout"}`
         : `exit code ${code}`
 
