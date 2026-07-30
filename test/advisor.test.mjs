@@ -365,21 +365,17 @@ test("extractPriorIssueTable: handles multi-line issue descriptions", () => {
 // MAX_ADVISOR_ROUNDS guard logic (agent.mjs)
 // ────────────────────────────────────────
 
-test("agent: _advisorRound initialized to 0 in createAgent", () => {
-  const MAX_ADVISOR_ROUNDS = 5
+test("agent: _advisorRound initialized to 0 in runAgent", () => {
   let _advisorRound = 0
   let _mutatedThisRun = true
   let _calledAdvisorThisRun = false
 
-  assert.equal(_mutatedThisRun && !_calledAdvisorThisRun && _advisorRound < MAX_ADVISOR_ROUNDS, true)
+  // Guard triggers when mutated but not yet called
+  assert.equal(_mutatedThisRun && !_calledAdvisorThisRun, true)
 
-  for (let r = 0; r < 5; r++) {
-    _calledAdvisorThisRun = true
-    _advisorRound++
-    _calledAdvisorThisRun = false
-  }
-
-  assert.equal(_mutatedThisRun && !_calledAdvisorThisRun && _advisorRound < MAX_ADVISOR_ROUNDS, false)
+  // After calling advisor, guard stops pushing
+  _calledAdvisorThisRun = true
+  assert.equal(_mutatedThisRun && !_calledAdvisorThisRun, false)
 })
 
 test("agent: _advisorRound increments only on advisor tool call", () => {

@@ -7,7 +7,7 @@ import { runAdvisorReview } from "../advisor.mjs"
 export const advisorTool = {
   name: "advisor",
   description:
-    "Run a code review on your changes (convergence protocol, max 5 rounds). " +
+    "Run a code review on your changes (convergence protocol). " +
     "Call this when you have finished coding and want an independent review before finalising. " +
     "The advisor is an independent read-only sub-agent that explores the codebase, runs git diff, " +
     "reads files, and traces callers via grep/lsp. " +

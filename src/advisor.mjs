@@ -16,7 +16,8 @@
  *   Agent responds with a response table per issue.
  *   Round 2: semi-convergence — verifies table + can flag obvious new issues.
  *   Round 3+: strict convergence — only checks the prior issue table.
- *   Hard cap: MAX_ADVISOR_ROUNDS (5) total advisor calls per runAgent.
+ *   No hard round cap — the convergence protocol naturally limits divergence.
+ *
  *
  * Project customisation: .thincoder/advisor.md in the project root.
  */

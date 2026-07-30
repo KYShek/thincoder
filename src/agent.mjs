@@ -49,7 +49,6 @@ const STALL_THRESHOLD = 3
 const GOAL_BUDGET_WARN_RATIO = 0.75
 const MAX_VERIFY_PUSHBACKS = 2
 const MAX_VERIFY_RETRIES = 3
-const MAX_ADVISOR_ROUNDS = 5  // hard cap on advisor calls per runAgent
 
 /** Create a new agent state object with all fields initialized to defaults */
 export function createAgent({
@@ -86,7 +85,6 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   agent._touchedFiles = []
   agent._verifyRetries = 0
   agent._advisorRound = 0
-  agent._advisorExhaustedReminded = false
   let guardPushbacks = 0
   let honestReminderInjected = false
   const recentCallSigs = []
@@ -288,26 +286,14 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       }
       // --- advisor guard: push model to review changes before completion ---
       // When advisor is enabled and guard is not explicitly disabled, mutated files
-      // must be reviewed before the turn ends. MAX_ADVISOR_ROUNDS (5) caps total advisor
-      // calls per runAgent — the convergence protocol limits divergence.
+      // must be reviewed before the turn ends. No hard round cap — convergence protocol
+      // (round 3+ strict verification) naturally limits divergence.
       if (depth === 0 && agent.config?.advisor?.enabled && agent.config?.advisor?.guard !== false) {
-        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && agent._advisorRound < MAX_ADVISOR_ROUNDS) {
+        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun) {
           agent.history.push({ role: "assistant", content: response.content })
           agent.history.push({
             role: "user",
-            content: `[System reminder: you changed code in this run but haven't reviewed with advisor (round ${agent._advisorRound + 1}/${MAX_ADVISOR_ROUNDS}). Call the \`advisor\` tool to get an independent code review. After the review, produce a response table for every issue found (see discipline rules for format). If the changes are trivial (typo, one-liner, formatting only), you may skip and explain why in your reply.]`,
-          })
-          callbacks.onTurnEnd?.(agent, turn)
-          continue
-        }
-        // Rounds exhausted — notify once, then let the agent finish
-        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun &&
-            agent._advisorRound >= MAX_ADVISOR_ROUNDS && !agent._advisorExhaustedReminded) {
-          agent._advisorExhaustedReminded = true
-          agent.history.push({ role: "assistant", content: response.content })
-          agent.history.push({
-            role: "user",
-            content: `[System reminder: ${MAX_ADVISOR_ROUNDS} advisor rounds exhausted this task. Remaining issues will be reported to the user as unresolved. You may proceed to verify and finish.]`,
+            content: `[System reminder: you changed code in this run but haven't reviewed with advisor (round ${agent._advisorRound + 1}). Call the \`advisor\` tool to get an independent code review. After the review, produce a response table for every issue found (see discipline rules for format). If the changes are trivial (typo, one-liner, formatting only), you may skip and explain why in your reply.]`,
           })
           callbacks.onTurnEnd?.(agent, turn)
           continue
