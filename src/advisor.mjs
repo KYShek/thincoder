@@ -33,7 +33,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ADVISOR_MD_PATH = ".thincoder/advisor.md"
 const MAX_TASK_SUMMARY = 500
 const GIT_TIMEOUT = 5_000
-const MAX_ADVISOR_TOOL_TURNS = 8
+const MAX_ADVISOR_TOOL_TURNS = 20
 
 const DEFAULT_CRITERIA = `Review the code changes, focusing on:
 1. Correctness: logic errors, edge cases, off-by-one, incomplete modifications
@@ -337,18 +337,20 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     }
   }
 
-  // Max turns exhausted — force final response without tools
-  messages.push({
-    role: "user",
-    content: "Maximum exploration turns reached. Provide your final review now without calling any tools.",
-  })
+  // Max turns exhausted — strip bloated context, ask for final review with clean slate
+  const slimMessages = [
+    messages[0],  // system prompt
+    messages[1],  // original user message
+    {
+      role: "user",
+      content: `Exploration limit reached (${MAX_ADVISOR_TOOL_TURNS} tool turns). Based on everything you have already examined, produce your final review now. Do not call any tools.`,
+    },
+  ]
   const final = await chat(provider, {
-    messages,
+    messages: slimMessages,
     tools: [],
     signal: (signal && !signal.aborted) ? signal : new AbortController().signal,
   })
-  if (!final.content?.trim()) return "Advisor: (empty response — review was inconclusive)"
-  return final.content.trim()
 }
 
 // ────────────────────────────────────────
