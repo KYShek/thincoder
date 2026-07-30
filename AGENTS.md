@@ -20,6 +20,7 @@ Design docs in `docs/design/`. Complete pipeline: [`PHILOSOPHY.md`](docs/design/
 - **Commit messages**: `type: summary` (feat / fix / release / docs), single English line.
 - **Release flow**: bump `package.json` version → `npm publish` → commit + `git tag vX.Y.Z` → `git push origin main --tags`. Manual smoke pass before release. **Version bumps default to patch (third digit) only** — never bump minor/major unless the user explicitly says so.
 - **Discussion → docs**: design decisions, architecture choices, and naming conventions discussed in chat don't exist until they're in a doc file. After any design discussion, write the conclusions to the relevant document immediately — not "later". Chat context compresses; docs persist.
+- **File size**: single `.mjs` / `.js` source file exceeding 300 lines → advisory (🟡): suggest splitting. Exceeding 500 lines → blocking (🔴): must split before merge. Test files (`test/**`) and generated code are exempt.
 
 ## Key Modules
 
