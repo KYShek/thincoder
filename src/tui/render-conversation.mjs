@@ -2,7 +2,7 @@
  * render-conversation.mjs — conversation panel line builder
  * Extracted from render-frame.mjs.
  */
-import { C } from "./ansi.mjs"
+import { ansi, C } from "./ansi.mjs"
 import { formatTables, sanitizeDisplay, wrapText } from "./render.mjs"
 
 let _convCache = { key: "", cols: 0, lines: [] }
@@ -13,8 +13,8 @@ export function convCacheKey(state) {
 }
 
 function buildConvLines(state, cols) {
-  const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
   const key = convCacheKey(state)
+  if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
   if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
 
   const convLines = []
@@ -87,7 +87,7 @@ export function renderConversation(state, cols, visibleH, scroll) {
   const visible = convLines.slice(Math.max(0, end - visibleH), end)
   const pad = visibleH - visible.length
   const out = []
-  for (const l of visible) out.push(`${l.color ?? ""}${l.text}${C.reset}`)
-  for (let p = 0; p < pad; p++) out.push("~")
+  for (let p = 0; p < pad; p++) out.push("")
+  for (const l of visible) out.push(`${l.color ?? ""}${l.text}${ansi.reset}`)
   return out
 }

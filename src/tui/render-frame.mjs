@@ -45,8 +45,6 @@ export function renderHeader(agent, cols) {
   return `${ansi.bold}${C.tool} ThinCoder ${ansi.reset}${ansi.dim}│ ${sliceByWidth(model, 30)}${thinkBadge ? " " + thinkBadge : ""} │ ${sliceByWidth(basename(agent.cwd), Math.max(10, cols - 60))}${ansi.reset}`
 }
 
-/**
- * Compute a cheap cache key for the conversation panel.
 /** Todo/task panel. Returns empty array when no tasks visible. */
 export function renderTodo(visibleTasks, cols) {
   return visibleTasks.map((t) => {
