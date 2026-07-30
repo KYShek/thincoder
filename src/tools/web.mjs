@@ -1,4 +1,4 @@
-import { DESC, truncate, stripTags, htmlToText } from "./shared.mjs";
+import { DESC, truncate, stripTags, htmlToText, isPrivateHost } from "./shared.mjs";
 import { URL } from "node:url";
 import { resolveWebProxy, proxyFetch } from "../proxy.mjs";
 
@@ -103,14 +103,7 @@ export const websearchTool = {
 
 function isPrivateUrl(urlStr) {
   let u; try { u = new URL(urlStr) } catch { return true }
-  const host = u.hostname.toLowerCase()
-  if (host === "localhost" || host === "0.0.0.0" || host.endsWith(".localhost")) return false
-  if (host === "127.0.0.1" || host.startsWith("127.")) return false
-  if (host === "169.254.169.254" || host === "metadata.google.internal") return true
-  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (m) { const [a, b] = [Number(m[1]), Number(m[2])]; if (a === 10||a === 172&&b>=16&&b<=31||a === 192&&b===168||a === 169&&b===254||a===0) return true }
-  if (host === "::1" || host === "fe80::1" || host.startsWith("fc") || host.startsWith("fd")) return true
-  return false
+  return isPrivateHost(u.hostname)
 }
 
 // proxyFetch returns a native Response (Headers object, needs .get()) without proxy,

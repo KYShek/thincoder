@@ -20,6 +20,22 @@ export const BASH_TIMEOUT_MS = 120_000
 export const MAX_RESPONSE_BODY_BYTES = 5_000_000
 export const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage"])
 
+/** SSRF guard: check if a hostname is private/internal. Shared by web.mjs and codemode.mjs. */
+export function isPrivateHost(hostname) {
+  const h = hostname.toLowerCase()
+  if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost")) return false
+  if (h === "127.0.0.1" || h.startsWith("127.")) return false
+  if (h === "169.254.169.254" || h === "metadata.google.internal") return true
+  // IPv6 private ranges — only check if host contains ":"
+  if (h.includes(":") && (h === "::1" || h === "fe80::1" || h.startsWith("fc") || h.startsWith("fd"))) return true
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])]
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || a === 192 && b === 168 || a === 169 && b === 254 || a === 0) return true
+  }
+  return false
+}
+
 /** Normalize Windows line endings to Unix: \r\n → \n.
  *  Applied on every text-file read so that edit/hash matching
  *  and hash computation are platform-consistent. */

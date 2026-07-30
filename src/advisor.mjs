@@ -349,8 +349,10 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
   const final = await chat(provider, {
     messages: slimMessages,
     tools: [],
-    signal: (signal && !signal.aborted) ? signal : new AbortController().signal,
+    signal: signal ?? new AbortController().signal,
   })
+  if (!final.content?.trim()) return "Advisor: (empty response — review was inconclusive)"
+  return final.content.trim()
 }
 
 // ────────────────────────────────────────

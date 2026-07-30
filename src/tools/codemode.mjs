@@ -24,35 +24,20 @@
 import { Script, createContext } from "node:vm"
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync } from "node:fs"
 import { join, dirname, relative, resolve } from "node:path"
-import { globToRegex, normalizeEOL } from "./shared.mjs"
+import { globToRegex, normalizeEOL, isPrivateHost } from "./shared.mjs"
 
 const MAX_OUTPUT = 50_000
 const MAX_SCRIPT = 50_000
 const DEFAULT_TIMEOUT = 30_000
 
-/** SSRF-safe fetch: only http/https, private IP rejection, 10s timeout.
- *  Uses the same logic as isPrivateUrl in web.mjs — kept in sync manually. */
+/** SSRF-safe fetch: only http/https, private IP rejection, 10s timeout. */
 async function sandboxFetch(url) {
   const parsed = new URL(url)
   if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`CodeMode fetch: protocol not allowed: ${parsed.protocol}`)
   }
 
-  function isPrivate(hostname) {
-    const h = hostname.toLowerCase()
-    if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost")) return false
-    if (h === "127.0.0.1" || h.startsWith("127.")) return false
-    if (h === "169.254.169.254" || h === "metadata.google.internal") return true
-    if (h === "::1" || h === "fe80::1" || h.startsWith("fc") || h.startsWith("fd")) return true
-    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-    if (m) {
-      const [a, b] = [Number(m[1]), Number(m[2])]
-      if (a === 10 || (a === 172 && b >= 16 && b <= 31) || a === 192 && b === 168 || a === 169 && b === 254 || a === 0) return true
-    }
-    return false
-  }
-
-  if (isPrivate(parsed.hostname)) {
+  if (isPrivateHost(parsed.hostname)) {
     throw new Error(`CodeMode fetch: private/internal host not allowed: ${parsed.hostname}`)
   }
   const ctrl = new AbortController()
