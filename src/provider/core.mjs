@@ -1,10 +1,13 @@
 /**
  * provider/core.mjs — LLM call core
- * chat / listModels / createProvider / requestWithRetry / readSSE
+ * chat / listModels / createProvider / requestWithRetry
+ * SSE parsing → provider/sse.mjs
  */
 
 import { specForModel } from "../config.mjs"
 import { proxyFetch } from "../proxy.mjs"
+import { readSSE } from "./sse.mjs"
+export { readSSE } from "./sse.mjs"
 import {
   RETRYABLE_STATUS, MAX_RETRIES, MAX_CONTINUATIONS,
   RATE_LIMIT_BACKOFF_MS, _rateHooks,
@@ -301,131 +304,6 @@ function isNonRetryableError(status, text) {
     } catch {}
   }
   return false
-}
-
-export async function readSSE(response, { onToken, onReasoning, rules, signal, firedPatterns: sharedFired }) {
-  const result = { content: "", reasoning: "", toolCalls: [], usage: null, finishReason: null }
-  const decoder = new TextDecoder()
-  let buffer = ""
-  let hasChoices = false
-  // Track patterns already fired this turn for repeat: "once" gating.
-  // The set is shared across chat calls within a turn (passed in by the caller),
-  // so an abort-retry or tool-loop iteration can't re-fire the same rule endlessly.
-  const firedPatterns = sharedFired ?? new Set()
-
-  const processLines = (lines) => {
-    for (const line of lines) {
-      if (!line.startsWith("data:")) continue
-      const data = line.slice(5).trim()
-      if (!data || data === "[DONE]") continue
-
-      let json
-      try { json = JSON.parse(data) } catch { continue }
-
-      if (json.usage) result.usage = json.usage
-      const choice = json.choices?.[0]
-      if (!choice) continue
-      hasChoices = true
-      if (choice.finish_reason) result.finishReason = choice.finish_reason
-
-      const delta = choice.delta ?? {}
-      if (delta.reasoning_content) {
-        result.reasoning += delta.reasoning_content
-        onReasoning?.(delta.reasoning_content)
-      }
-      if (delta.content) {
-        result.content += delta.content
-        onToken?.(delta.content)
-      }
-      for (const tc of delta.tool_calls ?? []) {
-        const slot = (result.toolCalls[tc.index] ??= { id: "", name: "", arguments: "" })
-        if (tc.id) slot.id = tc.id
-        if (tc.function?.name && !slot.name) slot.name = tc.function.name
-        if (tc.function?.arguments) slot.arguments += tc.function.arguments
-      }
-    }
-  }
-
-  if (!response.body) throw new Error("No stream response body")
-  try {
-    for await (const chunk of response.body) {
-      // Active signal check: Ctrl+I abort should halt stream immediately, not wait for
-      // the underlying fetch stream to propagate the abort (delayed on Windows).
-      if (signal?.aborted) {
-        const e = new DOMException("The operation was aborted", "AbortError")
-        e.reason = signal.reason
-        throw e
-      }
-      buffer += decoder.decode(chunk, { stream: true })
-      const lines = buffer.split("\n")
-      buffer = lines.pop()
-      processLines(lines)
-
-      // Time-traveling stream rules: check accumulated content against patterns.
-      // Only triggers on text content (not during tool_call generation) to avoid
-      // interrupting structured tool use.
-      // action "abort": halt the stream immediately and retry with the rule injected.
-      // action "warn":  let the stream finish, then inject the warning after the turn (non-interrupting).
-      // repeat "once":  skip if this rule's pattern has already fired in the current turn.
-      if (rules?.length && result.content && !result.toolCalls.length) {
-        for (const rule of rules) {
-          if (rule.repeat === "once" && firedPatterns.has(rule.pattern)) continue
-          if (rule._regex.test(result.content)) {
-            if (rule.repeat === "once") firedPatterns.add(rule.pattern)
-            if (rule.action === "abort") {
-              result.ruleTriggered = true
-              result.ruleMessage = rule.message
-              result.ruleName = rule.name
-              return result
-            }
-            // warn: accumulate deduplicated by pattern, let the stream complete
-            const existing = result._warnings ??= []
-            if (!existing.some(w => w.pattern === rule.pattern)) {
-              existing.push({ name: rule.name, pattern: rule.pattern, message: rule.message })
-            }
-          }
-        }
-      }
-    }
-    buffer += decoder.decode()
-    processLines(buffer.split("\n"))
-  } catch (e) {
-    // User interrupt (Ctrl+I): controller.abort({ interrupt: true, message: "…" }).
-    // The interrupted signal.reason carries the user's message; return partial content
-    // so the agent loop can inject it as a user message and retry.
-    if (e.name === "AbortError" && signal?.reason?.interrupt) {
-      result.interrupted = true
-      result.interruptMessage = signal.reason.message
-      return result
-    }
-    throw e
-  }
-
-  // If no SSE choices were found, the response is likely a JSON error
-  if (!hasChoices) {
-    const contentType = response.headers.get("content-type") || ""
-    let errorMsg = ""
-    try {
-      const raw = buffer.trim() || ""
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        errorMsg = parsed?.error?.message
-          || parsed?.base_resp?.status_msg
-          || parsed?.detail
-          || parsed?.message
-          || parsed?.msg
-          || (typeof parsed.error === "string" ? parsed.error : "")
-      }
-    } catch { /* not JSON */ }
-    if (!errorMsg && !contentType.includes("event-stream")) {
-      errorMsg = `Response is not SSE (Content-Type: ${contentType || "unknown"})`
-    }
-    if (errorMsg) {
-      throw new Error(`API error: ${errorMsg}`)
-    }
-  }
-
-  return result
 }
 
 function betaBaseURL(baseURL) {
