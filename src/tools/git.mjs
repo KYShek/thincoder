@@ -3,6 +3,7 @@ import {
   truncate,
   runGit
 } from "./shared.mjs";
+import { escapeXml } from "../agent/helpers.mjs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -120,11 +121,12 @@ export const gitTool = {
             return formatFileTree(cp)
           }
 
-          // Overview: list of all snapshots
+          // Overview: list of all snapshots (file names are XML-escaped: they are
+          // untrusted input that flows back into the model's context)
           return cps.map((c) => {
             const parts = [`${c.id}  ${new Date(c.time).toISOString()}`]
-            if (c.tracked.length) parts.push(`${c.tracked.length} tracked: ${c.tracked.join(", ")}`)
-            if (c.untracked.length) parts.push(`${c.untracked.length} untracked: ${c.untracked.join(", ")}`)
+            if (c.tracked.length) parts.push(`${c.tracked.length} tracked: ${c.tracked.map(escapeXml).join(", ")}`)
+            if (c.untracked.length) parts.push(`${c.untracked.length} untracked: ${c.untracked.map(escapeXml).join(", ")}`)
             return parts.join("  ")
           }).join("\n")
         }
@@ -162,9 +164,10 @@ export const questionTool = {
 
 /** Format a checkpoint's file list as a directory tree (directories first, indented display) */
 function formatFileTree(cp) {
+  // File names are XML-escaped: untrusted input that flows back into the model's context
   const all = [
-    ...(cp.tracked ?? []).map((f) => ({ path: f, type: "" })),
-    ...(cp.untracked ?? []).map((f) => ({ path: f, type: " (untracked)" })),
+    ...(cp.tracked ?? []).map((f) => ({ path: escapeXml(f), type: "" })),
+    ...(cp.untracked ?? []).map((f) => ({ path: escapeXml(f), type: " (untracked)" })),
   ]
   if (all.length === 0) return "(empty checkpoint)"
 

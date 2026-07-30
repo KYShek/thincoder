@@ -42,10 +42,10 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
   if (tools?.length) body.tools = tools
   if (provider.temperature != null) {
     let t = provider.temperature
-    if (spec.tempRange) {
-      t = Math.min(spec.tempRange[1], Math.max(spec.tempRange[0], t))
-      t = Math.round(t * 100) / 100
-    }
+    // Anthropic API hard limit is 0-1; models without a declared tempRange still get clamped
+    const [tMin, tMax] = spec.tempRange ?? [0, 1]
+    t = Math.min(tMax, Math.max(tMin, t))
+    t = Math.round(t * 100) / 100
     body.temperature = t
   }
 

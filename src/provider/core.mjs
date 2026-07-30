@@ -36,7 +36,7 @@ export function createProvider(config) {
 }
 
 /** Send a streaming chat completion request with automatic continuation on truncation */
-export async function chat(provider, { messages, tools, onToken, onReasoning, onWait, signal, streamRules }) {
+export async function chat(provider, { messages, tools, onToken, onReasoning, onWait, signal, streamRules, firedPatterns }) {
   // Format dispatch: delegate to non-OpenAI transports
   if (provider.format === "anthropic") {
     const { chat: anthropicChat } = await import("./anthropic.mjs")
@@ -95,7 +95,7 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
   await rateGate(provider, estimated, onWait, signal)
 
   const response = await requestWithRetry(provider, body, signal, onWait)
-  const result = await readSSE(response, { onToken, onReasoning, rules, signal })
+  const result = await readSSE(response, { onToken, onReasoning, rules, signal, firedPatterns })
   recordRate(provider, estimated, result.usage)
 
   // Stream rule triggered or user interrupted mid-generation — return partial result
@@ -303,13 +303,15 @@ function isNonRetryableError(status, text) {
   return false
 }
 
-export async function readSSE(response, { onToken, onReasoning, rules, signal }) {
+export async function readSSE(response, { onToken, onReasoning, rules, signal, firedPatterns: sharedFired }) {
   const result = { content: "", reasoning: "", toolCalls: [], usage: null, finishReason: null }
   const decoder = new TextDecoder()
   let buffer = ""
   let hasChoices = false
-  // Track patterns already fired this turn for repeat: "once" gating
-  const firedPatterns = new Set()
+  // Track patterns already fired this turn for repeat: "once" gating.
+  // The set is shared across chat calls within a turn (passed in by the caller),
+  // so an abort-retry or tool-loop iteration can't re-fire the same rule endlessly.
+  const firedPatterns = sharedFired ?? new Set()
 
   const processLines = (lines) => {
     for (const line of lines) {

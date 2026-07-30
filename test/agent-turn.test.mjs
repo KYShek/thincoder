@@ -93,3 +93,22 @@ test("runAgentTurn: handleSlash 期间新入队项继续被消费且不重复", 
   assert.deepEqual(ctx.calls.runAgent, ["start", "follow up"], "新入队的普通消息各执行一次")
   assert.equal(ctx.state.queue.length, 0, "队列被完全消费，无重复无遗漏")
 })
+
+test("runAgentTurn: catch 块内抛异常也能清理 ticker 与状态（try/finally）", async () => {
+  const { ContinueError } = await import("../src/agent.mjs")
+  const ctx = trackedCtx({
+    runAgent: async () => { throw new ContinueError(5) },
+    // ContinueError 分支的 pushLabel(`❯ Continue`) 才抛出，模拟 UI 层异常逃出 catch 块
+    //（开头的 pushLabel(`❯ You:`) 必须正常，否则进不了 try/finally 区域）
+    pushLabel: (text) => {
+      if (String(text).includes("Continue")) throw new Error("ui boom")
+      ctx.lines.push({ kind: "label", text })
+    },
+  })
+  await assert.rejects(() => runAgentTurn(ctx, "task"), /ui boom/)
+  // finally 必须已执行：状态复位 + session 保存（ticker 若泄漏，1s interval 会拖住测试进程不退出）
+  assert.equal(ctx.state.processing, false)
+  assert.equal(ctx.state.controller, null)
+  assert.equal(ctx.state.status, "Ready")
+  assert.equal(ctx.calls.saved, 1)
+})

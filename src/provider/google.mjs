@@ -23,11 +23,13 @@ export function normalizeTools(tools) {
  * Gemini: [{ role: "user"|"model", parts: [{ text }] }]
  * system → systemInstruction (top-level in request body)
  */
-function convertMessages(messages) {
+export function convertMessages(messages) {
   const contents = []
   for (const m of messages) {
+    // system messages are hoisted to systemInstruction by the caller — check the
+    // ORIGINAL role (the remapped role below can never be "system")
+    if (m.role === "system") continue
     const role = m.role === "assistant" ? "model" : "user"
-    if (role === "system") continue
 
     const parts = []
     if (typeof m.content === "string") {

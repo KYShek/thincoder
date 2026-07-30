@@ -29,7 +29,7 @@ export const timerTool = {
   readonly: true,
   sideEffectExempt: true,
   execute(args, ctx) {
-    const seconds = args.seconds ?? 30
+    const seconds = args.seconds ?? 180
     const expiresAt = Date.now() + seconds * 1000
     const message = args.message || `⏰ Time's up (${seconds}s). Have you tried running the code, adding a console.log, or checking the output? Thinking more without data is guessing.`
 

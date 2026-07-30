@@ -213,69 +213,74 @@ export async function runAgentTurn(ctx, text) {
     })(),
   }
 
-  for (let resume = false; ; resume = true) {
-    try {
-      await runAgentImpl(agent, text, callbacks, { signal: state.controller.signal, resume })
-      flushStream()
-      break // Normal completion, exit loop
-    } catch (error) {
-      flushStream()
-      if (error.name === "AbortError" || state.controller?.signal.aborted) {
-        // Ctrl+I inject: the signal was aborted with an interrupt message — the agent loop
-        // may have already injected it into history, but the aborted signal prevents retry.
-        // Recreate the controller and resume from the same context.
-        if (state.controller?.signal?.reason?.interrupt) {
-          state.controller = new AbortController()
-          resume = true
-          continue
-        }
-        pushLine("[stopped]", C.warn)
-        break
-      }
-      if (error instanceof ContinueError) {
-        pushLabel(`❯ Continue`, ansi.bold + C.warn)
-        pushLine(`Ran ${error.turn} turns (limit ${error.turn}). Continue?`, C.warn)
-        // Pause to ask: reuse permission mechanism
-        const willContinue = await new Promise((resolve) => {
-          state.permission = {
-            name: "continue",
-            args: { turns: error.turn },
-            resolve,
+  // try/finally: every exit path — including an unexpected throw inside the catch
+  // block (e.g. the continue-permission UI) — must stop the ticker and reset state,
+  // otherwise the 1s render interval leaks and keeps firing forever.
+  try {
+    for (let resume = false; ; resume = true) {
+      try {
+        await runAgentImpl(agent, text, callbacks, { signal: state.controller.signal, resume })
+        flushStream()
+        break // Normal completion, exit loop
+      } catch (error) {
+        flushStream()
+        if (error.name === "AbortError" || state.controller?.signal.aborted) {
+          // Ctrl+I inject: the signal was aborted with an interrupt message — the agent loop
+          // may have already injected it into history, but the aborted signal prevents retry.
+          // Recreate the controller and resume from the same context.
+          if (state.controller?.signal?.reason?.interrupt) {
+            state.controller = new AbortController()
+            resume = true
+            continue
           }
-          state.status = `Continue after ${error.turn} turns?`
-          render()
-        })
-        state.permission = null
-        if (!willContinue) {
-          pushLine("[continue cancelled]", C.warn)
+          pushLine("[stopped]", C.warn)
           break
         }
-        pushLine("[continuing…]", C.tool)
-        // Recreate AbortController: once aborted, resume immediately fails (defensive; current path unreachable but tightly coupled)
-        state.controller = new AbortController()
-        continue
+        if (error instanceof ContinueError) {
+          pushLabel(`❯ Continue`, ansi.bold + C.warn)
+          pushLine(`Ran ${error.turn} turns (limit ${error.turn}). Continue?`, C.warn)
+          // Pause to ask: reuse permission mechanism
+          const willContinue = await new Promise((resolve) => {
+            state.permission = {
+              name: "continue",
+              args: { turns: error.turn },
+              resolve,
+            }
+            state.status = `Continue after ${error.turn} turns?`
+            render()
+          })
+          state.permission = null
+          if (!willContinue) {
+            pushLine("[continue cancelled]", C.warn)
+            break
+          }
+          pushLine("[continuing…]", C.tool)
+          // Recreate AbortController: once aborted, resume immediately fails (defensive; current path unreachable but tightly coupled)
+          state.controller = new AbortController()
+          continue
+        }
+        pushLine(`[error] ${error.message}`, C.error)
+        break
       }
-      pushLine(`[error] ${error.message}`, C.error)
-      break
     }
+  } finally {
+    clearInterval(ticker)
+    state.processing = false
+    state.subTasks = {}
+    state.controller = null
+    state.status = "Ready"
+    // Auto-collapse todo panel when all tasks done (matching kimi-code TUI; agent.tasks are preserved)
+    if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
+      state.tasks = []
+    }
+    // Save session after every turn (survives crashes)
+    try {
+      saveSessionImpl(agent, state.lines)
+    } catch {
+      // Save failure doesn't interrupt usage
+    }
+    render()
   }
-
-  clearInterval(ticker)
-  state.processing = false
-  state.subTasks = {}
-  state.controller = null
-  state.status = "Ready"
-  // Auto-collapse todo panel when all tasks done (matching kimi-code TUI; agent.tasks are preserved)
-  if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
-    state.tasks = []
-  }
-  // Save session after every turn (survives crashes)
-  try {
-    saveSessionImpl(agent, state.lines)
-  } catch {
-    // Save failure doesn't interrupt usage
-  }
-  render()
 
   // Queued messages: auto-process next one
   while (state.queue.length > 0 && !state.processing) {

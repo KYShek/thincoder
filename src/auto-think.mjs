@@ -32,6 +32,26 @@ const EFFORT_MAP = {
 }
 
 /**
+ * Build classifier input from history: the latest real user message (reminders and
+ * interrupt injections excluded), plus the previous user message as context when the
+ * latest is too short to classify on its own (e.g. "继续" / "还有几个问题").
+ * Exported for tests.
+ */
+export function buildClassifierInput(history) {
+  const isRealUser = (m) =>
+    m.role === "user" && typeof m.content === "string"
+    && !m.content.startsWith("[System reminder:") && !m.content.startsWith("[User interrupt:")
+  const users = history.filter(isRealUser)
+  const last = users.at(-1)
+  if (!last) return null
+  let prompt = last.content
+  if (prompt.length < 200 && users.length > 1) {
+    prompt = `Previous request (context):\n${users.at(-2).content.slice(0, 1200)}\n\nLatest message:\n${prompt}`
+  }
+  return prompt.slice(0, 2000)
+}
+
+/**
  * Classify the difficulty of the user's prompt and adjust reasoning effort.
  * Only runs on the first turn (turn === 0) of a user message.
  * Returns the resolved level or null if auto-thinking is disabled or classification fails.
@@ -47,10 +67,8 @@ export async function classifyAndApply(agent, turn) {
   const validEfforts = spec.reasoningEffortEnum
   if (!validEfforts) return null // Model doesn't support reasoning effort
 
-  // Get the last user message (should be the most recent history entry or the input)
-  const lastUser = [...agent.history].reverse().find(m => m.role === "user")
-  if (!lastUser) return null
-  const prompt = typeof lastUser.content === "string" ? lastUser.content : ""
+  const prompt = buildClassifierInput(agent.history)
+  if (prompt == null) return null
 
   // Classification call: use same provider, minimal tokens, no tools, no streaming
   let level
@@ -59,7 +77,7 @@ export async function classifyAndApply(agent, turn) {
     const response = await chat(classifierProvider, {
       messages: [
         { role: "system", content: CLASSIFY_PROMPT },
-        { role: "user", content: prompt.slice(0, 2000) },
+        { role: "user", content: prompt },
       ],
       tools: [],
       signal: AbortSignal.timeout(5_000),

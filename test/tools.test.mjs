@@ -376,6 +376,35 @@ test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
   }
 })
 
+test("checkpoint 工具：list 的文件名做 XML 转义（防注入模型上下文）", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cpxml-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  const ctx = { cwd: dir }
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    // Windows 合法但 XML 敏感的字符 & ' 出现在文件名里（<>"/" Windows 不允许）
+    writeFileSync(join(dir, "a&'b'.txt"), "x\n")
+    const created = await byName.git.execute({ action: "checkpoint", checkpointAction: "create" }, ctx)
+    const id = created.match(/Checkpoint (\S+) created/)[1]
+
+    const overview = await byName.git.execute({ action: "checkpoint", checkpointAction: "list" }, ctx)
+    assert.ok(overview.includes("a&amp;&apos;b&apos;.txt"), `overview 应转义文件名: ${overview}`)
+    assert.ok(!overview.includes("a&'b'.txt"))
+
+    const tree = await byName.git.execute({ action: "checkpoint", checkpointAction: "list", checkpointId: id }, ctx)
+    assert.ok(tree.includes("a&amp;&apos;b&apos;.txt"), `file tree 应转义文件名: ${tree}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("bash 护栏：checkout ./restore/clean -f/链式写法拦截，安全写法放行", async () => {
   const { execFileSync } = await import("node:child_process")
   const dir = mkdtempSync(join(tmpdir(), "thincoder-guard-"))

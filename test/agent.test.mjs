@@ -1861,6 +1861,103 @@ test("provider: readSSE — repeat: once deduplicates within same stream", async
   assert.ok(result.content.includes("second"), "stream completes after repeated match")
 })
 
+test("provider: readSSE — repeat: once 跨 chat 调用不重复触发（共享 firedPatterns）", async () => {
+  const { readSSE, compileStreamRules } = await import("../src/provider/core.mjs")
+  const rules = compileStreamRules([
+    { pattern: "FORBIDDEN", message: "Do not use FORBIDDEN", action: "abort", repeat: "once" },
+  ])
+  // agent.mjs 在 runAgent 的 turn 循环外创建这个 Set，跨多次 chat() 调用共享
+  const fired = new Set()
+  const mkResponse = () => ({
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "text FORBIDDEN end" } }] })}\n\n` +
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` +
+          `data: [DONE]\n\n`
+        ))
+        controller.close()
+      }
+    }),
+    headers: { get: () => "text/event-stream" },
+  })
+
+  // 第一次 chat：规则命中，abort
+  const r1 = await readSSE(mkResponse(), { onToken: () => {}, rules, firedPatterns: fired })
+  assert.equal(r1.ruleTriggered, true)
+
+  // abort-retry 后的第二次 chat（同一 turn 内）：规则已 fired，不再打断，流完整读完
+  const r2 = await readSSE(mkResponse(), { onToken: () => {}, rules, firedPatterns: fired })
+  assert.equal(r2.ruleTriggered, undefined)
+  assert.equal(r2.content, "text FORBIDDEN end")
+})
+
+test("provider: gemini convertMessages — system 消息不进 contents", async () => {
+  const { convertMessages } = await import("../src/provider/google.mjs")
+  const contents = convertMessages([
+    { role: "system", content: "you are a helpful assistant" },
+    { role: "user", content: "hi" },
+    { role: "user", content: "[System reminder: mid-stream note]" },
+    { role: "assistant", content: "hello" },
+  ])
+  // role:system 由 chat() 单独进 systemInstruction，contents 里不能再出现
+  assert.ok(!JSON.stringify(contents).includes("you are a helpful assistant"), "system prompt must not leak into contents")
+  // 连续 user 合并、assistant → model；[System reminder:] 本来就是 user 角色，保留
+  assert.deepEqual(contents.map((c) => c.role), ["user", "model"])
+  assert.ok(JSON.stringify(contents).includes("mid-stream note"))
+})
+
+test("provider: anthropic — 温度钳位 0-1（含 spec 无 tempRange 的兜底）", async () => {
+  const { createServer } = await import("node:http")
+  let captured = null
+  const server = createServer((req, res) => {
+    let b = ""
+    req.on("data", (d) => (b += d))
+    req.on("end", () => {
+      captured = JSON.parse(b)
+      res.setHeader("content-type", "text/event-stream")
+      res.end(`event: message_stop\ndata: {}\n\n`)
+    })
+  })
+  await new Promise((r) => server.listen(0, "127.0.0.1", r))
+  try {
+    const { chat } = await import("../src/provider/anthropic.mjs")
+    const baseURL = `http://127.0.0.1:${server.address().port}`
+    const msgs = [{ role: "user", content: "hi" }]
+    // claude-sonnet-4 的 spec 未声明 tempRange，也必须按 Anthropic API 硬限制 0-1 钳位
+    await chat({ baseURL, apiKey: "k", model: "claude-sonnet-4", temperature: 2 }, { messages: msgs })
+    assert.equal(captured.temperature, 1)
+    // 完全未知的模型（DEFAULT_SPEC 同样无 tempRange）也钳位
+    await chat({ baseURL, apiKey: "k", model: "claude-3.5-sonnet", temperature: 1.7 }, { messages: msgs })
+    assert.equal(captured.temperature, 1)
+    // 合法值原样通过
+    await chat({ baseURL, apiKey: "k", model: "claude-sonnet-4", temperature: 0.5 }, { messages: msgs })
+    assert.equal(captured.temperature, 0.5)
+  } finally {
+    server.close()
+  }
+})
+
+test("auto-think: buildClassifierInput 短消息带上一轮上下文，提醒/中断消息不计入", async () => {
+  const { buildClassifierInput } = await import("../src/auto-think.mjs")
+  // 长消息：直接用（截断到 2000），不拼上下文
+  const long = "x".repeat(3000)
+  assert.equal(buildClassifierInput([{ role: "user", content: long }]), long.slice(0, 2000))
+  // 短消息（如"继续"）：带上一条真实用户消息做上下文；reminder/interrupt 不算用户消息
+  const out = buildClassifierInput([
+    { role: "user", content: "实现一个登录功能" },
+    { role: "assistant", content: "done" },
+    { role: "user", content: "[System reminder: goal state]" },
+    { role: "user", content: "[User interrupt: stop]" },
+    { role: "user", content: "继续" },
+  ])
+  assert.ok(out.includes("实现一个登录功能"), "短消息应带上一轮请求做上下文")
+  assert.ok(out.includes("Latest message:\n继续"))
+  assert.ok(!out.includes("System reminder") && !out.includes("User interrupt"), "注入消息不参与分类输入")
+  // 无真实用户消息 → null（调用方静默降级）
+  assert.equal(buildClassifierInput([{ role: "assistant", content: "hi" }]), null)
+})
+
 // ---------------------------------------------------------------- rules discovery
 
 test("rules: discoverRules parses .md files with frontmatter", async () => {

@@ -86,6 +86,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   let guardPushbacks = 0
   let honestReminderInjected = false
   const recentCallSigs = []
+  // repeat: "once" stream rules fire at most once per runAgent call (user turn):
+  // this set survives across chat() calls (rule abort-retry, tool loop) within the turn.
+  const streamRuleFired = new Set()
 
   for (let turn = 0; turn < maxTurns; turn++) {
 
@@ -94,6 +97,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       try {
         if (await compressIfNeeded(agent, threshold, callbacks)) {
           agent._compressFailures = 0
+          agent._planReminderAtLen = 0 // After compression history shrinks, reset cadence so reminders resume
           recentCallSigs.length = 0 // After compression history is rebuilt, reset stall detection counter
           callbacks.onCompress?.()
           if (agent.autoApprove && !agent.history.some((m) => m.content === AUTO_REMINDER)) {
@@ -147,6 +151,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         onWait: callbacks.onWait,
         signal,
         streamRules: agent.config.agent?.streamRules ?? [],
+        firedPatterns: streamRuleFired,
       })
     } catch (e) {
       // User interrupt (Ctrl+I): controller.abort({ interrupt: true, message: "…" }).
