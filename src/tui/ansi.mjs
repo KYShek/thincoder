@@ -38,4 +38,5 @@ export const C = {
   dim: ansi.gray,
   warn: ansi.fg(3),
   advisor: `${ESC}[92m`,  // bright green — visible on dark backgrounds
+  fold: `${ESC}[2m${ESC}[37m`,   // dim white — fold hints
 }

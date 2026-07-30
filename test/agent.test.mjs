@@ -1521,7 +1521,7 @@ test("goal: complete 的 verify 证据门槛", async () => {
   assert.equal(agent.goal.status, "active") // 没让完成
   agent._verifiedThisRun = true
   const ok = await goalTool.execute({ action: "complete" }, { agent })
-  assert.match(ok, /marked complete/)
+  assert.match(ok, /verified complete/)
   assert.equal(agent.goal.status, "complete")
 })
 

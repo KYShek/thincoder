@@ -28,6 +28,8 @@ import { handleConfigCommand } from "./cmd-config.mjs"
 import { handleExtractCommand } from "./cmd-extract.mjs"
 import { handleHelpCommand } from "./cmd-help.mjs"
 import { handleUpgradeCommand } from "./cmd-upgrade.mjs"
+import { handleFoldCommand } from "./cmd-fold.mjs"
+import { handleUndoCommand } from "./cmd-undo.mjs"
 
 export const SLASH_COMMANDS = [
   { name: "/plan", group: "Agent", desc: "toggle plan mode (design first, then implement)" },
@@ -38,6 +40,7 @@ export const SLASH_COMMANDS = [
   { name: "/think", group: "Agent", desc: "thinking mode & reasoning effort" },
   { name: "/config", group: "Agent", desc: "config management (embedding / agent)" },
   { name: "/upgrade", group: "System", desc: "check for updates & upgrade" },
+  { name: "/fold", group: "System", desc: "toggle result folding on/off" },
   { name: "/new", group: "Session", desc: "new session (old one archived to slot)" },
   { name: "/session", group: "Session", desc: "list/switch archived sessions" },
   { name: "/clear", group: "Session", desc: "clear screen" },
@@ -47,6 +50,7 @@ export const SLASH_COMMANDS = [
   { name: "/mcp", group: "Project", desc: "manage MCP servers" },
   { name: "/reindex", group: "Project", desc: "rebuild memory index" },
   { name: "/restore", group: "Project", desc: "restore checkpoint" },
+  { name: "/undo", group: "Project", desc: "undo recent file modifications" },
   { name: "/exit", group: "System", desc: "exit" },
   { name: "/help", group: "System", desc: "this list" },
 ]
@@ -70,6 +74,8 @@ const HANDLERS = {
   "/model": handleModelCommand,
   "/config": handleConfigCommand,
   "/upgrade": handleUpgradeCommand,
+  "/fold": handleFoldCommand,
+  "/undo": handleUndoCommand,
   "/extract": handleExtractCommand,
   "/help": handleHelpCommand,
 }

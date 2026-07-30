@@ -80,6 +80,8 @@ export async function startTUI(agent, opts = {}) {
     status: "Ready",
     queue: [], // queued messages while processing: [{ text }], auto-dequeued when current turn finishes
     interruptPrompt: null, // Ctrl+I interrupt message input: { text: "" } or null
+    expandedBlocks: new Set(), // block hashes that are expanded (Enter toggles)
+    foldEnabled: true, // global fold toggle — /fold on|off
   }
 
   // On session restore, if all tasks are completed, auto-collapse the todo panel (match runtime behavior)

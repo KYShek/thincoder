@@ -124,12 +124,53 @@ export async function handleMcpCommand(ctx) {
         openPicker({
           title: "MCP Transport",
           entries: [
-            { type: "header", text: "Select server transport" },
+            { type: "header", text: "Select transport or use AI assist" },
+            { type: "item", text: "🤖 Describe with AI — natural language → config", action: "ai" },
             { type: "item", text: "HTTP (https://…)", action: "http" },
             { type: "item", text: "WebSocket (ws://…)", action: "ws" },
             { type: "item", text: "stdio (local command)", action: "stdio" },
           ],
           onSelect: async (te) => {
+            if (te.action === "ai") {
+              const description = await askQuestion("Describe the MCP server you want to add (e.g. 'a filesystem server that gives access to /tmp'):")
+              if (!description) return
+              pushLine("[mcp] Generating config from description...", C.dim)
+              try {
+                const { chat } = await import("../provider/index.mjs")
+                const res = await chat(agent.provider, {
+                  messages: [{
+                    role: "user",
+                    content: `Generate an MCP server configuration JSON from this description. Return ONLY the JSON object, no explanation.
+
+Description: "${description}"
+
+The JSON should have these fields:
+- name: a short identifier
+- One of: url (HTTP), wsUrl (WebSocket), or command + args (stdio)
+- headers: optional key-value object
+
+Example HTTP: {"name":"filesystem","url":"https://example.com/mcp","headers":{"Authorization":"Bearer xxx"}}
+Example stdio: {"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}
+
+Return ONLY the JSON object:`,
+                  }],
+                  tools: [],
+                  signal: AbortSignal.timeout(15_000),
+                })
+                const jsonMatch = (res.content ?? "").match(/\{[\s\S]*\}/)
+                if (!jsonMatch) { pushLine("[mcp] AI response not valid JSON", C.error); return }
+                const srv = JSON.parse(jsonMatch[0])
+                if (!srv.name) { pushLine("[mcp] AI response missing 'name' field", C.error); return }
+                // Show preview and confirm
+                pushLine(`[mcp] Generated config: ${JSON.stringify(srv)}`, C.tool)
+                const confirm = await askQuestion("Add this server? (y/n):")
+                if (confirm?.toLowerCase() !== "y") { pushLine("[mcp] Cancelled", C.dim); return }
+                await addAndConnect(ctx, srv)
+              } catch (err) {
+                pushLine(`[mcp] AI generation failed: ${err.message}`, C.error)
+              }
+              return
+            }
             const name = await askQuestion("Server name:")
             if (!name) return
             const existing = (agent.config?.mcp?.servers ?? []).find((s) => s.name === name)

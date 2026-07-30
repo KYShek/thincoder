@@ -2,6 +2,8 @@
  * agent/dispatch.mjs — two-phase tool call execution
  */
 import { offloadToolResult } from "./helpers.mjs"
+import { runHooks } from "../hooks.mjs"
+import { snapshotForUndo } from "../tui/cmd-undo.mjs"
 import { writeFileSync, mkdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -80,6 +82,13 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
     }
 
     callbacks.onToolCall?.(toolCall.name, args)
+
+    // PreToolUse hooks: allow user scripts to gate tool execution
+    if (!(await runHooks("PreToolUse", { agent, toolName: toolCall.name, toolArgs: args }))) {
+      prepared.push({ toolCall, tool, denied: true, reason: "blocked by PreToolUse hook" })
+      continue
+    }
+
     prepared.push({ toolCall, tool, args })
   }
 
@@ -91,11 +100,17 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
         ? "Error: plan mode is active — only read-only tools are allowed. Exit plan mode first."
         : item.reason === "denied by user"
           ? "Error: permission denied by user"
-          : "Error: no permission handler configured — this tool requires user approval but the current context doesn't support interaction (e.g. subagent or non-TUI mode)"
+          : item.reason === "blocked by PreToolUse hook"
+            ? "Error: blocked by PreToolUse hook"
+            : "Error: no permission handler configured — this tool requires user approval but the current context doesn't support interaction (e.g. subagent or non-TUI mode)"
       return { ...item, result: reason, ok: false }
     }
     try {
-      if (item.tool.outputPanel) callbacks.setupOutputPanel?.(item.toolCall.name)
+      // Snapshot for undo before side-effect tools
+      if (item.tool?.outputPanel) callbacks.setupOutputPanel?.(item.toolCall.name)
+      if (!item.tool?.readonly && item.args) {
+        snapshotForUndo(agent, item.toolCall.name, item.args, agent.cwd)
+      }
       const rawResult = await item.tool.execute(item.args, {
         cwd: agent.cwd,
         agent,
@@ -110,10 +125,13 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       const raw = String(rawResult)
       const result = item.toolCall.name === "read_image" ? raw : await offloadToolResult(raw, item.toolCall.id)
       callbacks.onToolResult?.(item.toolCall.name, result)
+      // PostToolUse hooks: fire-and-forget (result not awaited on hook failure)
+      runHooks("PostToolUse", { agent, toolName: item.toolCall.name, toolArgs: item.args, result: raw }).catch(() => {})
       return { ...item, result, ok: true }
     } catch (error) {
       // Persist to ~/.thincoder/tool-errors/ for post-mortem; only pass message to the model (stack traces confuse LLMs and may leak paths)
       logToolError(item.toolCall.name, item.args, error)
+      runHooks("PostToolUseFailure", { agent, toolName: item.toolCall.name, toolArgs: item.args, error }).catch(() => {})
       return { ...item, result: `Error: ${error.message}`, ok: false }
     }
   }

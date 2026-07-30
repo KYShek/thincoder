@@ -52,8 +52,45 @@ export const goalTool = {
       if (agent._mutatedThisRun && !agent._verifiedThisRun) {
         return "Error: files were modified but verify has not run. Run the check your criteria names AND the verify tool before marking the goal complete — false completion is the worst outcome of autonomous work."
       }
+
+      // Independent judge: verify the goal was actually achieved
+      // Only applies when the agent is at depth 0 (not a subagent) and has history to review
+      if (ctx.depth === 0 && agent.history.length > 2) {
+        try {
+          // Extract recent activity: last 4 assistant messages (summarizing what was done)
+          const recent = agent.history.filter(m => m.role === "assistant").slice(-4)
+          const activity = recent.map(m => (m.content ?? "").slice(0, 500)).join("\n---\n")
+          const { chat } = await import("../provider/index.mjs")
+          const judgeRes = await chat(agent.provider, {
+            messages: [{
+              role: "user",
+              content: `You are an independent goal judge. Evaluate whether this goal has been achieved based on the agent's activity.
+
+Goal: ${agent.goal.objective}
+Success criteria: ${agent.goal.criteria}
+
+Recent agent activity:
+${activity || "(no activity recorded)"}
+
+Has this goal been achieved? Answer ONLY "YES" or "NO" followed by a one-sentence reason.`,
+            }],
+            tools: [],
+            signal: AbortSignal.timeout(10_000),
+          })
+          const verdict = (judgeRes.content ?? "").trim()
+          if (verdict.toUpperCase().startsWith("NO")) {
+            return `Goal NOT complete (judge says NO): ${verdict.slice(2).trim()}\n\nContinue working or report blocked if this is a true impasse.`
+          }
+          if (!verdict.toUpperCase().startsWith("YES")) {
+            return `Goal completion unverified — judge response ambiguous: "${verdict.slice(0, 200)}". Re-check your criteria and try again with clear evidence.`
+          }
+        } catch {
+          // Judge unavailable — allow completion but note it
+        }
+      }
+
       agent.goal.status = "complete"
-      return `Goal marked complete: ${agent.goal.objective}\nIn your next message, summarize the evidence (what check ran, what it showed) — the user should be able to audit this claim.`
+      return `Goal verified complete ✓: ${agent.goal.objective}\nIn your next message, summarize the evidence (what check ran, what it showed) — the user should be able to audit this claim.`
     }
     if (args.action === "blocked") {
       if (!args.reason) return "Error: 'reason' required for 'blocked' action."

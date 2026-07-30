@@ -51,7 +51,7 @@ export function renderHeader(agent, cols) {
  */
 export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
-  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${Object.keys(state.toolStreams).length}`
+  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${Object.keys(state.toolStreams).length}|${state.foldEnabled !== false ? "f" : "u"}`
 }
 
 /** Conversation panel (scrollable, variable height). Returns exactly `visibleH` lines. */
@@ -311,10 +311,12 @@ function buildConvLines(state, cols) {
   for (const l of state.lines) {
     for (const line of formatTables(sanitizeDisplay(l.text), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
-        convLines.push({ text: wrapped, color: l.color })
+        convLines.push({ text: wrapped, color: l.color, _foldId: l._foldId })
       }
     }
   }
+  // Messages after the conversation (streaming / thinking / tool output):
+  // appended after history lines so they appear at the bottom.
   if (state.reasoning) {
     for (const wrapped of wrapText(sanitizeDisplay(state.reasoning), cols - 1)) {
       convLines.push({ text: wrapped, color: C.reason })
@@ -334,8 +336,37 @@ function buildConvLines(state, cols) {
       convLines.push({ text: wrapped, color: C.dim })
     }
   }
-  _convCache = { key, cols, lines: convLines }
-  return convLines
+
+  // ---- Fold long blocks (> 8 consecutive dim lines) ----
+  const FOLD_LINES = 8
+  let foldCounter = 0
+  const folded = []
+  let i = 0
+  while (i < convLines.length) {
+    const line = convLines[i]
+    // Only fold dim-colored lines (tool results, subagent previews)
+    if (line.color === C.dim) {
+      let j = i
+      while (j < convLines.length && convLines[j].color === C.dim) j++
+      const blockLen = j - i
+      if (blockLen > FOLD_LINES) {
+        const foldKey = `fold-${foldCounter++}`
+        if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
+          // Show first 2 lines + fold hint
+          folded.push(convLines[i])
+          if (blockLen > 2) folded.push(convLines[i + 1])
+          folded.push({ text: `  … ${blockLen - 2} more lines — Enter to expand`, color: C.fold, _foldToggle: foldKey })
+          i = j
+          continue
+        }
+      }
+    }
+    folded.push(line)
+    i++
+  }
+
+  _convCache = { key, cols, lines: folded }
+  return folded
 }
 
 function inputBoxStyle(state) {

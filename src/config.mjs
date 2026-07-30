@@ -218,6 +218,8 @@ export function loadConfig() {
  */
 export function saveConfig(config) {
   mkdirSync(configDir, { recursive: true })
+  // Inject $schema for editor autocompletion/validation (strip on load)
+  config.$schema = "https://thincoder.dev/schemas/config.json"
   // 0600: config.json contains API keys, must not be world-readable (POSIX; chmod is best-effort on Windows)
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 })
   try { chmodSync(configPath, 0o600) } catch { /* may fail on Windows, ignore */ }

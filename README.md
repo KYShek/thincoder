@@ -205,6 +205,17 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.9.0 (2026-07)
+- **Config JSON Schema** — `saveConfig` auto-injects `$schema` reference; `docs/schemas/config.schema.json` provides editor autocompletion/validation for all config fields including the new `hooks` section.
+- **Lifecycle Hooks** — `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `Notification` events. User-defined shell commands in config, with per-tool regex matching, timeout control, and `block`/`allow`/`notify` actions. Implemented in `src/hooks.mjs`, integrated into tool dispatch.
+- **Built-in Skills (5)** — `pdf-create`, `xlsx-create`, `frontend-design`, `code-review`, `api-design` ship with the installation. Each is a standalone markdown instruction file using zero-dependency approaches (Chrome headless for PDF, PowerShell for Excel, etc.).
+- **Conversation message folding** — Long tool result blocks (>8 consecutive dim lines) auto-collapse to first 2 lines + "… N more lines — Enter to expand". `/fold on|off` toggles globally.
+- **Tree-shaped tasks** — `checklist` tool now supports hierarchical task IDs (`T1`, `T1.1`, `T1.2.1`) with auto-assigned numbering. `add` accepts `parent` parameter for subtree positioning. Indentation-based persistence in `checklist.md`.
+- **AI-native MCP config** — `/mcp add` picker now includes "Describe with AI" option. Describe a server in natural language → model generates config JSON → preview + confirm → save and connect.
+- **Goal judge model** — `goal complete` now runs an independent LLM check: goal criteria + recent agent activity → judge model verifies YES/NO. Prevents false completion claims during autonomous work.
+- **`/undo` command** — Tracks up to 50 write/edit/delete operations in `agent._undoStack`. `/undo` opens a picker showing each operation's file and original content size. Select to revert.
+- **Roadmap**: LSP tool, intelligent context management (checkpoint-based reconstruction), and CodeMode sandboxed JS are planned for 0.10.0.
+
 ### 0.8.13 (2026-07)
 - **TUI: incremental rendering** — panel-level cache (`panelCache`) with sync-update bracketing (`DECSET 2026`). Only redraws changed panels, eliminating flicker. `saveCursor`/`restoreCursor` for efficient cursor positioning. Panel order reorganized: `header → conversation → subagent → output → todo → picker → permission → queue → input → status`.
 - **Ctrl+I inject resume** — Ctrl+I (or Tab during processing) now properly interrupts, injects the message, and *resumes* the agent loop. Controller is recreated after abort. Added active signal check in SSE read loop for faster abort on Windows.
