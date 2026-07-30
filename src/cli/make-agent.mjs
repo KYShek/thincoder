@@ -12,6 +12,16 @@ export async function assembleAgent() {
   const config = loadConfig()
   const provider = config.provider
   const providers = config.providersList
+
+  // Resolve proxy URI globally; inject into all providers so per-model proxy flag works
+  const { resolveProxyConfig } = await import("../proxy.mjs")
+  const proxyCfg = resolveProxyConfig({ agent: { config } })
+  if (proxyCfg.uri) {
+    for (const p of providers) {
+      p._proxyUri = p.proxy ? proxyCfg.uri : undefined
+    }
+  }
+
   const memory = createMemory({ dbPath: config.memory.dbPath })
   // Vector retrieval: enabled if embedding is configured (lazy vector generation, computed on first search)
   if (config.embedding?.apiKey) {

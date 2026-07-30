@@ -4,6 +4,7 @@
  */
 
 import { specForModel } from "../config.mjs"
+import { proxyFetch } from "../proxy.mjs"
 import {
   RETRYABLE_STATUS, MAX_RETRIES, MAX_CONTINUATIONS,
   RATE_LIMIT_BACKOFF_MS, _rateHooks,
@@ -29,6 +30,8 @@ export function createProvider(config) {
     rpm: config.rpm,
     format: config.format,
     chatPath: config.chatPath,
+    proxy: config.proxy,
+    proxyUri: config._proxyUri,
   }
 }
 
@@ -219,7 +222,8 @@ async function requestWithRetry(provider, body, signal, onWait) {
 
     let response
     try {
-      response = await fetch(`${provider.baseURL}${provider.chatPath ?? "/chat/completions"}`, {
+      const url = `${provider.baseURL}${provider.chatPath ?? "/chat/completions"}`
+      const opts = {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -227,7 +231,10 @@ async function requestWithRetry(provider, body, signal, onWait) {
         },
         body: JSON.stringify(body),
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      })
+      }
+      response = provider.proxyUri
+        ? await proxyFetch(url, opts, provider.proxyUri)
+        : await fetch(url, opts)
     } catch (error) {
       if (error.name === "AbortError") throw error
       lastError = error

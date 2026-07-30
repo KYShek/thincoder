@@ -5,6 +5,7 @@ Parameters:
 
 Notes:
 - Follows redirects automatically
-- Timeout: 20 seconds
+- Timeout: 15 seconds
 - HTML pages are converted to plain text (scripts, styles, navigation stripped)
 - Non-HTML responses are returned as-is (truncated at ~50000 chars)
+- Proxy support: set `"proxy": {"uri": "http://host:port", "web": true}` in config.json or `HTTPS_PROXY` env var

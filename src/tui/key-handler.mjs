@@ -8,7 +8,7 @@ import { readClipboardText, insertPastedText } from "./clipboard.mjs"
  *         wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
  *         renderWizard, pushLine, cleanup } */
 export function createKeyHandler(ctx) {
-  const { agent, state, render, closePicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup } = ctx
+  const { agent, state, render, closePicker, resolvePicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup } = ctx
 
   return function onKeypress(str, key = {}) {
     // permission confirm state: y approve / n deny / a approve + turn ON AUTO (no further prompts)
@@ -146,25 +146,39 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // generic list picker: ↑↓ move, Enter confirm, Esc cancel
+    // generic list picker
     if (state.picker) {
       const items = state.picker?.entries.filter((e) => e.type === "item") ?? []
       if (key.name === "escape") {
-        closePicker()
+        if (state._pickerResolve) {
+          const resolve = state._pickerResolve
+          state._pickerResolve = null
+          state.picker = null
+          render()
+          resolve(null)
+        } else {
+          closePicker()
+        }
       } else if (key.name === "up" && items.length) {
         state.picker.index = (state.picker.index - 1 + items.length) % items.length
         renderPickerLines()
       } else if (key.name === "down" && items.length) {
         state.picker.index = (state.picker.index + 1) % items.length
         renderPickerLines()
-      } else if (key.name === "return" && items.length) {
+      } else if ((key.name === "return" || key.name === "enter" || str === "\r") && items.length) {
         const selected = items[state.picker.index]
-        const handler = state.picker.onSelect
-        state.picker = null // close picker first, avoid picker still being present during onSelect render
-        // onSelect is async (e.g. removing a provider writes file), catch errors so they aren't swallowed
-        Promise.resolve(handler?.(selected)).catch((err) => {
-          pushLine(`[error] ${err.message}`, C.error)
-        }).finally(() => render())
+        if (state._pickerResolve) {
+          const resolve = state._pickerResolve
+          state._pickerResolve = null
+          state.picker = null
+          render()
+          resolve(selected)
+        } else {
+          const handler = state.picker.onSelect
+          Promise.resolve(handler?.(selected)).catch((err) => {
+            pushLine(`[error] ${err.message}`, C.error)
+          }).finally(() => render())
+        }
       }
       return
     }
@@ -184,7 +198,7 @@ export function createKeyHandler(ctx) {
         } else if (key.name === "down" && items.length) {
           w.index = (w.index + 1) % items.length
           renderWizard()
-        } else if (key.name === "return" && items.length) {
+        } else if ((key.name === "return" || key.name === "enter" || str === "\r") && items.length) {
           wizardChooseProvider(items[w.index])
         }
         return
@@ -300,7 +314,7 @@ export function createKeyHandler(ctx) {
       }
       return
     }
-    if (key.name === "return") {
+    if (key.name === "return" || key.name === "enter" || str === "\r") {
       submit().catch((e) => pushLine(`[error] ${e.message}`, C.error))
       return
     }

@@ -477,7 +477,7 @@ export async function startTUI(agent, opts = {}) {
   const { persistRaw, syncProviderField, maskKey } = createConfigHelpers(agent)
 
   // Model picker + generic picker: implemented in pickers.mjs
-  const { openPicker, closePicker, renderPickerLines, openModelPicker, setProviderKey } = createPickers({
+  const { openPicker, closePicker, showPicker, resolvePicker, renderPickerLines, openModelPicker, setProviderKey } = createPickers({
     agent, state, render, ansi, C, pushLine, pushLabel, persistRaw, askQuestion, maskKey,
   })
 
@@ -494,7 +494,7 @@ export async function startTUI(agent, opts = {}) {
   const { handleSlash, completions, handleTab } = createSlashCommands({
     agent, state, distillOpts,
     pushLine, pushLabel, render,
-    openPicker, askQuestion, askPermission,
+    openPicker, showPicker, closePicker, askQuestion, askPermission,
     persistRaw, syncProviderField, maskKey,
     openModelPicker: () => openModelPicker(),
     setProviderKey,
@@ -508,7 +508,7 @@ export async function startTUI(agent, opts = {}) {
 
   // keypress is attached to filtered keyStream: mouse sequences already intercepted and stripped upstream
   const onKeypress = createKeyHandler({
-    agent, state, render, closePicker, renderPickerLines,
+    agent, state, render, closePicker, resolvePicker, renderPickerLines,
     handleSlash, handleTab, submit, pasteClipboardImage,
     wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
     renderWizard, pushLine, cleanup,

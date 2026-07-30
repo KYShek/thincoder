@@ -1,19 +1,11 @@
 import { DESC, truncate, stripTags, htmlToText } from "./shared.mjs";
+import { URL } from "node:url";
+import { resolveWebProxy, proxyFetch } from "../proxy.mjs";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 const FETCH_TIMEOUT = 15_000
 
-async function fetchWithTimeout(url, opts, timeout) {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), timeout)
-  try {
-    const sig = opts?.signal
-    const combined = sig ? AbortSignal.any([sig, ctrl.signal]) : ctrl.signal
-    return await globalThis.fetch(url, { ...opts, signal: combined })
-  } finally { clearTimeout(timer) }
-}
-
-// ── Bing parser ──────────────────────────
+// ── Web search (direct fetch, no proxy needed for Bing) ──
 
 function extractBing(html) {
   const results = []
@@ -32,28 +24,24 @@ function bingUrl(query, page) {
   if (page > 1) u += `&first=${(page - 1) * 10 + 1}`
   return u
 }
-function bingCnUrl(query, page) {
-  let u = `https://cn.bing.com/search?q=${encodeURIComponent(query)}`
-  if (page > 1) u += `&first=${(page - 1) * 10 + 1}`
-  return u
-}
 
-const ENGINES = [
-  { name: "bing",    label: "Bing (国际)",    url: bingUrl,   extract: extractBing, ua: UA },
-  { name: "bing_cn", label: "Bing (国内)",    url: bingCnUrl, extract: extractBing, ua: UA },
-]
-const ENGINE_NAMES = ENGINES.map((e) => e.name)
+const ENGINES = [{ name: "bing", label: "Bing", url: bingUrl, extract: extractBing, ua: UA }]
+const ENGINE_NAMES = ENGINES.map(e => e.name)
 
 async function fetchEngine(engine, query, page) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT)
   try {
-    const response = await fetchWithTimeout(engine.url(query, page), {
+    const response = await globalThis.fetch(engine.url(query, page), {
       headers: { "User-Agent": engine.ua, "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8" },
-    }, FETCH_TIMEOUT)
+      signal: ctrl.signal,
+    })
     if (!response.ok) return null
     const html = await response.text()
     const results = engine.extract(html)
     return { engine: engine.name, results }
   } catch { return null }
+  finally { clearTimeout(timer) }
 }
 
 export const websearchTool = {
@@ -64,7 +52,7 @@ export const websearchTool = {
     properties: {
       query: { type: "string", description: "Search query" },
       limit: { type: "number", description: "Max results (default 8, max 20)" },
-      engine: { type: "string", enum: ENGINE_NAMES, description: "Specific engine — \"bing\" (Bing 国际), \"bing_cn\" (Bing 国内). Omit to search all engines concurrently." },
+      engine: { type: "string", enum: ENGINE_NAMES, description: "Specific engine — \"bing\" (Bing). Omit to search all engines concurrently." },
       page: { type: "number", description: "Page number for pagination (1-based, default 1). Only used when engine is specified." },
     },
     required: ["query"],
@@ -73,19 +61,16 @@ export const websearchTool = {
   async execute(args, ctx) {
     const limit = Math.min(args.limit ?? 8, 20)
     const page = Math.max(1, args.page ?? 1)
-
     if (args.engine) {
-      const engine = ENGINES.find((e) => e.name === args.engine)
+      const engine = ENGINES.find(e => e.name === args.engine)
       if (!engine) return `Unknown engine '${args.engine}'. Available: ${ENGINE_NAMES.join(", ")}`
       const fetched = await fetchEngine(engine, args.query, page)
       if (!fetched || fetched.results.length === 0) return `(no results from ${engine.label})`
       return truncate(fetched.results.slice(0, limit).map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}\n   ${r.snippet}`).join("\n\n"))
     }
-
-    const promises = ENGINES.map((e) => fetchEngine(e, args.query, 1))
+    const promises = ENGINES.map(e => fetchEngine(e, args.query, 1))
     const fetched = (await Promise.all(promises)).filter(Boolean)
     if (fetched.length === 0) return "(no results — all search engines failed)"
-
     const merged = [], indexes = fetched.map(() => 0)
     let done = false
     while (!done && merged.length < limit) {
@@ -102,7 +87,7 @@ export const websearchTool = {
   },
 }
 
-// ── Fetch tool ───────────────────────────
+// ── Fetch tool (with proxy support) ──────
 
 function isPrivateUrl(urlStr) {
   let u; try { u = new URL(urlStr) } catch { return true }
@@ -125,21 +110,22 @@ export const fetchTool = {
     if (!/^https?:\/\//.test(args.url)) throw new Error("url must start with http:// or https://")
     if (isPrivateUrl(args.url)) throw new Error("fetch blocked: internal/private/metadata addresses are not allowed")
     try {
-      const response = await fetchWithTimeout(args.url, { headers: { "User-Agent": UA } }, FETCH_TIMEOUT)
+      const proxyUri = resolveWebProxy(ctx)
+      const response = await proxyFetch(args.url, { headers: { "User-Agent": UA } }, proxyUri)
       if (!response.ok) {
         if ([301, 302, 307, 308].includes(response.status)) {
-          const loc = response.headers?.get("location")
+          const loc = response.headers?.location || response.headers?.Location
           if (loc) {
-            const r2 = await fetchWithTimeout(loc, { headers: { "User-Agent": UA } }, FETCH_TIMEOUT)
+            const r2 = await proxyFetch(loc, { headers: { "User-Agent": UA } }, proxyUri)
             if (!r2.ok) throw new Error(`fetch failed: HTTP ${r2.status}`)
-            const ct2 = r2.headers?.get("content-type") ?? ""
+            const ct2 = r2.headers?.["content-type"] || r2.headers?.["Content-Type"] || ""
             const b2 = await r2.text()
             return ct2.includes("text/html") ? truncate(htmlToText(b2)) : truncate(b2)
           }
         }
         throw new Error(`fetch failed: HTTP ${response.status}`)
       }
-      const ct = response.headers?.get("content-type") ?? ""
+      const ct = response.headers?.["content-type"] || response.headers?.["Content-Type"] || ""
       const body = await response.text()
       return ct.includes("text/html") ? truncate(htmlToText(body)) : truncate(body)
     } catch (e) { throw new Error(`fetch failed: ${e.cause?.code ?? e.message}`) }
