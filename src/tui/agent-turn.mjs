@@ -143,7 +143,9 @@ export async function runAgentTurn(ctx, text) {
           const text = String(result ?? "")
           const lines = text.split("\n")
           const maxShow = Math.min(60, lines.length)
-          for (let i = 0; i < maxShow; i++) pushLine(`  ${lines[i].slice(0, 200)}`, C.advisor)
+          // Push as single multiline block so formatTables aligns MD table columns
+          const shown = lines.slice(0, maxShow).map((l) => `  ${l.slice(0, 200)}`).join("\n")
+          pushLine(shown, C.advisor)
           if (lines.length > maxShow) pushLine(`  ... (${lines.length - maxShow} more lines — call advisor again or scroll through the tool result for full output)`, C.dim)
         } else {
           const summary = formatPanelSummary(name, result)
