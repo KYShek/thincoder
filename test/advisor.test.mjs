@@ -241,6 +241,27 @@ test("buildAdvisorUserMessage: reviewType=design includes design review header",
   assert.ok(!result.includes("git status"), "不应包含 git 指令")
 })
 
+test("buildAdvisorUserMessage: design review with token injects Approval Signal", () => {
+  const agent = {
+    history: [{ role: "user", content: "design a feature" }],
+    _advisorRound: 0, cwd: tmpdir(), config: {},
+  }
+  const token = "f0e2a9c8-0000-4000-8000-000000000000"
+  const result = buildAdvisorUserMessage(agent, null, "design", token)
+  assert.ok(result.includes("Approval Signal"), "应包含 Approval Signal 段")
+  assert.ok(result.includes(`[DESIGN-TOKEN:${token}]`), "应包含令牌值")
+})
+
+test("buildAdvisorUserMessage: design review without token has no Approval Signal", () => {
+  const agent = {
+    history: [{ role: "user", content: "design a feature" }],
+    _advisorRound: 0, cwd: tmpdir(), config: {},
+  }
+  const result = buildAdvisorUserMessage(agent, null, "design")
+  assert.ok(!result.includes("Approval Signal"), "无令牌时不应有 Approval Signal")
+})
+
+
 test("prepareAdvisorMessages: reviewType=design returns fresh session", () => {
   const agent = {
     history: [], _advisorRound: 0, cwd: tmpdir(), config: {},
@@ -445,7 +466,8 @@ test("prepareAdvisorMessages: first call creates a fresh [system, user] session"
 })
 
 test("prepareAdvisorMessages: later calls append a follow-up to the SAME session", () => {
-  const agent = { history: [], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const priorTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |"
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
   const first = prepareAdvisorMessages(agent)
   agent._advisorSession = first // runAdvisorReview persists it after a successful review
   agent._advisorRound = 1
@@ -532,7 +554,7 @@ test("extractConversationBackground: returns null on empty/noise-only history", 
 })
 
 test("runAdvisorReview: documentation-only changes skip the review entirely", async () => {
-  const { runAdvisorReview } = await import("../src/advisor.mjs")
+  const { runAdvisorReview } = await import("../src/advisor/run.mjs")
   const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
   try {
     createGitRepo(tmp)

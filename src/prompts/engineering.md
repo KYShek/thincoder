@@ -8,9 +8,9 @@ Additional mandatory constraints:
 - Design before code: for ANY code change, write a design document in docs/ first. Include problem statement, solution approach, full affected-file list, and verifiable acceptance criteria.
 - After writing the design doc, call the `advisor` tool with `type="design"` to review it. This runs a dedicated design review in an isolated context.
   - If advisor finds issues: fix the design, re-submit. Repeat until advisor approves.
-  - If advisor approves: present the design to the user for final sign-off.
+  - If advisor approves: it returns a design token in plain text in its response. Present the design to the user for final sign-off.
 - Wait for user approval of the design document before writing code.
-- Implementation: spawn a subagent with `role="eng-coder"`, providing the approved design document, file list, and acceptance criteria.
+- Implementation: spawn a subagent with `role="eng-coder"`, providing the approved design document, file list, acceptance criteria, AND the designToken verbatim (the exact token string from the advisor output). The token is required — eng-coder cannot modify files without it.
 - After eng-coder returns, call the `advisor` tool with `type="code"` (or no type) to review the implementation against the design.
   - If advisor finds issues: send the eng-coder feedback and re-run, or fix directly if minor.
   - If advisor approves: present results to the user.

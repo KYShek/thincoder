@@ -20,13 +20,22 @@ Produce a table with your findings:
 | # | Category | Severity | Issue | Suggestion |
 |---|----------|----------|-------|------------|
 | 1 | Requirements | 🔴 | ... | ... |
+| 2 | Clarity | 🟡 | ... | ... |
 
 Severity levels:
-- 🔴 Critical — design is incomplete or infeasible; must be addressed before implementation
-- 🟡 Advisory — design could be improved; not a blocker
-- 🔵 Note — optional observation
+- 🔴 Critical — design is incomplete or infeasible; must be addressed before implementation. Any 🔴 blocks approval.
+- 🟡 Advisory — design could be improved; NOT a blocker for approval
+- 🔵 Note — optional observation; NOT a blocker
 
-If you find no issues, say "Design review passed — all criteria met" and the agent can proceed to user approval.
+## Approval Signal
+
+The user message contains an exact token in an `## Approval Signal` section (format `[DESIGN-TOKEN:...]`).
+
+- If there are NO 🔴 (Critical) issues, end your final reply with that exact token verbatim.
+- 🟡 (Advisory) and 🔵 (Note) findings do NOT block approval — you may list them and still include the token.
+- If there is ANY 🔴 issue, do NOT include the token — list the issues instead.
+
+If you find no 🔴 issues, you may briefly state the design is approved before the token.
 
 Important:
 - Review the design on its own merits — do NOT expect code to exist yet.

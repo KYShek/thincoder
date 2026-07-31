@@ -65,6 +65,8 @@ export function createAgent({
     overlay, tasks, history,
     planMode, autoApprove, goal,
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined, _calledAdvisorThisRun: false,
+    _engDesignReviewed: false, // eng-coder: design review gate passed (hard gate in dispatch.mjs)
+    _engDesignToken: null, // issued by advisor(type="design"); required to spawn eng-coder
     _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null,
     _pendingReminders: [],
     _pendingTimers: [],
@@ -89,6 +91,11 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   agent._verifyRetries = 0
   agent._advisorRound = 0
   agent._advisorSession = null // advisor session is per-run: discard when the task ends, next task starts fresh
+  // eng-coder authorization is set by subagent.mjs AFTER token validation but BEFORE runAgent —
+  // only reset for the top-level agent (depth 0); child runs must keep their granted authorization
+  if (depth === 0) agent._engDesignReviewed = false
+  // _engDesignToken survives across turns within the same agent (design review → user approval → spawn eng-coder).
+  // Lifecycle: invalidated on a failed re-review (advisor.mjs), issued on a passing review.
   let guardPushbacks = 0
   let advisorPushbacks = 0
   let honestReminderInjected = false

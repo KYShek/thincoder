@@ -1,7 +1,7 @@
 /**
- * advisor.mjs — Code review engine.
- * Called by the advisor tool (agent-tools/advisor.mjs) when the agent
- * explicitly requests a review at the end of a coding task.
+ * advisor.mjs — advisor message building and history extraction.
+ * Execution (tool loop, provider resolution, review entry) lives in advisor/run.mjs;
+ * git discovery/collection in advisor/repos.mjs.
  *
  * The advisor runs as a read-only exploration sub-agent with tools
  * (read, glob, grep, ls, git, lsp, code_search). It discovers changes
@@ -27,21 +27,16 @@
  *   in-memory session is gone — falls back to a fresh session seeded from the
  *   issue/response tables in the main history.
  *
- *
  * Project customisation: .thincoder/advisor.md in the project root.
  */
-import { chat } from "./provider/core.mjs"
-import { findProvider } from "./config.mjs"
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { join, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { execFileSync } from "node:child_process"
-import { toOpenAISchema } from "./tools/index.mjs"
+import { findReviewRepos, collectRepoSnapshots, collectChangedFiles } from "./advisor/repos.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-const ADVISOR_MD_PATH = ".thincoder/advisor.md"
-const GIT_TIMEOUT = 5_000
+export const ADVISOR_MD_PATH = ".thincoder/advisor.md"
 
 const DEFAULT_CRITERIA = `Review the code changes, focusing on:
 1. Correctness: logic errors, edge cases, off-by-one, incomplete modifications
@@ -49,36 +44,6 @@ const DEFAULT_CRITERIA = `Review the code changes, focusing on:
 3. Consistency: alignment with existing project patterns and conventions
 4. Completeness: missing callers, imports, or follow-up changes
 5. Maintainability: vague naming, missing comments, overly complex logic`
-
-// ────────────────────────────────────────
-// Advisor's read-only tool set
-// ────────────────────────────────────────
-
-/**
- * Restricted git tool: diff / status / log only.
- * Checkpoint create/rewind are blocked — the advisor must not mutate state.
- */
-const { gitTool, readTool, globTool, grepTool, lsTool } = await import("./tools/index.mjs")
-const { lspTool } = await import("./tools/lsp.mjs")
-const { codeModeTool: codeSearchTool } = await import("./tools/codemode.mjs")
-
-const advisorGitTool = {
-  ...gitTool,
-  readonly: true,
-  async execute(args, ctx) {
-    // Block checkpoint create/rewind — advisor is read-only
-    if (args.action === "checkpoint") {
-      if (args.checkpointAction === "create" || args.checkpointAction === "rewind") {
-        return "Error: checkpoint create/rewind is disabled in advisor mode. Use diff/status/log only."
-      }
-    }
-    return gitTool.execute(args, ctx)
-  },
-}
-
-const ADVISOR_TOOLS = [readTool, globTool, grepTool, lsTool, advisorGitTool, lspTool, codeSearchTool]
-const ADVISOR_TOOL_SCHEMAS = ADVISOR_TOOLS.map(toOpenAISchema)
-const ADVISOR_TOOL_BY_NAME = new Map(ADVISOR_TOOLS.map((t) => [t.name, t]))
 
 // ────────────────────────────────────────
 // Prompt files — loaded at module init
@@ -98,188 +63,89 @@ const ADVISOR_TABLE_HEADER = "| # | File | Severity | Issue | Suggestion |"
 const CONVERGENCE_TABLE_HEADER = "| # | Orig# | File | Severity | Status | Notes |"
 const AGENT_RESPONSE_HEADER = "| # | Action | Detail |"
 const LEGACY_ADVISOR_HEADER = "| # | 文件 | 严重程度 | 问题描述 | 建议修复 |"
-const LEGACY_CONVERGENCE_HEADER = "| # | 原# | 文件 | 严重程度 | 当前状态 | 说明 |"
-const LEGACY_RESPONSE_HEADER = "| # | 处理 | 详情 |"
-const ALL_CLEAR_PHRASES = [
-  "No issues found",
-  "All issues resolved",
-  "review passed",
-  "未发现问题",
-  "所有问题已解决",
-  "审查通过",
-]
 
+/**
+ * Extract the most recent advisor review table from history.
+ * Returns { text, sinceIdx } where sinceIdx is the history index AFTER the
+ * advisor call — used to locate the agent's response table that follows it.
+ * Returns null when: no advisor call, empty output, or the last review is
+ * all-clear (nothing to follow up on).
+ */
 export function extractPriorIssueTable(history) {
-  for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i]
-    if (m.role !== "tool") continue
-    const content = typeof m.content === "string" ? m.content : ""
-    if (ALL_CLEAR_PHRASES.some((p) => content.includes(p))) return null
-    if (content.includes(ADVISOR_TABLE_HEADER) || content.includes(CONVERGENCE_TABLE_HEADER) ||
-        content.includes(LEGACY_ADVISOR_HEADER) || content.includes(LEGACY_CONVERGENCE_HEADER)) {
-      const table = extractTableBlock(content)
-      if (table) return { text: table, sinceIdx: i }
-      return null
-    }
+  const allClear = ["all clear", "全部通过", "已修复", "review passed", "no issues found", "no new issues"]
+  const entries = Array.isArray(history) ? history : []
+
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const m = entries[i]
+    if (m.role !== "tool" || typeof m.content !== "string") continue
+    // Only review outputs carry one of these table headers
+    if (!m.content.includes(ADVISOR_TABLE_HEADER)
+      && !m.content.includes(CONVERGENCE_TABLE_HEADER)
+      && !m.content.includes(LEGACY_ADVISOR_HEADER)) continue
+    const text = m.content
+    const lower = text.toLowerCase()
+    if (allClear.some((s) => lower.includes(s))) return null
+    // sinceIdx = the advisor call's own index; extractAgentResponseTable skips it (role !== assistant)
+    return { text, sinceIdx: i }
   }
   return null
 }
 
+/**
+ * Extract the agent's response table (| # | Action | Detail |) that follows
+ * the advisor review. Returns null when missing or no advisor review precedes.
+ */
 export function extractAgentResponseTable(history, sinceIdx) {
-  for (let i = sinceIdx + 1; i < history.length; i++) {
-    const m = history[i]
-    if (m.role !== "assistant") continue
-    const content = typeof m.content === "string" ? m.content : ""
-    if (content.includes(AGENT_RESPONSE_HEADER) || content.includes(LEGACY_RESPONSE_HEADER)) {
-      return extractTableBlock(content)
-    }
+  const entries = Array.isArray(history) ? history : []
+  for (let i = sinceIdx ?? 0; i < entries.length; i++) {
+    const m = entries[i]
+    if (m.role !== "assistant" || typeof m.content !== "string") continue
+    if (m.content.includes(AGENT_RESPONSE_HEADER)) return m.content
   }
   return null
 }
 
-function extractTableBlock(text) {
-  const lines = text.split("\n")
-  let start = -1
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith("|")) { start = i; break }
-  }
-  if (start < 0) return null
-  let end = start
-  for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i].startsWith("|")) end = i
-    else break
-  }
-  return lines.slice(start, end + 1).join("\n")
-}
-
-// ────────────────────────────────────────
-// Review scope — repos to review
-// ────────────────────────────────────────
-
 /**
- * Find the git repository roots that contain the agent's touched files.
- * Falls back to cwd if no repos found.
+ * Load review criteria: project .thincoder/advisor.md if present,
+ * otherwise the built-in defaults.
  */
-function findReviewRepos(agent) {
-  const touched = agent._touchedFiles ?? []
-  const repos = []
-
-  for (const abs of touched) {
-    try {
-      const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-        cwd: dirname(abs), encoding: "utf8", timeout: GIT_TIMEOUT,
-        stdio: ["ignore", "pipe", "pipe"],
-      }).trim()
-      if (root && !repos.includes(root)) repos.push(root)
-    } catch { /* not a git repo */ }
-  }
-
-  if (repos.length > 0) return repos
-
-  // Fallback: cwd itself
-  try {
-    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd: agent.cwd, encoding: "utf8", timeout: GIT_TIMEOUT,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim()
-    if (root) return [root]
-  } catch { /* not a git repo */ }
-
-  return []
-}
-
-// ────────────────────────────────────────
-
-/** Cap per-repo embedded diff — generous (large-context models); advisor can fetch the rest via its git tool */
-const MAX_EMBEDDED_DIFF = 50_000
-
-/**
- * Collect git status + diff for each repo, embedded into the review context so
- * the advisor doesn't need to spend its first tool calls discovering changes.
- */
-function collectRepoSnapshots(repos, cwd) {
-  const targets = repos.length > 0 ? repos : [cwd]
-  const parts = []
-  for (const repo of targets) {
-    let status = "", diff = ""
-    try {
-      status = execFileSync("git", ["status", "--porcelain"], {
-        cwd: repo, encoding: "utf8", timeout: GIT_TIMEOUT, stdio: ["ignore", "pipe", "pipe"],
-      }).trim()
-      diff = execFileSync("git", ["diff", "HEAD"], {
-        cwd: repo, encoding: "utf8", timeout: GIT_TIMEOUT, stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: 8 * 1024 * 1024,
-      })
-    } catch { continue /* not a git repo or git failed */ }
-    if (!status && !diff.trim()) continue
-    parts.push(`### ${repo}`)
-    if (status) parts.push("```", status, "```")
-    if (diff.trim()) {
-      const truncated = diff.length > MAX_EMBEDDED_DIFF
-      parts.push("```diff", truncated ? diff.slice(0, MAX_EMBEDDED_DIFF) : diff.trimEnd(), "```")
-      if (truncated) parts.push(`(diff truncated at ${MAX_EMBEDDED_DIFF} chars — use the git tool to see the rest)`)
-    }
-  }
-  return parts
-}
-
 export function loadAdvisorMd(cwd) {
-  const path = join(cwd, ADVISOR_MD_PATH)
-  if (!existsSync(path)) return DEFAULT_CRITERIA
   try {
-    const content = readFileSync(path, "utf8").trim()
-    return content || DEFAULT_CRITERIA
+    return readFileSync(join(cwd, ADVISOR_MD_PATH), "utf8")
   } catch {
     return DEFAULT_CRITERIA
   }
 }
 
-const MAX_BACKGROUND_CHARS = 20_000
-const MAX_BG_USER_CHARS = 2000
-const MAX_BG_ASSISTANT_CHARS = 1500
-
-/**
- * Recent conversation context for the advisor: the last few user↔assistant
- * exchanges (default 3 user turns). The last user message alone often lacks
- * context ("把那个问题改一下" means nothing without the preceding turns) —
- * the advisor needs the background to judge whether the changes match intent.
- * Tool messages are skipped (noise); texts are truncated with generous caps
- * (models have large context windows — completeness beats frugality).
- */
+/** Extract recent user↔assistant exchanges (up to maxTurns) for intent context. */
 export function extractConversationBackground(history, maxTurns = 3) {
-  const isNoise = (c) => c.startsWith("[System reminder:") || c.startsWith("[User interrupt:")
-  const picked = []
-  let userCount = 0
-  for (let i = history.length - 1; i >= 0 && userCount < maxTurns; i--) {
-    const m = history[i]
-    if (m.role !== "user" && m.role !== "assistant") continue
-    const content = typeof m.content === "string" ? m.content.trim() : ""
-    if (!content || isNoise(content)) continue
-    picked.unshift({ role: m.role === "user" ? "User" : "Assistant", text: content })
-    if (m.role === "user") userCount++
+  const entries = Array.isArray(history) ? history : []
+  const lines = []
+  let turns = 0
+  for (let i = entries.length - 1; i >= 0 && turns < maxTurns; i--) {
+    const m = entries[i]
+    if (m.role === "tool" || m.role === "system") continue
+    if (typeof m.content !== "string") continue
+    if (m.content.startsWith("[System reminder:") || m.content.startsWith("[Relevant memories")) continue
+    if (m.role === "user" || m.role === "assistant") {
+      lines.unshift(`${m.role === "user" ? "User" : "Assistant"}: ${m.content.slice(0, 400)}`)
+      if (m.role === "user") turns++
+    }
   }
-  if (picked.length === 0) return null
-
-  const lines = picked.map((e) => {
-    const cap = e.role === "User" ? MAX_BG_USER_CHARS : MAX_BG_ASSISTANT_CHARS
-    const text = e.text.length > cap ? e.text.slice(0, cap) + "…" : e.text
-    return `${e.role}: ${text}`
-  })
-  // Keep the most recent lines within the total budget
-  const out = []
-  let total = 0
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (out.length > 0 && total + lines[i].length > MAX_BACKGROUND_CHARS) break
-    total += lines[i].length
-    out.unshift(lines[i])
-  }
-  return out.join("\n")
+  return lines.length > 0 ? lines.join("\n\n") : null
 }
 
 // ────────────────────────────────────────
-// System prompt routing
+// System prompt building
 // ────────────────────────────────────────
 
+/**
+ * Build the system prompt for an advisor review session.
+ * @param {Object} agent — the parent agent
+ * @param {Object|null} [_prior] — prior issue table (from extractPriorIssueTable)
+ * @param {string} [reviewType] — "design" for design review, undefined/"code" for code review
+ * @returns {string} the system prompt
+ */
 export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
   // Design review: dedicated prompt, no convergence rounds
   if (reviewType === "design") return ADVISOR_DESIGN || `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
@@ -299,9 +165,10 @@ export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
  * @param {Object} agent — the parent agent
  * @param {Object|null} [_prior] — prior issue table
  * @param {string} [reviewType] — "design" or "code" (default)
+ * @param {string|null} [designToken] — token injected into the design-review prompt; the advisor echoes it only on approval
  * @returns {string} the user message
  */
-export function buildAdvisorUserMessage(agent, _prior, reviewType) {
+export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken = null) {
   const prior = _prior ?? extractPriorIssueTable(agent.history)
 
   // Repos to review
@@ -318,9 +185,20 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType) {
     parts.push("The following changes are a design document. Review it against the project's methodology.")
     parts.push("")
 
-    // Pre-collected changes — the design doc diff
+    // List changed file paths explicitly — new design docs are untracked,
+    // so git diff HEAD won't show their content; the advisor must read the file itself
+    const changedFiles = collectChangedFiles(repos, agent.cwd)
+    if (changedFiles.length > 0) {
+      parts.push("## Changed Files")
+      parts.push(changedFiles.map((f) => `- ${f}`).join("\n"))
+      parts.push("")
+      parts.push("Read each changed file in full — untracked files are not shown in the diff below.")
+      parts.push("")
+    }
+
+    // Pre-collected changes — the design doc diff.
+    // _advisorLastSnapshot is only consumed by code-review convergence — skip the write here.
     const snapshots = collectRepoSnapshots(repos, agent.cwd)
-    agent._advisorLastSnapshot = snapshots.join("\n")
     if (snapshots.length > 0) {
       parts.push("## Design Document (git diff)")
       parts.push(...snapshots)
@@ -343,11 +221,16 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType) {
     parts.push("1. Read the design document fully. Read METHODOLOGY.md to understand the project's standards.")
     parts.push("2. Review against: completeness (all requirements covered?), feasibility (can this be built?), clarity (specific enough?), acceptance criteria (verifiable?), scope (appropriate?).")
     parts.push("3. Do NOT run git diff or look for code changes — there are none at this stage.")
-    parts.push("4. Produce your review table with the format: | # | Category | Severity | Issue | Suggestion |")
+    parts.push("4. If you find issues, produce your review table with the format: | # | Category | Severity | Issue | Suggestion |. If the design passes, no table is needed.")
+    if (designToken) {
+      parts.push("")
+      parts.push("## Approval Signal")
+      parts.push(`If — and ONLY if — your review finds NO 🔴 (Critical) issues, end your reply with this exact token: [DESIGN-TOKEN:${designToken}]`)
+      parts.push("🟡 (Advisory) and 🔵 (Note) findings do NOT block approval — list them if present, but still include the token. If there are any 🔴 issues, do NOT include the token.")
+    }
     return parts.join("\n")
   }
 
-  // Code review — existing logic below (unchanged)
   // Convergence data (round 2+)
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
@@ -421,38 +304,38 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType) {
     parts.push("3. `read` changed files for full context beyond the diff. Batch independent reads/greps in a single reply instead of one call per round-trip.")
     parts.push("4. Use `grep` or `lsp` to trace callers, imports, and dependencies — only where the diff leaves genuine doubt.")
     parts.push("5. Produce your review table based on the review criteria above. Do not re-read content you already have.")
+    parts.push("6. You may also flag other issues: crashes, data loss, logic errors — anything obvious. This is the convergence protocol: round 1 is the full review, later rounds only re-verify.")
   }
-  parts.push("Do NOT flag features that are valid under the project's stated platform requirements.")
+  parts.push("")
+  parts.push("Return your review as a markdown table (or a clear statement that everything is fine).")
 
   return parts.join("\n")
 }
 
-// ────────────────────────────────────────
-// Session continuity — one advisor conversation per run
-// ────────────────────────────────────────
-
 /**
- * Follow-up message for round 2+ in a continued advisor session.
- * The advisor already has full context (its exploration, its issue table) in
- * the conversation — the follow-up only carries what changed: the agent's
- * response table, the fresh diff snapshot, and this round's rules.
+ * Build a follow-up user message for round 2+ — the agent's response table +
+ * the refreshed diff, without re-sending the full round-1 context.
  */
 export function buildAdvisorFollowUp(agent, _prior) {
   const prior = _prior ?? extractPriorIssueTable(agent.history)
-  const round = (agent._advisorRound || 0) + 1
-  const response = (prior ? extractAgentResponseTable(agent.history, prior.sinceIdx) : null)
+  const response = extractAgentResponseTable(agent.history, prior?.sinceIdx ?? 0)
     || "(Agent did not provide a response table — re-evaluate each issue)"
-  const rules = round === 2
-    ? "Verify each item in your prior issue table against the current changes. " +
-      "You may flag obvious NEW issues introduced by the fixes — but only crashes, data loss, or logic errors clearly visible in the diff. Do not nitpick style."
-    : "Strictly verify only your prior issue table against the current changes. Do NOT look for new issues."
+  const round = (agent._advisorRound || 0) + 1
+  const label = round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"
 
   const parts = [
-    `## Round ${round} — ${round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"}`,
+    `## Round ${round} — ${label}`,
     "",
-    rules,
+    "## Prior Issue Table",
+    prior?.text ?? "(no prior table — review from scratch)",
     "",
-    'If every prior issue is resolved, say exactly: "All issues resolved — review passed."',
+    "## Agent Response",
+    response,
+    "",
+    "## Instructions",
+    round === 2
+      ? "Verify each item in the prior table. Flag any obvious NEW issues introduced by the fixes (crashes, data loss, logic errors — not style). Produce a verification table."
+      : "Strictly verify ONLY the items in the prior table against the current diff. Do NOT look for new issues.",
     "",
     "Do NOT re-read AGENTS.md / design docs or re-run git status/diff (current changes are below) — you already have full context from previous rounds.",
     "",
@@ -479,195 +362,36 @@ export function buildAdvisorFollowUp(agent, _prior) {
  * follow-up to the existing session so the advisor keeps its context.
  * After an app restart (session lost), falls back to a fresh session whose
  * system prompt is picked from history tables (round 2/3 style).
+ * @param {string} [reviewType] — "design" or "code" (default)
+ * @param {string|null} [designToken] — design-review approval token (design only)
  */
-export function prepareAdvisorMessages(agent, reviewType) {
+export function prepareAdvisorMessages(agent, reviewType, designToken = null) {
   const prior = extractPriorIssueTable(agent.history)
   // Design review: always fresh session, no convergence
   if (reviewType === "design") {
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType) },
+      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken) },
     ]
   }
   let session = agent._advisorSession
   if (session) {
-    session.push({ role: "user", content: buildAdvisorFollowUp(agent, prior) })
-    return session
+    // Session exists but no prior table (last review was all-clear or none) —
+    // a follow-up "Verify Prior Table" would be meaningless; start a fresh full review
+    if (!prior) {
+      agent._advisorRound = 0
+      agent._advisorSession = null
+      session = null
+    } else {
+      session.push({ role: "user", content: buildAdvisorFollowUp(agent, prior) })
+      return session
+    }
   }
   session = [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType) },
+    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken) },
   ]
   // Fresh session with no prior issue table → reset convergence round
   if (!prior) agent._advisorRound = 0
   return session
-}
-
-// ────────────────────────────────────────
-// Advisor tool loop
-// ────────────────────────────────────────
-
-/**
- * Compact one-line summary of tool args for panel progress lines.
- * Picks the most identifying field; falls back to truncated JSON.
- */
-function summarizeToolArgs(args) {
-  // e.g. "git diff HEAD", "read src/x.mjs" — action first when present
-  const parts = [args.action, args.path ?? args.pattern ?? args.command].filter((v) => v != null)
-  let s = parts.length > 0 ? parts.map(String).join(" ") : JSON.stringify(args)
-  s = s.replace(/\s+/g, " ").trim()
-  return s.length > 80 ? s.slice(0, 79) + "…" : s
-}
-
-/**
- * Run the advisor's tool loop: chat → execute tools → repeat.
- * Stops when the model produces text without tool calls.
- *
- * Progress lines (→ tool args) are emitted via onOutput between model bursts so
- * the panel keeps moving while the advisor explores — otherwise the panel sits
- * frozen through every tool-call phase and the review appears to have stalled.
- */
-async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, cwd) {
-  // Kind-tagged wrappers: the TUI panel colors reasoning / answer / tool progress differently.
-  const emit = (kind) => (onOutput ? (text) => onOutput({ kind, text }) : undefined)
-  const onThink = emit("think")
-  const onText = emit("text")
-  while (true) {
-    const response = await chat(provider, {
-      messages,
-      tools: ADVISOR_TOOL_SCHEMAS,
-      signal: (signal && !signal.aborted) ? signal : new AbortController().signal,
-      onToken: onText,
-      onReasoning: onThink,
-    })
-
-    // No tool calls — this is the final review text
-    if (!response.toolCalls?.length) {
-      if (!response.content?.trim()) return "Advisor: (empty response — review was inconclusive)"
-      return response.content.trim()
-    }
-
-    // Push assistant message with tool calls
-    messages.push({
-      role: "assistant",
-      content: response.content || null,
-      tool_calls: response.toolCalls.map((tc) => ({
-        id: tc.id, type: "function",
-        function: { name: tc.name, arguments: tc.arguments },
-      })),
-    })
-
-    // Execute each tool call
-    for (const tc of response.toolCalls) {
-      const tool = ADVISOR_TOOL_BY_NAME.get(tc.name)
-      let args = {}
-      try { args = JSON.parse(tc.arguments || "{}") } catch { /* summarized as raw JSON below */ }
-      onOutput?.({ kind: "tool", text: `\n→ ${tc.name} ${summarizeToolArgs(args)}\n` })
-      let result
-      if (!tool) {
-        result = `Error: unknown tool "${tc.name}". Available: ${[...ADVISOR_TOOL_BY_NAME.keys()].join(", ")}`
-      } else {
-        try {
-          result = await tool.execute(args, {
-            cwd,
-            agent,
-            onOutput,
-            signal,
-          })
-        } catch (e) {
-          result = `Error: ${e.message}`
-        }
-      }
-      messages.push({ role: "tool", tool_call_id: tc.id, content: String(result) })
-    }
-  }
-}
-
-// ────────────────────────────────────────
-// Main entry point
-// ────────────────────────────────────────
-
-export function resolveAdvisorProvider(agent) {
-  const cfg = agent.config?.advisor
-  if (cfg?.provider) {
-    try {
-      const provider = findProvider(agent.providers ?? [agent.provider], cfg.provider)
-      const result = cfg.model ? { ...provider, model: cfg.model } : { ...provider }
-      if (cfg.thinking === null) result.thinking = undefined  // explicitly off
-      else if (cfg.thinking !== undefined) result.thinking = cfg.thinking
-      if (cfg.reasoningEffort !== undefined) result.reasoningEffort = cfg.reasoningEffort
-      return result
-    } catch {
-      // Provider not found — fall back to main provider
-    }
-  }
-  const provider = { ...agent.provider }
-  if (cfg?.model) provider.model = cfg.model
-  if (cfg?.thinking === null) provider.thinking = undefined  // explicitly off
-  else if (cfg?.thinking !== undefined) provider.thinking = cfg.thinking
-  if (cfg?.reasoningEffort !== undefined) provider.reasoningEffort = cfg.reasoningEffort
-  return provider
-}
-
-/**
- * Whether every changed file across the review repos is documentation-only.
- * Used to skip pointless code reviews for doc updates (README, docs/, LICENSE…).
- */
-function isDocOnlyChange(repos, cwd) {
-  const DOC_FILE = /(?:^|[/\\])(?:LICENSE|NOTICE|CHANGELOG|AUTHORS)(?:\.\w+)?$|\.(?:md|markdown|mdx|txt|rst|adoc)$/i
-  const targets = repos.length > 0 ? repos : [cwd]
-  let sawChanges = false
-  for (const repo of targets) {
-    let status = ""
-    try {
-      status = execFileSync("git", ["status", "--porcelain"], {
-        cwd: repo, encoding: "utf8", timeout: GIT_TIMEOUT, stdio: ["ignore", "pipe", "pipe"],
-      }).trim()
-    } catch { return false /* can't tell — let the advisor run */ }
-    if (!status) continue
-    sawChanges = true
-    for (const line of status.split("\n")) {
-      // porcelain: "XY path" or "XY old -> new" (rename)
-      const filePath = line.slice(3).split(" -> ").pop().replace(/^"|"$/g, "")
-      if (!DOC_FILE.test(filePath)) return false
-    }
-  }
-  return sawChanges
-}
-
-export async function runAdvisorReview(agent, reviewType, callbacks) {
-  const onOutput = callbacks?.onOutput
-  const signal = callbacks?.signal
-  const cfg = agent.config?.advisor
-  // Engineering mode overrides advisor toggle — reviews are mandatory regardless
-  if (!cfg?.enabled && !agent.config?.agent?.engineering) return null
-
-  // Engineering mode: subagent (eng-coder) may have made all the changes,
-  // so parent's _touchedFiles can be empty — let git diff discover changes
-  if (!agent.config?.agent?.engineering && (agent._touchedFiles ?? []).length === 0) return null
-
-  const repos = findReviewRepos(agent)
-
-  // Fast path: documentation-only changes skip code review ONLY — design review runs on docs
-  if (reviewType !== "design" && !existsSync(join(agent.cwd, ADVISOR_MD_PATH)) && isDocOnlyChange(repos, agent.cwd)) {
-    return "No issues found — documentation-only changes, code review skipped."
-  }
-
-  const provider = resolveAdvisorProvider(agent)
-
-  // Set the advisor's cwd to the first repo (for tool context)
-  const advisorCwd = repos.length > 0 ? repos[0] : agent.cwd
-
-  const messages = prepareAdvisorMessages(agent, reviewType)
-
-  try {
-    const result = await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)
-    // Persist the conversation: the next advisor call in this run continues here
-    // (reset by runAgent when the run ends — each task gets a fresh advisor session)
-    agent._advisorSession = messages
-    return result
-  } catch (e) {
-    if (e.name === "AbortError" && signal?.reason?.interrupt) throw e
-    return `Advisor: review failed — ${e.message || "unknown error"}. You may retry or proceed to verify.`
-  }
 }

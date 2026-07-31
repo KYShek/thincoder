@@ -1,7 +1,7 @@
 /**
  * agent/dispatch.mjs — two-phase tool call execution
  */
-import { offloadToolResult } from "./helpers.mjs"
+import { offloadToolResult, FILE_MUTATORS } from "./helpers.mjs"
 import { runHooks } from "../hooks.mjs"
 import { snapshotForUndo } from "../tui/cmd-undo.mjs"
 import { writeFileSync, mkdirSync, existsSync } from "node:fs"
@@ -68,6 +68,19 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       continue
     }
 
+    // Engineering coder hard gate: no file modification before the design review passed.
+    // The design review is the eng-coder's mandatory pre-coding gate — advisor(type="design")
+    // must run (and be accepted) before the first write/edit/apply_patch/hashline_edit/insert_after/delete.
+    if (agent._role === "eng-coder" && agent.config?.agent?.engineering
+        && !agent._engDesignReviewed && FILE_MUTATORS.has(toolCall.name)) {
+      prepared.push({
+        toolCall, tool, denied: true,
+        reason: "engineering design gate",
+        hint: "Call advisor with type='design' to review the design document before any file modification. If the review found issues, report them to the parent agent.",
+      })
+      continue
+    }
+
     if (!tool.readonly) {
       // autoApprove short-circuit: skip prompt when agent is already marked for auto-approval
       const allowed = agent.autoApprove
@@ -98,7 +111,9 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
     if (item.denied) {
       const reason = item.reason === "plan mode"
         ? "Error: plan mode is active — only read-only tools are allowed. Exit plan mode first."
-        : item.reason === "denied by user"
+        : item.reason === "engineering design gate"
+          ? `Error: design review required before any file modification. ${item.hint}`
+          : item.reason === "denied by user"
           ? "Error: permission denied by user"
           : item.reason === "blocked by PreToolUse hook"
             ? "Error: blocked by PreToolUse hook"

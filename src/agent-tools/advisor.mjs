@@ -3,7 +3,12 @@
  * The agent calls this explicitly to get an independent review.
  * type="design" for design doc review, type="code" for code review (default).
  */
-import { runAdvisorReview } from "../advisor.mjs"
+import { randomUUID } from "node:crypto"
+import { runAdvisorReview } from "../advisor/run.mjs"
+
+/** Build a [DESIGN-TOKEN:...] regex; escapes special chars as a safety net even though UUIDs contain only hex/hyphens. */
+const makeDesignTokenRegex = (token, flags = "") =>
+  new RegExp(`\\[DESIGN-TOKEN:\\s*${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]`, flags)
 
 export const advisorTool = {
   name: "advisor",
@@ -38,14 +43,37 @@ export const advisorTool = {
       agent._advisorSession = null
     }
 
+    // Generate the design token BEFORE the review and inject it into the advisor's prompt.
+    // The advisor (LLM) decides pass/fail itself and echoes the token only on approval —
+    // the gate is a mechanical string match, not fragile semantics parsing.
+    const designToken = reviewType === "design" ? randomUUID() : null
     const result = await runAdvisorReview(agent, reviewType, {
       onOutput: ctx.onOutput,
       signal: ctx.signal,
-    })
-    // Design reviews don't converge — discard session and round state
+    }, designToken)
+
     if (reviewType === "design") {
-      agent._advisorSession = null
-      agent._advisorRound = 0
+      // Whitespace-tolerant match (LLM may add spaces or wrap in fences).
+      // The token IS the verdict — the advisor echoes it only on approval (prompt-enforced);
+      // no findings-table heuristics: a design with issues never carries the token.
+      const tokenPattern = makeDesignTokenRegex(designToken)
+      if (designToken && result && tokenPattern.test(result)) {
+        // Advisor echoed the token → review passed. Issue it to the parent for eng-coder.
+        // (session cleanup for design reviews is owned by runAdvisorReview)
+        agent._engDesignToken = designToken
+        // Strip the bracketed token so only ONE unambiguous format (plain UUID) reaches the main agent
+        const cleanResult = result.replace(makeDesignTokenRegex(designToken, "g"), "").trim()
+        return `${cleanResult}\n\nApproved. Pass this exact token to eng-coder (designToken parameter): ${designToken}`
+      }
+      // Review failed (or advisor chose not to pass) → invalidate any previously-issued token.
+      // Guard: result === null means the review was skipped (advisor disabled / not engineering
+      // mode) — a skipped review must not revoke an already-issued token.
+      if (result !== null) agent._engDesignToken = null
+      // Strip every dead token occurrence from the raw output so the main agent can't grab an invalid one
+      if (result) {
+        const stripped = result.replace(makeDesignTokenRegex(designToken, "g"), "").trim()
+        return stripped || "Advisor: design review did not pass."
+      }
     }
     return result ?? "Advisor: review is disabled or no changes to review."
   },

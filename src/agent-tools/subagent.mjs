@@ -29,6 +29,7 @@ export const subagentTool = {
       task: { type: "string", description: "Self-contained task description for the sub-agent" },
       context: { type: "string", description: "Optional background the sub-agent needs (it cannot see this conversation)" },
       role: { type: "string", enum: ["explore", "plan", "coder", "eng-coder"], description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), 'coder' (full implementation), 'eng-coder' (engineering-mode coder — strict methodology, design-driven). ENUM IS OVERRIDDEN IN setup.mjs PER ENGINEERING MODE." },
+      designToken: { type: "string", description: "Required when role='eng-coder': the token returned by advisor(type='design') after the design review passed. Without a valid token, eng-coder cannot modify files." },
     },
     required: ["task"],
   },
@@ -45,6 +46,15 @@ export const subagentTool = {
     }
     if (!parent.config?.agent?.engineering && role === "eng-coder") {
       throw new Error("Engineering mode is not active — use role='coder' for implementation tasks.")
+    }
+
+    // eng-coder token gate: the design review must have passed and the caller must
+    // present the exact token advisor issued — otherwise the child is not authorized to code.
+    if (role === "eng-coder") {
+      const issued = parent._engDesignToken
+      if (!issued || args.designToken !== issued) {
+        throw new Error("Invalid or missing design token — run advisor with type='design' first and pass the returned token as designToken.")
+      }
     }
 
     // Filter tool set by role: explore/plan are read-only (plan is a planning agent, its deliverable is the plan itself)
@@ -94,6 +104,9 @@ export const subagentTool = {
       overlay,
       role,
     })
+
+    // Token-verified design review → child is authorized to modify files without re-reviewing
+    if (role === "eng-coder") child._engDesignReviewed = true
 
     // explore/plan: inject git context (branch/recent commits/working tree state) — exploration and planning both relate to current repo state (inspired by kimi-code's promptPrefix)
     let input = args.context ? `Context:\n${args.context}\n\nTask:\n${args.task}` : args.task
