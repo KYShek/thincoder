@@ -117,7 +117,7 @@ async function openAdvisorThinkingPicker(ctx, persist) {
   if (!isEffortOnly) {
     entries.push({ type: "header", text: "Thinking mode" })
     entries.push({ type: "item", text: `Enabled ${thinkingEnabled ? "← current" : ""}`, action: "think_on" })
-    entries.push({ type: "item", text: `Disabled ${curThinking?.type === "disabled" ? "← current" : ""}`, action: "think_off" })
+    entries.push({ type: "item", text: `Disabled ${curThinking?.type === "disabled" || curThinking === null ? "← current" : ""}`, action: "think_off" })
   }
   entries.push({ type: "header", text: "Reasoning effort" })
   for (const level of effortLevels) {
@@ -136,8 +136,7 @@ async function openAdvisorThinkingPicker(ctx, persist) {
     if (isEffortOnly) delete cfg.thinking  // effort-only: clear thinking, rely on reasoningEffort
     pushLine(`Advisor: thinking ON (${thinkOnValue})`, C.dim)
   } else if (e.action === "think_off") {
-    cfg.thinking = isCustomThink ? undefined : { type: "disabled" }
-    if (isCustomThink) delete cfg.thinking
+    cfg.thinking = null  // null = explicitly off, distinct from undefined = inherit
     pushLine("Advisor: thinking OFF", C.dim)
   } else if (e.action.startsWith("effort_")) {
     cfg.reasoningEffort = e.action.slice(7)
