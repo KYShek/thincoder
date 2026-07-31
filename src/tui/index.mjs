@@ -18,7 +18,7 @@
 
 import { emitKeypressEvents } from "node:readline"
 import { PassThrough } from "node:stream"
-import { saveSession, archiveCurrent, listSlots } from "../session.mjs"
+import { saveSession } from "../session.mjs"
 import { closeAllMcp } from "../mcp.mjs"
 import { ansi, C } from "./ansi.mjs"
 import { createRenderLoop } from "./render-loop.mjs"
@@ -195,9 +195,10 @@ export async function startTUI(agent, opts = {}) {
   const cleanup = () => {
     if (cleanedUp) return
     cleanedUp = true
-    // Save session before exit (synchronous write); archive current to a slot first, then save new — never lose data
+    // Save session before exit (synchronous write).
+    // Archiving to a slot is handled by /new and /session switch — not on every exit,
+    // otherwise simply opening and closing the TUI repeatedly would fill all slots with duplicates.
     try {
-      archiveCurrent(agent.cwd)
       saveSession(agent, state.lines)
     } catch {
       // Save failure shouldn't block exit

@@ -135,6 +135,7 @@ export function createWizard(ctx) {
     if (existing) Object.assign(existing, { baseURL: f.baseURL, model: f.model, apiKey: f.key })
     else agent.providers.push({ name: f.name, baseURL: f.baseURL, model: f.model, apiKey: f.key })
     agent.activeProvider = f.name
+    agent.activeModel = null
     agent.provider = { ...agent.providers.find((p) => p.name === f.name) }
     if (agent.config?.agent?.compactThresholdAuto) {
       const { resolveCompactThreshold } = await import("../config.mjs")
@@ -143,8 +144,10 @@ export function createWizard(ctx) {
     await persistRaw((raw) => {
       raw.providers = agent.providers
       raw.activeProvider = f.name
+      raw.activeModel = undefined  // reset to default model
     })
     agent.config.activeProvider = f.name
+    agent.config.activeModel = null
     pushLabel(`❯ Setup`, ansi.bold + C.tool)
     pushLine(`Setup complete: ${f.name} / ${f.model} (saved to config)`, C.tool)
     // embedding key: if provided, enable vector search; if not, show how to enable later

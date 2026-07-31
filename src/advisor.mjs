@@ -33,7 +33,7 @@
 import { chat } from "./provider/core.mjs"
 import { findProvider } from "./config.mjs"
 import { existsSync, readFileSync } from "node:fs"
-import { join, dirname } from "node:path"
+import { join, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
 import { toOpenAISchema } from "./tools/index.mjs"
@@ -349,6 +349,18 @@ export function buildAdvisorUserMessage(agent, _prior) {
   parts.push(criteria)
   parts.push("")
 
+  // Engineering mode: inject project methodology so advisor knows the rules
+  if (agent.config?.agent?.engineering) {
+    try {
+      const mpath = resolve(agent.cwd, "METHODOLOGY.md")
+      const methodology = readFileSync(mpath, "utf8")
+      parts.push("## Project Methodology (Engineering Mode)")
+      parts.push("The project follows this methodology. Evaluate the changes against it:")
+      parts.push(methodology)
+      parts.push("")
+    } catch { /* file doesn't exist — skip */ }
+  }
+
   // Instructions — round-aware: re-reviews skip convention discovery entirely
   const isReReview = prior && (agent._advisorRound || 0) > 0
   parts.push("## Instructions")
@@ -569,10 +581,14 @@ function isDocOnlyChange(repos, cwd) {
 
 export async function runAdvisorReview(agent, onOutput, signal) {
   const cfg = agent.config?.advisor
-  if (!cfg?.enabled) return null
+  // Engineering mode overrides advisor toggle — reviews are mandatory regardless
+  if (!cfg?.enabled && !agent.config?.agent?.engineering) return null
+
+  // Engineering mode: subagent (eng-coder) may have made all the changes,
+  // so parent's _touchedFiles can be empty — let git diff discover changes
+  if (!agent.config?.agent?.engineering && (agent._touchedFiles ?? []).length === 0) return null
 
   const repos = findReviewRepos(agent)
-  if ((agent._touchedFiles ?? []).length === 0) return null
 
   // Fast path: documentation-only changes need no code review — unless the project
   // customized review criteria (.thincoder/advisor.md may genuinely care about docs).

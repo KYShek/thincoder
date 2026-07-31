@@ -1,7 +1,7 @@
 import {
   createAgent, runAgent, ContinueError,
   readonlyToolNames, collectGitContext, escapeXml,
-  EXPLORE_OVERLAY, CODER_OVERLAY, PLAN_OVERLAY,
+  EXPLORE_OVERLAY, CODER_OVERLAY, PLAN_OVERLAY, ENG_CODER_OVERLAY,
   MIN_REPORT_CHARS, REPORT_CONTINUATION, DEFAULT_SUBAGENT_TURNS,
 } from "../agent.mjs"
 
@@ -28,7 +28,7 @@ export const subagentTool = {
     properties: {
       task: { type: "string", description: "Self-contained task description for the sub-agent" },
       context: { type: "string", description: "Optional background the sub-agent needs (it cannot see this conversation)" },
-      role: { type: "string", enum: ["explore", "plan", "coder"], description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), or 'coder' (full implementation). Default: same tools as parent." },
+      role: { type: "string", enum: ["explore", "plan", "coder", "eng-coder"], description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), 'coder' (full implementation), 'eng-coder' (engineering-mode coder — strict methodology, design-driven). Default: same tools as parent." },
     },
     required: ["task"],
   },
@@ -53,6 +53,7 @@ export const subagentTool = {
     if (role === "explore") overlay = EXPLORE_OVERLAY
     else if (role === "coder") overlay = CODER_OVERLAY
     else if (role === "plan") overlay = PLAN_OVERLAY
+    else if (role === "eng-coder") overlay = ENG_CODER_OVERLAY
 
     // explore/plan: force read-only permission; coder/default: AUTO passes through directly,
     // manual mode queues permission requests for the parent agent's approval UI (human in the loop, child agent is no longer silently rejected)
@@ -71,10 +72,15 @@ export const subagentTool = {
       }
     }
 
+    // eng-coder: force engineering=true on child config so setup.mjs applies engineering prompt
+    const childConfig = role === "eng-coder"
+      ? { ...parent.config, agent: { ...parent.config.agent, engineering: true } }
+      : parent.config
+
     const child = createAgent({
       provider: parent.provider,
       tools,
-      config: parent.config,
+      config: childConfig,
       cwd: parent.cwd,
       memory: parent.memory,
       overlay,

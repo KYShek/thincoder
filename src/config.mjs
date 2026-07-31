@@ -32,6 +32,7 @@ const { desc: _, ...deepseekPreset } = PROVIDER_PRESETS.deepseek
 const DEFAULTS = {
   providers: [{ name: "deepseek", ...deepseekPreset }],
   activeProvider: "deepseek",
+  activeModel: null,  // optional: override provider.model (set via /model picker or /model provider:model)
   agent: {
     maxTurns: 100,
     subagentTurns: 100,
@@ -41,6 +42,7 @@ const DEFAULTS = {
     streamRules: [],      // time-traveling stream rules: [{ pattern: "regex", message: "reminder", action: "abort"|"warn", repeat: "always"|"once" }]
     advisor: { enabled: false },  // code review; { enabled: true, provider: "deepseek", model: "deepseek-chat", thinking: { type: "enabled" }, reasoningEffort: "max", guard: true }
     autoThink: false,     // auto-classify task difficulty and set reasoning effort per-turn
+    engineering: false,   // strict methodology enforcement — read METHODOLOGY.md, design-before-code
   },
   memory: {
     dbPath: join(configDir, "memory.db"),
@@ -213,6 +215,11 @@ export function loadConfig() {
   if (process.env.THINCODER_BASE_URL) runtimeProvider.baseURL = process.env.THINCODER_BASE_URL
   if (process.env.THINCODER_MODEL) runtimeProvider.model = process.env.THINCODER_MODEL
 
+  // activeModel overrides provider's default model (env > config)
+  const activeModel = process.env.THINCODER_ACTIVE_MODEL || merged.activeModel
+  if (activeModel) runtimeProvider.model = activeModel
+  merged.activeModel = activeModel || null  // normalize for agent.activeModel
+
   // apiKey also falls back to env vars (when providers doesn't include a key)
   // Provider-specific env vars only apply to the matching provider name, preventing keys from leaking to wrong endpoints
   if (!runtimeProvider.apiKey?.trim()) {
@@ -235,6 +242,7 @@ export function loadConfig() {
   // Write back to merged for convenient access by upper layers
   merged.provider = runtimeProvider
   merged.providersList = merged.providers
+  merged.advisor = { ...merged.agent.advisor }  // promote for consistent access (decoupled copy)
 
   return merged
 }

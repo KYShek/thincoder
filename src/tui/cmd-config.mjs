@@ -38,6 +38,7 @@ export async function handleConfigCommand(ctx, args = []) {
     const cfg = loadConfig()
     injectProxy(cfg.providersList, cfg)
     const runtimeName = agent.activeProvider
+    const runtimeModel = agent.activeModel
     agent.providers = cfg.providersList
     agent.config = cfg
     agent.config.agent ??= {}
@@ -45,9 +46,20 @@ export async function handleConfigCommand(ctx, args = []) {
     if (runtimeName && runtimeName !== cfg.activeProvider && keep) {
       // 运行时选择在新配置里仍存在 → 保持（provider 为注入 proxyUri 后的新对象）
       agent.activeProvider = runtimeName
+      agent.activeModel = runtimeModel
       agent.provider = { ...keep }
+      if (agent.activeModel) agent.provider.model = agent.activeModel
+    } else if (runtimeName && runtimeName === cfg.activeProvider && runtimeModel) {
+      // Same provider, runtime had a model override — keep it
+      agent.activeProvider = cfg.activeProvider
+      agent.activeModel = runtimeModel
+      const p = cfg.providersList.find((pr) => pr.name === cfg.activeProvider)
+      agent.provider = p ? { ...p } : cfg.provider
+      agent.provider.model = runtimeModel
+      agent.provider.proxyUri = p?.proxyUri
     } else {
       agent.activeProvider = cfg.activeProvider
+      agent.activeModel = cfg.activeModel ?? null
       agent.provider = cfg.provider
       agent.provider.proxyUri = cfg.providersList.find((p) => p.name === cfg.activeProvider)?.proxyUri
     }

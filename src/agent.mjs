@@ -23,13 +23,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SYSTEM_PROMPT = readFileSync(join(__dirname, "prompts", "system.md"), "utf8")
 const DISCIPLINE_RULES = readFileSync(join(__dirname, "prompts", "discipline.md"), "utf8")
 const MAIN_OVERLAY = readFileSync(join(__dirname, "prompts", "main.md"), "utf8")
-let _EXPLORE, _CODER, _PLAN
+let _EXPLORE, _CODER, _PLAN, _ENG_CODER
 try { _EXPLORE = readFileSync(join(__dirname, "prompts", "explore.md"), "utf8") } catch { _EXPLORE = "" }
 try { _CODER = readFileSync(join(__dirname, "prompts", "coder.md"), "utf8") } catch { _CODER = "" }
 try { _PLAN = readFileSync(join(__dirname, "prompts", "plan.md"), "utf8") } catch { _PLAN = "" }
+try { _ENG_CODER = readFileSync(join(__dirname, "prompts", "eng-coder.md"), "utf8") } catch { _ENG_CODER = "" }
 export const EXPLORE_OVERLAY = _EXPLORE
 export const CODER_OVERLAY = _CODER
 export const PLAN_OVERLAY = _PLAN
+export const ENG_CODER_OVERLAY = _ENG_CODER
 
 // exported for consumption by agent-tools.mjs
 export {
@@ -254,6 +256,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       }
       // --- verify guard: push model to verify mutated files before completion ---
       if (depth === 0 && agent.config.verifyGuard === true) {
+        // Not verified yet → pushback to run verify
         if (agent._mutatedThisRun && !agent._verifiedThisRun && guardPushbacks < MAX_VERIFY_PUSHBACKS) {
           guardPushbacks++
           agent.history.push({ role: "assistant", content: response.content })
@@ -263,6 +266,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           })
           callbacks.onTurnEnd?.(agent, turn)
           continue
+        }
+        // Verified but still failing → pushback to fix (up to MAX_VERIFY_RETRIES)
+        if (agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries < MAX_VERIFY_RETRIES) {
           agent._verifyRetries++
           agent.history.push({ role: "assistant", content: response.content })
           agent.history.push({
@@ -272,7 +278,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           callbacks.onTurnEnd?.(agent, turn)
           continue
         }
-        if (agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
+        if (agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
           if (honestReminderInjected) {
             agent.history.push({ role: "assistant", content: response.content })
             return response.content
@@ -288,11 +294,13 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         }
       }
       // --- advisor guard: review of mutated files is mandatory before completion ---
-      // When advisor is enabled and guard is not explicitly disabled, the model MUST
-      // call advisor after mutating files — skipping is not offered as an option
-      // (offering it caused a skip → pushback loop). Pushbacks are capped as a
-      // backstop against pathological loops; convergence is unbounded by design.
-      if (depth === 0 && agent.config?.advisor?.enabled && agent.config?.advisor?.guard !== false) {
+      // When advisor is enabled (or engineering mode is on) and guard is not explicitly disabled,
+      // the model MUST call advisor after mutating files. Engineering mode requires mandatory
+      // advisor reviews regardless of the toggle state.
+      const engineeringReview = agent.config?.agent?.engineering
+      const cfg = agent.config?.advisor
+      const advisorReview = cfg?.enabled && cfg?.guard !== false
+      if (depth === 0 && (advisorReview || engineeringReview)) {
         if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && (agent._touchedFiles ?? []).length > 0
             && advisorPushbacks < MAX_ADVISOR_PUSHBACKS) {
           advisorPushbacks++
@@ -372,8 +380,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       if (tool && ok) {
         if (!tool.readonly && !tool.sideEffectExempt) {
           agent._mutatedThisRun = true
-          // Any mutation after advisor invalidates the review — need re-review
+          // Any mutation after advisor or verify invalidates the prior review/verification
           if (agent._calledAdvisorThisRun) agent._calledAdvisorThisRun = false
+          if (agent._verifiedThisRun) {
+            agent._verifiedThisRun = false
+            agent._verifyPassed = undefined
+          }
         }
         if (toolCall.name === "verify") agent._verifiedThisRun = true
         if (toolCall.name === "advisor") {
@@ -385,7 +397,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           const paths = tool.touchedPaths ? tool.touchedPaths(args) : [args.path]
           for (const p of paths) {
             const abs = join(agent.cwd, p)
-            agent._touchedFiles.push(abs)
+            if (!agent._touchedFiles.includes(abs)) agent._touchedFiles.push(abs)
             if (agent.memory) {
               // Fire-and-forget: don't block the agent loop on indexing.
               // Reuses a single cached import; errors surface as pending reminders on next turn.

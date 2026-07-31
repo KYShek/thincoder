@@ -31,10 +31,12 @@ import { handleHelpCommand } from "./cmd-help.mjs"
 import { handleUpgradeCommand } from "./cmd-upgrade.mjs"
 import { handleFoldCommand } from "./cmd-fold.mjs"
 import { handleUndoCommand } from "./cmd-undo.mjs"
+import { handleEngCommand } from "./cmd-eng.mjs"
 
 export const SLASH_COMMANDS = [
   { name: "/plan", group: "Agent", desc: "toggle plan mode (design first, then implement)" },
   { name: "/auto", group: "Agent", desc: "toggle auto-approve" },
+  { name: "/eng", group: "Agent", desc: "toggle engineering mode — strict methodology enforcement" },
   { name: "/advisor", group: "Agent", desc: "toggle advisor review & select model" },
   { name: "/model", group: "Agent", desc: "select model & manage providers" },
   { name: "/goal", group: "Agent", desc: "set/view/cancel long-term goal" },
@@ -80,6 +82,7 @@ export const HANDLERS = {
   "/upgrade": handleUpgradeCommand,
   "/fold": handleFoldCommand,
   "/undo": handleUndoCommand,
+  "/eng": handleEngCommand,
   "/extract": handleExtractCommand,
   "/help": handleHelpCommand,
 }

@@ -99,6 +99,7 @@ export async function assembleAgent() {
   })
   agent.providers = providers
   agent.activeProvider = config.activeProvider
+  agent.activeModel = config.activeModel ?? null
   agent._mcpWarnings = mcpWarnings
   return agent
 }

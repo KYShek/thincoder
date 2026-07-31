@@ -48,9 +48,10 @@ export function showStartup(ctx) {
     pushLabel(`── Restored previous session (${opts.restored.history.length} messages); /new for a fresh session ──`, C.warn)
   }
 
-  // Hint when archived slots exist
-  if (listSlots(agent.cwd).length > 0) {
-    pushLine("Tip: archived sessions available — /session to view/switch", C.dim)
+  // Hint when multiple sessions exist
+  const allSlots = listSlots(agent.cwd)
+  if (allSlots.length > 1) {
+    pushLine(`Tip: ${allSlots.length} sessions — /session to view/switch`, C.dim)
   }
   render()
 }

@@ -325,7 +325,7 @@ test("handleSlash: /new 选 yes 确认后清空会话", async () => {
   const { join } = await import("node:path")
   const { sessionPath } = await import("../src/session.mjs")
   const ctx = mockCtx()
-  // clearSession 会写真实 session 文件（~/.thincoder/sessions/<hash>.json），用临时 cwd 并在结束后清理
+  // newSession 写入槽位文件，用临时 cwd 并在结束后清理
   ctx.agent.cwd = mkdtempSync(join(tmpdir(), "thincoder-new-test-"))
   ctx.agent.history = [{ role: "user", content: "hi" }]
   ctx.pickerResponse = (entries) => entries.find((e) => e.action === "yes")
@@ -336,7 +336,12 @@ test("handleSlash: /new 选 yes 确认后清空会话", async () => {
     assert.match(texts(ctx), /New session started/)
   } finally {
     const { rmSync } = await import("node:fs")
-    rmSync(sessionPath(ctx.agent.cwd), { force: true })
+    const sp = sessionPath(ctx.agent.cwd)
+    try { rmSync(sp, { force: true }) } catch {}
+    try { rmSync(sp + ".manifest", { force: true }) } catch {}
+    for (let i = 1; i <= 5; i++) {
+      try { rmSync(sp + "." + i, { force: true }) } catch {}
+    }
     rmSync(ctx.agent.cwd, { recursive: true, force: true })
   }
 })

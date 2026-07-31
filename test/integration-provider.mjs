@@ -73,7 +73,7 @@ describe("multi-provider 集成", () => {
   })
 
   test("session: 保存含 activeProvider 的会话", async () => {
-    const { saveSession, loadSession, clearSession } = await import("../src/session.mjs")
+    const { saveSession, loadSession } = await import("../src/session.mjs")
     const cwd = join(tmpdir(), "thincoder-session-provider-test-" + Date.now())
     const agent = {
       cwd,
@@ -87,7 +87,7 @@ describe("multi-provider 集成", () => {
     assert.equal(restored.activeProvider, "kimi")
     assert.equal(restored.history.length, 1)
     
-    // 兼容旧版 version 1 会话
+    // 兼容旧版 version 1 会话 — 直接写到活动槽位文件
     const v1Data = {
       version: 1,
       cwd,
@@ -97,13 +97,18 @@ describe("multi-provider 集成", () => {
       tasks: [],
     }
     const fs = await import("node:fs")
-    const { sessionPath } = await import("../src/session.mjs")
-    fs.writeFileSync(sessionPath(cwd), JSON.stringify(v1Data), "utf8")
+    const { activePath, sessionPath } = await import("../src/session.mjs")
+    fs.writeFileSync(activePath(cwd), JSON.stringify(v1Data), "utf8")
     const v1Restored = loadSession(cwd)
     assert.notEqual(v1Restored, null)
     assert.equal(v1Restored.history[0].content, "hello")
 
-    clearSession(cwd)
+    // 清理
+    try { fs.unlinkSync(sessionPath(cwd)) } catch {}
+    try { fs.unlinkSync(sessionPath(cwd) + ".manifest") } catch {}
+    for (let i = 1; i <= 5; i++) {
+      try { fs.unlinkSync(sessionPath(cwd) + "." + i) } catch {}
+    }
   })
 
   test("切换 provider 逻辑", async () => {

@@ -139,8 +139,13 @@ export function createPickers(ctx) {
     const entries = []
     for (const p of agent.providers) {
       const active = p.name === agent.activeProvider
+      const isDefaultModel = !agent.activeModel || agent.activeModel === p.model
       entries.push({ type: "header", text: p.name, note: `${p.baseURL}${p.apiKey ? "" : " (no key)"}${active ? " ← current" : ""}  loading...` })
-      entries.push({ type: "item", text: p.model, action: "switch", provider: p.name, model: p.model, marker: active ? "●" : "" })
+      entries.push({ type: "item", text: p.model, action: "switch", provider: p.name, model: p.model, marker: active && isDefaultModel ? "●" : "" })
+      // If a non-default model is active, show it immediately (before API fetch completes)
+      if (active && agent.activeModel && agent.activeModel !== p.model) {
+        entries.push({ type: "item", text: agent.activeModel, action: "switch", provider: p.name, model: agent.activeModel, marker: "●" })
+      }
     }
     entries.push({ type: "header", text: "Provider Management" })
     entries.push({ type: "item", text: "Add provider…", action: "add" })
@@ -153,8 +158,11 @@ export function createPickers(ctx) {
     closePicker()
     const target = agent.providers.find((pp) => pp.name === item.provider)
     if (!target) return
+    const providerDefault = target.model
     target.model = item.model
     agent.activeProvider = item.provider
+    // If selecting the provider's default model, clear activeModel; otherwise set it
+    agent.activeModel = item.model !== providerDefault ? item.model : null
     agent.provider = { ...target }
     if (!agent.provider.apiKey) {
       const envKey = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }[item.provider]
@@ -169,8 +177,10 @@ export function createPickers(ctx) {
       // 落盘前剥离运行时注入的 proxyUri（由 loadConfig + injectProxy 在加载时重建）
       raw.providers = agent.providers.map(({ proxyUri: _, ...p }) => p)
       raw.activeProvider = item.provider
+      raw.activeModel = agent.activeModel || undefined  // null → omit from config
     })
     agent.config.activeProvider = item.provider
+    agent.config.activeModel = agent.activeModel
     if (!agent.provider.apiKey) {
       const selKey = await askQuestion(`Enter API key for ${item.provider} (leave empty to skip):`)
       if (selKey) await setProviderKey(item.provider, selKey)

@@ -59,6 +59,7 @@ export async function setupWizard() {
     else providers.push({ name, baseURL, model, apiKey })
     raw.providers = providers
     raw.activeProvider = name
+    delete raw.activeModel  // reset to default model
     if (embedKey) raw.embedding = { ...(raw.embedding ?? {}), apiKey: embedKey }
     saveConfig(raw)
     console.error(`Configured: ${name} / ${model} (saved to ${configPath})`)

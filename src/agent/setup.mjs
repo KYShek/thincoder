@@ -9,12 +9,29 @@ import {
   collectGitContext, loadProjectInstructions, OUTLINE_INJECT_PREFIX,
   DEFAULT_MAX_TURNS, DEFAULT_SUBAGENT_TURNS,
 } from "./helpers.mjs"
+import { readFileSync, existsSync } from "node:fs"
+import { resolve, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const AUTO_REMINDER = "[System reminder: AUTO mode is active — all tool calls are automatically approved without asking.]"
 const DEFAULT_COMPACT_THRESHOLD = 100_000
 const DOC_SEARCH_LIMIT = 5
 const DOC_CHUNK_PREVIEW_LEN = 300
 const MEMORY_SEARCH_LIMIT = 3
+
+/** Build engineering-mode system prompt by reading METHODOLOGY.md and wrapping it in the engineering template */
+async function buildEngineeringPrompt(cwd, role) {
+  const methodologyPath = resolve(cwd, "METHODOLOGY.md")
+  if (!existsSync(methodologyPath)) return null
+  const methodology = readFileSync(methodologyPath, "utf8")
+  const engFile = role === "eng-coder" ? "engineering-sub.md" : "engineering.md"
+  const engTemplatePath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "prompts", engFile)
+  let engTemplate = ""
+  try { engTemplate = readFileSync(engTemplatePath, "utf8") } catch { /* ignore */ }
+  return engTemplate
+    ? `${engTemplate}\n\n---\n\n## Project METHODOLOGY.md\n\n${methodology}`
+    : `[ENGINEERING MODE]\n\nFollow this methodology strictly:\n\n${methodology}`
+}
 
 /**
  * Prepare an agent run: inject context, build system prompt, inject tools.
@@ -124,8 +141,15 @@ export async function prepareRun(agent, input, callbacks, {
   agent._onTaskUpdate = callbacks.onTaskUpdate
 
   // system prompt
-  const needsDiscipline = depth === 0 || agent._role === "coder"
-  const base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt
+  const needsDiscipline = depth === 0 || agent._role === "coder" || agent._role === "eng-coder"
+  let base
+  if ((depth === 0 || agent._role === "eng-coder") && agent.config?.agent?.engineering) {
+    // Engineering mode: strict methodology, no standard discipline
+    const engRules = await buildEngineeringPrompt(agent.cwd, agent._role)
+    base = engRules ? `${corePrompt}\n\n${engRules}` : `${corePrompt}\n\n${disciplineRules}`
+  } else {
+    base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt
+  }
   let systemPrompt = agent.overlay
     ? `${agent.overlay}\n\n${base}`
     : depth === 0
