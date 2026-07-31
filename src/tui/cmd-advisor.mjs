@@ -56,15 +56,13 @@ async function openAdvisorModelPicker(ctx, persist) {
     { type: "item", text: "Use main model", action: "inherit", marker: !cfg.provider ? "●" : "" },
   ]
   for (const p of providers) {
-    const mark = cfg.provider === p.name && cfg.model === p.model ? "● " : "  "
     entries.push({ type: "header", text: p.name, note: p.baseURL + (agent.activeProvider === p.name ? " ← active" : "") })
+    const mark = cfg.provider === p.name && cfg.model === p.model ? "● " : "  "
     entries.push({ type: "item", text: `${mark}${p.model}`, action: "switch", provider: p.name, model: p.model })
-    for (const alt of altModels(p)) {
-      if (alt === p.model) continue
-      const altMark = cfg.provider === p.name && cfg.model === alt ? "● " : "  "
-      entries.push({ type: "item", text: `   ${altMark}${alt}`, action: "switch", provider: p.name, model: alt })
-    }
   }
+
+  // Fire-and-forget: fetch available models from each provider's API
+  fetchAdvisorModels(entries, providers).catch(err => pushLine(`[advisor] fetch models: ${err.message}`, C.error))
 
   const e = await showPicker("Advisor Model", entries)
   if (!e) return
@@ -81,14 +79,28 @@ async function openAdvisorModelPicker(ctx, persist) {
   await persist()
 }
 
-function altModels(p) {
-  const m = p.model
-  if (p.name === "deepseek") return [m, "deepseek-chat", "deepseek-v4-pro"].filter((v, i, a) => a.indexOf(v) === i)
-  if (p.name === "openai") return [m, "gpt-4o", "gpt-4o-mini", "o4-mini"].filter((v, i, a) => a.indexOf(v) === i)
-  if (p.name === "kimi") return [m, "kimi-k3", "kimi-k2"].filter((v, i, a) => a.indexOf(v) === i)
-  if (p.name === "qwen") return [m, "qwen3.7-max", "qwen-plus"].filter((v, i, a) => a.indexOf(v) === i)
-  if (p.name === "glm") return [m, "glm-5.2", "glm-4"].filter((v, i, a) => a.indexOf(v) === i)
-  return [m]
+async function fetchAdvisorModels(entries, providers) {
+  const { listModels } = await import("../provider/index.mjs")
+  await Promise.all(providers.map(async (p) => {
+    try {
+      const envKey = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }[p.name]
+      let apiKey = p.apiKey
+      if (!apiKey && envKey && process.env[envKey]) apiKey = process.env[envKey]
+      if (!apiKey) apiKey = process.env.THINCODER_API_KEY
+      const models = await listModels({ baseURL: p.baseURL, apiKey: apiKey ?? "" }, { signal: AbortSignal.timeout(10000) })
+      const at = entries.findLastIndex((e) => e.type === "header" && e.text === p.name)
+      if (at < 0) return
+      // Insert fetched models after the header, before the next provider's header
+      entries.splice(at + 2, 0, ...models
+        .filter((m) => m !== p.model)
+        .map((m) => ({ type: "item", text: `   ${m}`, action: "switch", provider: p.name, model: m })))
+      const header = entries[at]
+      header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}`
+    } catch {
+      const header = entries.find((e) => e.type === "header" && e.text === p.name)
+      if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}  (fetch failed)`
+    }
+  }))
 }
 
 async function openAdvisorThinkingPicker(ctx, persist) {
@@ -133,7 +145,7 @@ async function openAdvisorThinkingPicker(ctx, persist) {
     pushLine("Advisor: using main model thinking settings", C.dim)
   } else if (e.action === "think_on") {
     cfg.thinking = { type: thinkOnValue }
-    if (isEffortOnly) delete cfg.thinking  // effort-only: clear thinking, rely on reasoningEffort
+    if (isEffortOnly) delete cfg.thinking
     pushLine(`Advisor: thinking ON (${thinkOnValue})`, C.dim)
   } else if (e.action === "think_off") {
     cfg.thinking = isCustomThink ? null : { type: "disabled" }
