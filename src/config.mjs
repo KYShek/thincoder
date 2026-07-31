@@ -39,7 +39,7 @@ const DEFAULTS = {
     compactThreshold: 100000,
     verifyGuard: false,  // push model back to verify when files were mutated but verify not run (opt-in)
     streamRules: [],      // time-traveling stream rules: [{ pattern: "regex", message: "reminder", action: "abort"|"warn", repeat: "always"|"once" }]
-    advisor: { enabled: false },  // code review tool; { enabled: true, provider: "deepseek", model: "deepseek-chat", guard: true } — guard (default on) pushes model to review before completion
+    advisor: { enabled: false },  // code review; { enabled: true, provider: "deepseek", model: "deepseek-chat", thinking: { type: "enabled" }, reasoningEffort: "max", guard: true }
     autoThink: false,     // auto-classify task difficulty and set reasoning effort per-turn
   },
   memory: {

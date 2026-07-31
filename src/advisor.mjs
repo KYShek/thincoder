@@ -347,13 +347,18 @@ export function resolveAdvisorProvider(agent) {
   if (cfg?.provider) {
     try {
       const provider = findProvider(agent.providers ?? [agent.provider], cfg.provider)
-      return cfg.model ? { ...provider, model: cfg.model } : provider
+      const result = cfg.model ? { ...provider, model: cfg.model } : { ...provider }
+      if (cfg.thinking !== undefined) result.thinking = cfg.thinking
+      if (cfg.reasoningEffort !== undefined) result.reasoningEffort = cfg.reasoningEffort
+      return result
     } catch {
       // Provider not found — fall back to main provider
     }
   }
   const provider = { ...agent.provider }
   if (cfg?.model) provider.model = cfg.model
+  if (cfg?.thinking !== undefined) provider.thinking = cfg.thinking
+  if (cfg?.reasoningEffort !== undefined) provider.reasoningEffort = cfg.reasoningEffort
   return provider
 }
 
