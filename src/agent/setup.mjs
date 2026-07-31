@@ -136,8 +136,32 @@ export async function prepareRun(agent, input, callbacks, {
   // task/plan tools are injected with the main loop; subagent/skill/goal/verify only at top level
   // eng-coder subagents get advisor for mandatory design review before coding
   const { planTool, subagentTool, taskTool, skillTool, goalTool, verifyTool, recentChangesTool, timerTool, advisorTool } = await import("../agent-tools.mjs")
-  const depthOnly = depth === 0 ? [subagentTool, skillTool, goalTool, verifyTool, recentChangesTool, advisorTool]
-    : agent._role === "eng-coder" ? [advisorTool] : []
+  // Role enum is mutually exclusive: normal mode has "coder", engineering mode has "eng-coder"
+  const subagentRoles = (depth === 0 && agent.config?.agent?.engineering)
+    ? {
+        enum: ["explore", "plan", "eng-coder"],
+        description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), 'eng-coder' (engineering coder — strict methodology, design-driven). 'coder' is disabled in engineering mode.",
+        suffix: " In engineering mode, use role='eng-coder' for implementation (coder is disabled).",
+      }
+    : {
+        enum: ["explore", "plan", "coder"],
+        description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), or 'coder' (full implementation). 'eng-coder' is disabled in normal mode.",
+        suffix: "",
+      }
+  const filteredSubagent = depth === 0 ? {
+    ...subagentTool,
+    description: subagentTool.description + subagentRoles.suffix,
+    parameters: {
+      ...subagentTool.parameters,
+      properties: {
+        ...subagentTool.parameters.properties,
+        role: { ...subagentTool.parameters.properties.role, ...subagentRoles },
+      },
+    },
+  } : subagentTool
+
+  const depthOnly = depth === 0 ? [filteredSubagent, skillTool, goalTool, verifyTool, recentChangesTool, advisorTool]
+    : agent._role === "eng-coder" ? [advisorTool, verifyTool] : []
   const tools = [...agent.tools, taskTool, planTool, timerTool, ...depthOnly]
   const toolSchemas = tools.map(toOpenAISchema)
   const toolByName = new Map(tools.map((t) => [t.name, t]))
@@ -149,7 +173,13 @@ export async function prepareRun(agent, input, callbacks, {
   if ((depth === 0 || agent._role === "eng-coder") && agent.config?.agent?.engineering) {
     // Engineering mode: strict methodology, no standard discipline
     const engRules = await buildEngineeringPrompt(agent.cwd, agent._role)
-    base = engRules ? `${corePrompt}\n\n${engRules}` : `${corePrompt}\n\n${disciplineRules}`
+    if (engRules) {
+      base = `${corePrompt}\n\n${engRules}`
+    } else {
+      // METHODOLOGY.md missing — inject a warning so the model and user know
+      const warning = "[System reminder: ENGINEERING MODE is active but METHODOLOGY.md was not found. Engineering constraints are NOT in effect. Create METHODOLOGY.md or disable engineering mode (/eng).]"
+      base = `${corePrompt}\n\n${warning}\n\n${disciplineRules}`
+    }
   } else {
     base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt
   }

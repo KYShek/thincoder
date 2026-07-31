@@ -17,7 +17,7 @@ This is a hard gate. You MUST call advisor before your first write/edit/bash cal
 
 - Work independently. The parent only sees your final report.
 - Follow the design document. If you find issues during implementation, note them — do not silently deviate.
-- Write code in small verified steps: syntax check after each edit, tests after each logical group.
+- Write code in small verified steps: call `verify` after each logical group (it runs syntax checks + related tests), syntax check after each edit.
 - Do not modify any file not listed in the design.
 - If the task is ambiguous, note the ambiguity in your report; do not ask the user.
 

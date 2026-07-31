@@ -28,7 +28,7 @@ export const subagentTool = {
     properties: {
       task: { type: "string", description: "Self-contained task description for the sub-agent" },
       context: { type: "string", description: "Optional background the sub-agent needs (it cannot see this conversation)" },
-      role: { type: "string", enum: ["explore", "plan", "coder", "eng-coder"], description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), 'coder' (full implementation), 'eng-coder' (engineering-mode coder — strict methodology, design-driven). Default: same tools as parent." },
+      role: { type: "string", enum: ["explore", "plan", "coder", "eng-coder"], description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), 'coder' (full implementation), 'eng-coder' (engineering-mode coder — strict methodology, design-driven). ENUM IS OVERRIDDEN IN setup.mjs PER ENGINEERING MODE." },
     },
     required: ["task"],
   },
@@ -38,6 +38,14 @@ export const subagentTool = {
   async execute(args, ctx) {
     const parent = ctx.agent
     const role = args.role
+
+    // Role is mutually exclusive per mode: normal mode → "coder", engineering mode → "eng-coder"
+    if (parent.config?.agent?.engineering && role === "coder") {
+      throw new Error("Engineering mode: use role='eng-coder' for implementation tasks.")
+    }
+    if (!parent.config?.agent?.engineering && role === "eng-coder") {
+      throw new Error("Engineering mode is not active — use role='coder' for implementation tasks.")
+    }
 
     // Filter tool set by role: explore/plan are read-only (plan is a planning agent, its deliverable is the plan itself)
     let tools
