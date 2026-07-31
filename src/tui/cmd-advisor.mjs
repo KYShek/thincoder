@@ -56,13 +56,13 @@ async function openAdvisorModelPicker(ctx, persist) {
     { type: "item", text: "Use main model", action: "inherit", marker: !cfg.provider ? "●" : "" },
   ]
   for (const p of providers) {
-    entries.push({ type: "header", text: p.name, note: p.baseURL + (agent.activeProvider === p.name ? " ← active" : "") })
+    entries.push({ type: "header", text: p.name, note: `${p.baseURL}${agent.activeProvider === p.name ? " ← active" : ""}  loading…` })
     const mark = cfg.provider === p.name && cfg.model === p.model ? "● " : "  "
     entries.push({ type: "item", text: `${mark}${p.model}`, action: "switch", provider: p.name, model: p.model })
   }
 
-  // Fire-and-forget: fetch available models from each provider's API
-  fetchAdvisorModels(entries, providers).catch(err => pushLine(`[advisor] fetch models: ${err.message}`, C.error))
+  // Fetch models first, then show picker — avoids async state management complexity
+  await fetchAdvisorModels(entries, providers, agent).catch(() => {})
 
   const e = await showPicker("Advisor Model", entries)
   if (!e) return
@@ -79,7 +79,7 @@ async function openAdvisorModelPicker(ctx, persist) {
   await persist()
 }
 
-async function fetchAdvisorModels(entries, providers) {
+async function fetchAdvisorModels(entries, providers, agent) {
   const { listModels } = await import("../provider/index.mjs")
   await Promise.all(providers.map(async (p) => {
     try {
@@ -90,15 +90,14 @@ async function fetchAdvisorModels(entries, providers) {
       const models = await listModels({ baseURL: p.baseURL, apiKey: apiKey ?? "" }, { signal: AbortSignal.timeout(10000) })
       const at = entries.findLastIndex((e) => e.type === "header" && e.text === p.name)
       if (at < 0) return
-      // Insert fetched models after the header, before the next provider's header
       entries.splice(at + 2, 0, ...models
         .filter((m) => m !== p.model)
         .map((m) => ({ type: "item", text: `   ${m}`, action: "switch", provider: p.name, model: m })))
       const header = entries[at]
-      header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}`
+      header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}${agent.activeProvider === p.name ? " ← active" : ""}`
     } catch {
       const header = entries.find((e) => e.type === "header" && e.text === p.name)
-      if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}  (fetch failed)`
+      if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}${agent.activeProvider === p.name ? " ← active" : ""}  (fetch failed)`
     }
   }))
 }
