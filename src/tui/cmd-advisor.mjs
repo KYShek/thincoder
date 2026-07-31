@@ -38,7 +38,7 @@ export async function handleAdvisorCommand(ctx) {
     } else {
       agent._pendingReminders.push("[System reminder: Advisor review is now OFF. The `advisor` tool will not produce results.]")
     }
-    await persist()
+    await persist().catch(err => pushLine(`[error] Advisor toggle: ${err.message}`, C.error))
   } else if (e.action === "model") {
     await openAdvisorModelPicker(ctx, persist).catch(err => pushLine(`[error] ${err.message}`, C.error))
   } else if (e.action === "thinking") {
@@ -55,7 +55,7 @@ async function openAdvisorModelPicker(ctx, persist) {
     { type: "item", text: "Use main model", action: "inherit", marker: !cfg.provider ? "●" : "" },
   ]
   for (const p of providers) {
-    const mark = cfg.provider === p.name && cfg.model !== agent.provider.model ? "● " : "  "
+    const mark = cfg.provider === p.name && cfg.model === p.model ? "● " : "  "
     entries.push({ type: "header", text: p.name, note: p.baseURL + (agent.activeProvider === p.name ? " ← active" : "") })
     entries.push({ type: "item", text: `${mark}${p.model}`, action: "switch", provider: p.name, model: p.model })
     for (const alt of altModels(p)) {
@@ -95,27 +95,33 @@ async function openAdvisorThinkingPicker(ctx, persist) {
   const { specForModel } = await import("../config.mjs")
   const cfg = agent.config.advisor ??= {}
 
-  // Resolve effective provider for thinking defaults
   const providerForDefaults = cfg.provider
     ? agent.providers?.find(p => p.name === cfg.provider) || agent.provider
     : agent.provider
   const effectiveModel = cfg.model || providerForDefaults.model
   const spec = specForModel(effectiveModel)
   const thinkOnValue = spec.thinkEnabledValue ?? "enabled"
+  const isCustomThink = thinkOnValue !== "enabled"
+  const isEffortOnly = spec.thinkApi === "effort"
+  const effortLevels = spec.reasoningEffortEnum ?? ["high", "max"]
+
   const curEffort = cfg.reasoningEffort ?? providerForDefaults.reasoningEffort
   const curThinking = cfg.thinking ?? providerForDefaults.thinking
+  const thinkingEnabled = curThinking?.type === thinkOnValue
+    || (curThinking?.type === undefined && !isCustomThink)
 
   const entries = [
     { type: "item", text: "Use main model settings", action: "inherit" },
-    { type: "header", text: "Thinking mode" },
-    { type: "item", text: `Enabled ${!curThinking || curThinking.type !== "disabled" ? "← current" : ""}`, action: "think_on" },
-    { type: "item", text: `Disabled ${curThinking?.type === "disabled" ? "← current" : ""}`, action: "think_off" },
-    { type: "header", text: "Reasoning effort" },
-    { type: "item", text: `max ${curEffort === "max" ? "← current" : ""}`, action: "effort_max" },
-    { type: "item", text: `high ${curEffort === "high" ? "← current" : ""}`, action: "effort_high" },
-    { type: "item", text: `medium ${curEffort === "medium" ? "← current" : ""}`, action: "effort_medium" },
-    { type: "item", text: `low ${curEffort === "low" ? "← current" : ""}`, action: "effort_low" },
   ]
+  if (!isEffortOnly) {
+    entries.push({ type: "header", text: "Thinking mode" })
+    entries.push({ type: "item", text: `Enabled ${thinkingEnabled ? "← current" : ""}`, action: "think_on" })
+    entries.push({ type: "item", text: `Disabled ${curThinking?.type === "disabled" ? "← current" : ""}`, action: "think_off" })
+  }
+  entries.push({ type: "header", text: "Reasoning effort" })
+  for (const level of effortLevels) {
+    entries.push({ type: "item", text: `${level} ${curEffort === level ? "← current" : ""}`, action: `effort_${level}` })
+  }
 
   const e = await showPicker("Advisor Thinking", entries)
   if (!e) return
@@ -126,9 +132,11 @@ async function openAdvisorThinkingPicker(ctx, persist) {
     pushLine("Advisor: using main model thinking settings", C.dim)
   } else if (e.action === "think_on") {
     cfg.thinking = { type: thinkOnValue }
+    if (isEffortOnly) delete cfg.thinking  // effort-only: clear thinking, rely on reasoningEffort
     pushLine(`Advisor: thinking ON (${thinkOnValue})`, C.dim)
   } else if (e.action === "think_off") {
-    cfg.thinking = { type: "disabled" }
+    cfg.thinking = isCustomThink ? undefined : { type: "disabled" }
+    if (isCustomThink) delete cfg.thinking
     pushLine("Advisor: thinking OFF", C.dim)
   } else if (e.action.startsWith("effort_")) {
     cfg.reasoningEffort = e.action.slice(7)
