@@ -134,12 +134,6 @@ export async function handleAdvisorCommand(ctx) {
 
     if (choice.action === "toggle") {
       cfg.enabled = !cfg.enabled
-      agent._pendingReminders = agent._pendingReminders ?? []
-      if (cfg.enabled) {
-        agent._pendingReminders.push("[System reminder: Advisor review is now ON. You can call the `advisor` tool to get an independent code review before finalising your work. The advisor is an independent read-only sub-agent that explores the codebase, runs git diff, reads files, and traces callers via grep/lsp.]")
-      } else {
-        agent._pendingReminders.push("[System reminder: Advisor review is now OFF. The `advisor` tool will not produce results.]")
-      }
       await persist().catch(err => pushLine(`[error] Advisor toggle: ${err.message}`, C.error))
       pushLabel("❯ Advisor", ansi.bold + C.tool)
       pushLine(`Advisor: ${cfg.enabled ? "ON" : "OFF"}`, C.tool)

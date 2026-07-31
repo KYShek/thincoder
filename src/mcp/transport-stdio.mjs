@@ -4,9 +4,10 @@
 import { spawn } from "node:child_process"
 import { rpcId, CALL_TIMEOUT_MS, withTimeout, quoteArg } from "./helpers.mjs"
 
-/** Create an MCP stdio transport over a spawned child process */
-export function stdioTransport(command, args) {
-  const spawnOptions = { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env } }
+/** Create an MCP stdio transport over a spawned child process.
+ *  @param {Object} [env] — extra environment variables merged on top of process.env */
+export function stdioTransport(command, args, env) {
+  const spawnOptions = { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env, ...env } }
   const child =
     process.platform === "win32" && !/\.exe$/i.test(command)
       ? spawn("cmd.exe", ["/d", "/s", "/c", [command, ...(args ?? [])].map(quoteArg).join(" ")], {

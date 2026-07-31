@@ -21,7 +21,7 @@ async function addAndConnect(ctx, srv) {
     const entry = { name: srv.name }
     if (srv.url) { entry.url = srv.url; if (srv.headers) entry.headers = srv.headers }
     else if (srv.wsUrl) { entry.wsUrl = srv.wsUrl; if (srv.headers) entry.headers = srv.headers }
-    else { entry.command = srv.command; if (srv.args) entry.args = srv.args }
+    else { entry.command = srv.command; if (srv.args) entry.args = srv.args; if (srv.env) entry.env = srv.env }
     raw.mcp.servers.push(entry)
   })
   agent.config ??= {}
@@ -136,7 +136,9 @@ Return ONLY the JSON object:`,
       if (!cmd) return
       const argsInput = await askQuestion("Arguments (space-separated, or leave empty):")
       const cmdArgs = argsInput ? argsInput.split(/\s+/) : undefined
-      await addAndConnect(ctx, { name, command: cmd, args: cmdArgs })
+      const envInput = await askQuestion("Environment variables (KEY=value, space-separated, or leave empty):")
+      const env = envInput ? parseHeaders(envInput.split(/\s+/)) : undefined
+      await addAndConnect(ctx, { name, command: cmd, args: cmdArgs, env })
     } else {
       const urlPrompt = transport === "ws" ? "WebSocket URL (ws://…):" : "HTTP URL (https://…):"
       const url = await askQuestion(urlPrompt)

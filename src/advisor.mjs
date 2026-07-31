@@ -41,7 +41,6 @@ import { toOpenAISchema } from "./tools/index.mjs"
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const ADVISOR_MD_PATH = ".thincoder/advisor.md"
-const MAX_TASK_SUMMARY = 500
 const GIT_TIMEOUT = 5_000
 
 const DEFAULT_CRITERIA = `Review the code changes, focusing on:
@@ -189,8 +188,8 @@ function findReviewRepos(agent) {
 
 // ────────────────────────────────────────
 
-/** Cap per-repo embedded diff — the advisor can fetch the rest via its git tool */
-const MAX_EMBEDDED_DIFF = 12_000
+/** Cap per-repo embedded diff — generous (large-context models); advisor can fetch the rest via its git tool */
+const MAX_EMBEDDED_DIFF = 50_000
 
 /**
  * Collect git status + diff for each repo, embedded into the review context so
@@ -233,16 +232,17 @@ export function loadAdvisorMd(cwd) {
   }
 }
 
-const MAX_BACKGROUND_CHARS = 2500
-const MAX_BG_USER_CHARS = 400
-const MAX_BG_ASSISTANT_CHARS = 300
+const MAX_BACKGROUND_CHARS = 20_000
+const MAX_BG_USER_CHARS = 2000
+const MAX_BG_ASSISTANT_CHARS = 1500
 
 /**
  * Recent conversation context for the advisor: the last few user↔assistant
  * exchanges (default 3 user turns). The last user message alone often lacks
  * context ("把那个问题改一下" means nothing without the preceding turns) —
  * the advisor needs the background to judge whether the changes match intent.
- * Tool messages are skipped (noise); texts are truncated and whitespace-collapsed.
+ * Tool messages are skipped (noise); texts are truncated with generous caps
+ * (models have large context windows — completeness beats frugality).
  */
 export function extractConversationBackground(history, maxTurns = 3) {
   const isNoise = (c) => c.startsWith("[System reminder:") || c.startsWith("[User interrupt:")
@@ -260,8 +260,8 @@ export function extractConversationBackground(history, maxTurns = 3) {
 
   const lines = picked.map((e) => {
     const cap = e.role === "User" ? MAX_BG_USER_CHARS : MAX_BG_ASSISTANT_CHARS
-    const flat = e.text.replace(/\s+/g, " ").trim()
-    return `${e.role}: ${flat.length > cap ? flat.slice(0, cap) + "…" : flat}`
+    const text = e.text.length > cap ? e.text.slice(0, cap) + "…" : e.text
+    return `${e.role}: ${text}`
   })
   // Keep the most recent lines within the total budget
   const out = []

@@ -10,7 +10,7 @@ Review workflow:
 5. Produce your review table.
 
 Rules:
-- Reply in the same language as the task summary.
+- Reply in the same language as the conversation background.
 - Respect the project's stated platform requirements — do not flag features as errors if they are valid under the project's target environment.
 - Output a Markdown table. This table becomes the sole basis for convergence in later rounds — be thorough.
 | # | File | Severity | Issue | Suggestion |

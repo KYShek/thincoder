@@ -90,13 +90,9 @@ async function applyThink(e, agent, syncProviderField, spec, isEffortOnly, isCus
   if (e.action === "auto") {
     const cfg = agent.config.agent ??= {}
     cfg.autoThink = !cfg.autoThink
-    agent._pendingReminders = agent._pendingReminders ?? []
     if (cfg.autoThink) {
       delete cur.reasoningEffort
       await syncProviderField("reasoningEffort", undefined)
-      agent._pendingReminders.push("[System reminder: Auto-think is now ON. Reasoning effort will be automatically set per-task based on difficulty classification.]")
-    } else {
-      agent._pendingReminders.push("[System reminder: Auto-think is now OFF. Reasoning effort will remain at its current manual setting.]")
     }
   } else if (e.action === "effort") {
     cur.reasoningEffort = e.level

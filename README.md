@@ -205,6 +205,14 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.0 (2026-07)
+- **Interactive slash command UX** — `/advisor`, `/think`, `/config`, `/mcp` now use persistent menu loops with live state feedback. Toggle, change settings, and see results without re-entering the command. Cursor position is remembered across menu cycles. `/plan` and `/auto` now show immediate local feedback (`❯ Plan: ON/OFF`).
+- **User-level AGENTS.md** — `~/.thincoder/AGENTS.md` is now loaded alongside the project-level `AGENTS.md`. User-level preferences (language, style, format) apply across all projects; project-level rules take priority.
+- **Skill subdirectory format** — `.thincoder/skills/` now supports the standard `skill-name/SKILL.md` subdirectory convention (Claude Code / Cursor compatible). Flat `.md` files remain fully backward-compatible. Subdirectories take priority when both formats exist with the same name.
+- **MCP stdio `env` field** — `env` key in MCP stdio server config is now merged into the child process environment. Enables MCP servers requiring custom environment variables (e.g. `deveco-mcp`).
+- **Project-level `.mcp.json`** — `.mcp.json` in the project root is auto-loaded at startup (standard MCP client convention). Servers defined here are merged with `config.json` servers — `config.json` takes priority for same-named entries.
+- **Cleaner conversations** — Removed redundant `[System reminder: ...]` injections from `/advisor`, `/plan`, `/auto`, and `/think` toggles. All feedback is now local TUI output, not conversation noise.
+
 ### 0.10.0 (2026-07)
 - **LSP tool** — `lsp` tool provides code intelligence via Language Server Protocol: go-to-definition, find-references, hover info, document symbols, diagnostics. Zero-dependency JSON-RPC 2.0 over stdio client. Lazy-starts language servers on first call. Configurable via `lsp.servers` in config.json (defaults: `typescript-language-server` for JS/TS, `pyright-langserver` for Python).
 - **Smart context: compaction checkpoint** — `compressIfNeeded` now auto-creates a git checkpoint before compaction. A checkpoint reference is injected after compaction so the model can reconstruct context from git diff + recent messages + task progress. Prevents information loss during long sessions.

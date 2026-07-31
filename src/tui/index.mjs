@@ -416,5 +416,6 @@ export async function startTUI(agent, opts = {}) {
 
 function summarize(obj) {
   const s = JSON.stringify(obj)
+  if (s === "{}") return "" // no-arg tools (advisor/verify/…) — don't render empty braces
   return s.length > 80 ? s.slice(0, 80) + "…" : s
 }

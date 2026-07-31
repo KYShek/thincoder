@@ -1,52 +1,80 @@
 /**
  * skills.mjs — skill system
- * Discovers .md skill files from .thincoder/skills/ directory,
+ * Discovers .md skill files AND subdirectory SKILL.md from .thincoder/skills/ directory,
  * injects into system prompt for agent to load on demand.
  * Use the skill tool to activate a specific skill; content is written into conversation history wrapped in <skill-loaded>.
+ *
+ * Supported formats:
+ *   .thincoder/skills/my-skill.md           (flat, name = "my-skill")
+ *   .thincoder/skills/my-skill/SKILL.md     (subdirectory, name = "my-skill")
  */
 
 import { readFile, readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 
+/** Valid skill name pattern (alphanumeric + hyphens/underscores) */
+const NAME_RE = /^[a-zA-Z0-9_-]+$/
+
+/**
+ * Try to read a skill from a path, return { name, path, description } or null.
+ */
+async function tryReadSkill(dir, name, filePath) {
+  try {
+    const s = await stat(filePath)
+    if (!s.isFile()) return null
+    const head = await readFile(filePath, "utf8")
+    const body = head.slice(0, 400).split("\n")
+    let desc = ""
+    let inFrontmatter = false
+    for (const line of body) {
+      const t = line.trim()
+      if (t === "---") { inFrontmatter = !inFrontmatter; continue }
+      if (inFrontmatter) continue
+      if (t && !t.startsWith("#")) {
+        desc = t.slice(0, 120)
+        break
+      }
+    }
+    return { name, path: filePath, description: desc || "(no description)" }
+  } catch {
+    return null
+  }
+}
+
 /**
  * Scan .thincoder/skills/ directory, return skill list.
- * Each skill: { name, path, description } — name is the filename (without extension).
+ * Supports flat .md files and subdirectories with SKILL.md inside.
+ * Each skill: { name, path, description } — name derived from filename or directory.
  * Returns empty array if directory is missing or empty.
  */
 export async function loadSkills(cwd) {
   const dir = join(cwd, ".thincoder", "skills")
   let entries
   try {
-    entries = await readdir(dir)
+    entries = await readdir(dir, { withFileTypes: true })
   } catch {
     return []
   }
   const skills = []
-  for (const name of entries) {
-    if (!/^[a-zA-Z0-9_-]+\.md$/.test(name)) continue // must match readSkill's name validation; prevents "listed but unreadable"
-    const p = join(dir, name)
-    try {
-      const s = await stat(p)
-      if (!s.isFile()) continue
-      // Extract description (first non-empty, non-heading line in first 400 chars);
-      // skip entire frontmatter block, otherwise frontmatter fields (e.g. "name: x") get mistaken for description
-      const head = await readFile(p, "utf8")
-      const body = head.slice(0, 400).split("\n")
-      let desc = ""
-      let inFrontmatter = false
-      for (const line of body) {
-        const t = line.trim()
-        if (t === "---") { inFrontmatter = !inFrontmatter; continue }
-        if (inFrontmatter) continue
-        if (t && !t.startsWith("#")) {
-          desc = t.slice(0, 120)
-          break
-        }
-      }
-      skills.push({ name: name.replace(/\.md$/, ""), path: p, description: desc || "(no description)" })
-    } catch {
-      // Read failure — skip
-    }
+  const added = new Set()
+
+  // Pass 1: subdirectories (higher priority — standard convention)
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    if (!NAME_RE.test(entry.name)) continue
+    const skill = await tryReadSkill(dir, entry.name, join(dir, entry.name, "SKILL.md"))
+    if (skill) { skills.push(skill); added.add(entry.name) }
+  }
+
+  // Pass 2: flat .md files (backward compat; skipped if subdirectory with same name exists)
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const m = entry.name.match(/^([a-zA-Z0-9_-]+)\.md$/)
+    if (!m) continue
+    const name = m[1]
+    if (added.has(name)) continue
+    const skill = await tryReadSkill(dir, name, join(dir, entry.name))
+    if (skill) { skills.push(skill); added.add(name) }
   }
   return skills
 }
@@ -66,13 +94,21 @@ export function formatSkillListing(skills) {
 
 /**
  * Read the full content of a specific skill file.
+ * Tries subdirectory format (name/SKILL.md) first, then flat format (name.md).
  * Returns text, or null if not found.
  */
 export async function readSkill(cwd, name) {
-  // Safety check: skill name must be alphanumeric + hyphens/underscores only
-  if (!/^[a-zA-Z0-9_-]+$/.test(name)) return null
-  const p = join(cwd, ".thincoder", "skills", `${name}.md`)
+  if (!NAME_RE.test(name)) return null
+
+  // Try subdirectory format: name/SKILL.md
   try {
+    const p = join(cwd, ".thincoder", "skills", name, "SKILL.md")
+    return await readFile(p, "utf8")
+  } catch { /* not found, try flat */ }
+
+  // Fallback to flat format: name.md
+  try {
+    const p = join(cwd, ".thincoder", "skills", `${name}.md`)
     return await readFile(p, "utf8")
   } catch {
     return null

@@ -105,7 +105,11 @@ export async function runAgentTurn(ctx, text) {
       flushStream()
       ensureAssistantLabel()
       state.currentTool = name
-      pushLine(`  [tool] ${name} ${summarize(args)}`, C.tool)
+      // Advisor: tag the round in the tool title — the model's own "第N轮" narration
+      // is unreliable (it glues onto the previous line), so the round belongs here.
+      const roundTag = name === "advisor" ? ` (round ${(agent._advisorRound || 0) + 1})` : ""
+      const argSummary = summarize(args)
+      pushLine(`  [tool] ${name}${roundTag}${argSummary ? ` ${argSummary}` : ""}`, C.tool)
     },
     onToolResult: (name, result) => {
       state.currentTool = null
@@ -182,6 +186,12 @@ export async function runAgentTurn(ctx, text) {
         ? { kind: "text", text: chunk }
         : { kind: chunk?.kind ?? "text", text: String(chunk?.text ?? "") }
       if (!part.text) return
+      // Separate phase transitions with a newline — think → answer → tool progress
+      // would otherwise glue onto each other mid-line.
+      const last = panel.parts[panel.parts.length - 1]
+      if (last && last.kind !== part.kind && !last.text.endsWith("\n") && !part.text.startsWith("\n")) {
+        part.text = "\n" + part.text
+      }
       panel.parts.push(part)
       panel.len += part.text.length
       // Cap at 4000 chars, trimming oldest parts first

@@ -52,6 +52,26 @@ export async function assembleAgent() {
 
   // MCP servers: connect in parallel (a dead server won't block startup), collect failures as warnings (stderr invisible in TUI, passed via agent object)
   const mcpServers = config.mcp?.servers ?? []
+  // Read project-level .mcp.json (standard MCP client convention) — merge into mcpServers
+  // config.json servers take priority over .mcp.json entries with the same name
+  try {
+    const { existsSync, readFileSync } = await import("node:fs")
+    const mcpJsonPath = join(cwd, ".mcp.json")
+    if (existsSync(mcpJsonPath)) {
+      const mcpJson = JSON.parse(readFileSync(mcpJsonPath, "utf8"))
+      if (mcpJson.mcpServers && typeof mcpJson.mcpServers === "object") {
+        const configNames = new Set(mcpServers.map((s) => s.name))
+        for (const [name, server] of Object.entries(mcpJson.mcpServers)) {
+          if (configNames.has(name)) continue // config.json takes priority
+          if (!server || typeof server !== "object") continue
+          mcpServers.push({ name, ...server })
+        }
+      }
+    }
+  } catch (e) {
+    // .mcp.json parse failure — non-fatal, log and continue
+    console.error(`[mcp] Failed to read .mcp.json: ${e.message}`)
+  }
   let mcpTools = []
   const mcpWarnings = []
   if (mcpServers.length) {

@@ -77,7 +77,7 @@ export async function connectMcpServer(config) {
   }
 
   if (config.command) {
-    const transport = stdioTransport(config.command, config.args ?? [])
+    const transport = stdioTransport(config.command, config.args ?? [], config.env)
     try {
       const mcpTools = await doInitialize(transport, config.name ?? config.command)
       return buildTools(mcpTools, transport, config)

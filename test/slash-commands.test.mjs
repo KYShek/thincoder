@@ -341,13 +341,12 @@ test("handleSlash: /new 选 yes 确认后清空会话", async () => {
   }
 })
 
-test("handleSlash: /advisor 选 toggle 后开启并注入 reminder", async () => {
+test("handleSlash: /advisor 选 toggle 后开启", async () => {
   const ctx = mockCtx()
   ctx.pickerResponse = (entries) => entries.find((e) => e.action === "toggle")
   const { handleSlash } = createSlashCommands(ctx)
   await handleSlash("/advisor")
   assert.equal(ctx.agent.config.advisor.enabled, true)
-  assert.ok(ctx.agent._pendingReminders.some((r) => r.includes("Advisor review is now ON")))
 })
 
 test("handleSlash: autoThink 开启时 /think on|effort 直参被拒绝且不写入手动值", async () => {

@@ -15,6 +15,7 @@ import {
   extractAgentResponseTable,
   buildAdvisorSystemPrompt,
   buildAdvisorUserMessage,
+  extractConversationBackground,
   buildAdvisorFollowUp,
   prepareAdvisorMessages,
 } from "../src/advisor.mjs"
@@ -324,15 +325,21 @@ test("buildAdvisorUserMessage: _advisorRound===0 skips convergence data", () => 
   assert.ok(msg.includes("## Review Scope"))
 })
 
-test("buildAdvisorUserMessage: includes task summary when available", () => {
+test("buildAdvisorUserMessage: includes recent conversation background", () => {
   const agent = {
     _touchedFiles: [], cwd: tmpdir(),
-    history: [{ role: "user", content: "Fix the null pointer bug" }],
+    history: [
+      { role: "user", content: "The app crashes on empty input" },
+      { role: "assistant", content: "Let me look at the parser first" },
+      { role: "user", content: "Fix the null pointer bug" },
+    ],
     _advisorRound: 0,
   }
   const msg = buildAdvisorUserMessage(agent)
-  assert.ok(msg.includes("## Task"))
-  assert.ok(msg.includes("Fix the null pointer bug"))
+  assert.ok(msg.includes("## Conversation Background"))
+  assert.ok(msg.includes("Fix the null pointer bug"), "latest user message included")
+  assert.ok(msg.includes("crashes on empty input"), "earlier turn included for context")
+  assert.ok(msg.includes("Let me look at the parser"), "assistant reply included")
 })
 
 // ────────────────────────────────────────
@@ -470,4 +477,27 @@ test("buildAdvisorFollowUp: skips re-pushing an unchanged diff snapshot", () => 
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+test("extractConversationBackground: skips reminders/tool messages and caps turns", () => {
+  const history = [
+    { role: "user", content: "turn one" },
+    { role: "assistant", content: "reply one" },
+    { role: "user", content: "[System reminder: guard pushback]" },
+    { role: "user", content: "turn two" },
+    { role: "tool", content: "tool result noise" },
+    { role: "assistant", content: "reply two" },
+    { role: "user", content: "turn three" },
+    { role: "user", content: "turn four" },
+  ]
+  const bg = extractConversationBackground(history, 3)
+  assert.ok(bg.includes("turn four") && bg.includes("turn three") && bg.includes("turn two"))
+  assert.ok(!bg.includes("turn one"), "only the last 3 user turns kept")
+  assert.ok(!bg.includes("System reminder"), "reminders filtered")
+  assert.ok(!bg.includes("tool result noise"), "tool messages filtered")
+})
+
+test("extractConversationBackground: returns null on empty/noise-only history", () => {
+  assert.equal(extractConversationBackground([]), null)
+  assert.equal(extractConversationBackground([{ role: "user", content: "[System reminder: x]" }]), null)
 })

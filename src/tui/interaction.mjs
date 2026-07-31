@@ -37,7 +37,8 @@ export function createInteraction(ctx) {
   function askPermission(name, args) {
     // auto mode: fully authorized, no more prompts
     if (agent.autoApprove) {
-      pushLine(`  [auto] ${name} ${summarize(args)}`, C.warn)
+      const argSummary = summarize(args)
+      pushLine(`  [auto] ${name}${argSummary ? ` ${argSummary}` : ""}`, C.warn)
       return Promise.resolve(true)
     }
     // store preview content in permissionPreview, rendered above input box next to "Allow?" prompt

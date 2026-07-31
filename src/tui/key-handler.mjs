@@ -24,8 +24,6 @@ export function createKeyHandler(ctx) {
         state.status = "Processing..."
         if (answer === "a" && !isContinue) {
           agent.autoApprove = true
-          agent._pendingReminders = agent._pendingReminders ?? []
-          agent._pendingReminders.push("[System reminder: AUTO mode is now ON. All tool calls are automatically approved. Use /auto to disable.]")
           pushLine(`  [auto] AUTO ON: tool calls no longer prompt for approval (/auto to disable)`, C.warn)
         }
         const approved = answer === "y" || (answer === "a" && !isContinue)
