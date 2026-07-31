@@ -176,6 +176,7 @@ export async function runAgentTurn(ctx, text) {
       }
       panel.text = (panel.text ?? "") + chunk
       if (panel.text.length > 4000) panel.text = panel.text.slice(-4000)
+      panel.seq = (panel.seq ?? 0) + 1 // render-loop cache key: survives the 4000-char cap
       scheduleRender()
     },
     onPermissionRequest: (name, args) => askPermission(name, args),

@@ -153,7 +153,9 @@ export function createRenderLoop(state, agent, ctx, pushLine) {
       push(buildPanel("todo", panels.todo, renderTodo(visibleTasks, dims.cols)))
       push(buildPanel("subagent", panels.subagent, renderSubagent(allSubs, W)))
       push(buildPanel("output", panels.output, renderOutput(state, W, panels.output?.h ?? 0),
-        Object.values(state.outputPanels).filter(p => !p.done).map(p => p.text?.length ?? 0).join(",")))
+        // Key by append counter, not text length: panel text is capped at 4000 chars (agent-turn),
+        // so length stops changing once the cap is hit and the panel would freeze mid-stream.
+        Object.values(state.outputPanels).filter(p => !p.done).map(p => p.seq ?? 0).join(",")))
       push(buildPanel("permission", panels.permission, renderPermission(permPreviewLines)))
       if (panels.queue) push(buildPanel("queue", panels.queue, [renderQueue(state, W)]))
       else panelCache.delete("queue")
