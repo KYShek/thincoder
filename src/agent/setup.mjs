@@ -176,9 +176,15 @@ export async function prepareRun(agent, input, callbacks, {
     if (engRules) {
       base = `${corePrompt}\n\n${engRules}`
     } else {
-      // METHODOLOGY.md missing — inject a warning so the model and user know
-      const warning = "[System reminder: ENGINEERING MODE is active but METHODOLOGY.md was not found. Engineering constraints are NOT in effect. Create METHODOLOGY.md or disable engineering mode (/eng).]"
-      base = `${corePrompt}\n\n${warning}\n\n${disciplineRules}`
+      // METHODOLOGY.md missing — fall back to standard discipline, push warning as user message
+      // (user message avoids breaking system prompt cache)
+      base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt
+      if (depth === 0) {
+        agent.history.push({
+          role: "user",
+          content: "[System reminder: ENGINEERING MODE is active but METHODOLOGY.md was not found. Engineering constraints are NOT in effect. Create METHODOLOGY.md or disable engineering mode (/eng).]",
+        })
+      }
     }
   } else {
     base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt

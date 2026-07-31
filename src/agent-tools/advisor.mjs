@@ -38,7 +38,10 @@ export const advisorTool = {
       agent._advisorSession = null
     }
 
-    const result = await runAdvisorReview(agent, reviewType, ctx.callbacks)
+    const result = await runAdvisorReview(agent, reviewType, {
+      onOutput: ctx.onOutput,
+      signal: ctx.signal,
+    })
     // Design reviews don't converge — discard session and round state
     if (reviewType === "design") {
       agent._advisorSession = null
