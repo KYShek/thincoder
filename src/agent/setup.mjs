@@ -134,8 +134,11 @@ export async function prepareRun(agent, input, callbacks, {
   }
 
   // task/plan tools are injected with the main loop; subagent/skill/goal/verify only at top level
+  // eng-coder subagents get advisor for mandatory design review before coding
   const { planTool, subagentTool, taskTool, skillTool, goalTool, verifyTool, recentChangesTool, timerTool, advisorTool } = await import("../agent-tools.mjs")
-  const tools = [...agent.tools, taskTool, planTool, timerTool, ...(depth === 0 ? [subagentTool, skillTool, goalTool, verifyTool, recentChangesTool, advisorTool] : [])]
+  const depthOnly = depth === 0 ? [subagentTool, skillTool, goalTool, verifyTool, recentChangesTool, advisorTool]
+    : agent._role === "eng-coder" ? [advisorTool] : []
+  const tools = [...agent.tools, taskTool, planTool, timerTool, ...depthOnly]
   const toolSchemas = tools.map(toOpenAISchema)
   const toolByName = new Map(tools.map((t) => [t.name, t]))
   agent._onTaskUpdate = callbacks.onTaskUpdate

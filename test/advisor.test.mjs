@@ -223,6 +223,35 @@ test("buildAdvisorSystemPrompt: returns same static content regardless of issue 
   assert.equal(buildAdvisorSystemPrompt(agent1), buildAdvisorSystemPrompt(agent2))
 })
 
+test("buildAdvisorSystemPrompt: reviewType=design returns design prompt", () => {
+  const agent = { history: [], _advisorRound: 0, cwd: tmpdir() }
+  const result = buildAdvisorSystemPrompt(agent, null, "design")
+  assert.ok(result.includes("design reviewer"), "应包含设计审查内容")
+  assert.ok(!result.includes("code review"), "不应包含代码审查内容")
+})
+
+test("buildAdvisorUserMessage: reviewType=design includes design review header", () => {
+  const agent = {
+    history: [{ role: "user", content: "design a feature" }],
+    _advisorRound: 0, cwd: tmpdir(), config: {},
+  }
+  const result = buildAdvisorUserMessage(agent, null, "design")
+  assert.ok(result.includes("## Design Review"), "应包含设计审查标题")
+  assert.ok(!result.includes("## Code Review"), "不应包含代码审查标题")
+  assert.ok(!result.includes("git status"), "不应包含 git 指令")
+})
+
+test("prepareAdvisorMessages: reviewType=design returns fresh session", () => {
+  const agent = {
+    history: [], _advisorRound: 0, cwd: tmpdir(), config: {},
+    _advisorSession: [{ role: "system", content: "old" }],
+  }
+  const msgs = prepareAdvisorMessages(agent, "design")
+  assert.equal(msgs.length, 2, "设计审查总是新会话")
+  assert.equal(msgs[0].role, "system")
+  assert.equal(msgs[1].role, "user")
+})
+
 test("buildAdvisorSystemPrompt: _advisorRound===0 forces full review despite stale history", () => {
   const issueTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | old.js | 🔴 | old bug | fix |"
   const agent = {
@@ -516,7 +545,7 @@ test("runAdvisorReview: documentation-only changes skip the review entirely", as
       _advisorRound: 0,
       cwd: tmp,
     }
-    const result = await runAdvisorReview(agent, () => {}, undefined)
+    const result = await runAdvisorReview(agent, "code", {})
     assert.ok(/documentation-only/.test(result), `应跳过审查: ${result}`)
   } finally {
     rmSync(tmp, { recursive: true, force: true })

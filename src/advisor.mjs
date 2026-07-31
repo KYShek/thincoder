@@ -87,6 +87,8 @@ const ADVISOR_TOOL_BY_NAME = new Map(ADVISOR_TOOLS.map((t) => [t.name, t]))
 const ADVISOR_ROUND1 = readFileSync(join(__dirname, "prompts", "advisor-round1.md"), "utf8")
 const ADVISOR_ROUND2 = readFileSync(join(__dirname, "prompts", "advisor-round2.md"), "utf8")
 const ADVISOR_ROUND3 = readFileSync(join(__dirname, "prompts", "advisor-round3.md"), "utf8")
+let ADVISOR_DESIGN = ""
+try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.md"), "utf8") } catch { /* design review unavailable */ }
 
 // ────────────────────────────────────────
 // History extraction — issue/response tables
@@ -278,7 +280,9 @@ export function extractConversationBackground(history, maxTurns = 3) {
 // System prompt routing
 // ────────────────────────────────────────
 
-export function buildAdvisorSystemPrompt(agent, _prior) {
+export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
+  // Design review: dedicated prompt, no convergence rounds
+  if (reviewType === "design") return ADVISOR_DESIGN || `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
   const prior = _prior ?? extractPriorIssueTable(agent.history)
   if (!prior || (agent._advisorRound || 0) === 0) return ADVISOR_ROUND1
   const round = (agent._advisorRound || 0) + 1
@@ -290,7 +294,14 @@ export function buildAdvisorSystemPrompt(agent, _prior) {
 // User message building
 // ────────────────────────────────────────
 
-export function buildAdvisorUserMessage(agent, _prior) {
+/**
+ * Build the user message for an advisor review session.
+ * @param {Object} agent — the parent agent
+ * @param {Object|null} [_prior] — prior issue table
+ * @param {string} [reviewType] — "design" or "code" (default)
+ * @returns {string} the user message
+ */
+export function buildAdvisorUserMessage(agent, _prior, reviewType) {
   const prior = _prior ?? extractPriorIssueTable(agent.history)
 
   // Repos to review
@@ -301,6 +312,42 @@ export function buildAdvisorUserMessage(agent, _prior) {
 
   const parts = []
 
+  // Design review: simplified message — focus on the design doc, not code
+  if (reviewType === "design") {
+    parts.push("## Design Review")
+    parts.push("The following changes are a design document. Review it against the project's methodology.")
+    parts.push("")
+
+    // Pre-collected changes — the design doc diff
+    const snapshots = collectRepoSnapshots(repos, agent.cwd)
+    agent._advisorLastSnapshot = snapshots.join("\n")
+    if (snapshots.length > 0) {
+      parts.push("## Design Document (git diff)")
+      parts.push(...snapshots)
+      parts.push("")
+    }
+
+    // Engineering mode: inject project methodology
+    if (agent.config?.agent?.engineering) {
+      try {
+        const mpath = resolve(agent.cwd, "METHODOLOGY.md")
+        const methodology = readFileSync(mpath, "utf8")
+        parts.push("## Project Methodology")
+        parts.push("Evaluate the design against this methodology:")
+        parts.push(methodology)
+        parts.push("")
+      } catch { /* file doesn't exist — skip */ }
+    }
+
+    parts.push("## Instructions")
+    parts.push("1. Read the design document fully. Read METHODOLOGY.md to understand the project's standards.")
+    parts.push("2. Review against: completeness (all requirements covered?), feasibility (can this be built?), clarity (specific enough?), acceptance criteria (verifiable?), scope (appropriate?).")
+    parts.push("3. Do NOT run git diff or look for code changes — there are none at this stage.")
+    parts.push("4. Produce your review table with the format: | # | Category | Severity | Issue | Suggestion |")
+    return parts.join("\n")
+  }
+
+  // Code review — existing logic below (unchanged)
   // Convergence data (round 2+)
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
@@ -433,17 +480,26 @@ export function buildAdvisorFollowUp(agent, _prior) {
  * After an app restart (session lost), falls back to a fresh session whose
  * system prompt is picked from history tables (round 2/3 style).
  */
-export function prepareAdvisorMessages(agent) {
+export function prepareAdvisorMessages(agent, reviewType) {
   const prior = extractPriorIssueTable(agent.history)
+  // Design review: always fresh session, no convergence
+  if (reviewType === "design") {
+    return [
+      { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
+      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType) },
+    ]
+  }
   let session = agent._advisorSession
   if (session) {
     session.push({ role: "user", content: buildAdvisorFollowUp(agent, prior) })
     return session
   }
   session = [
-    { role: "system", content: buildAdvisorSystemPrompt(agent, prior) },
-    { role: "user", content: buildAdvisorUserMessage(agent, prior) },
+    { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
+    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType) },
   ]
+  // Fresh session with no prior issue table → reset convergence round
+  if (!prior) agent._advisorRound = 0
   return session
 }
 
@@ -579,7 +635,9 @@ function isDocOnlyChange(repos, cwd) {
   return sawChanges
 }
 
-export async function runAdvisorReview(agent, onOutput, signal) {
+export async function runAdvisorReview(agent, reviewType, callbacks) {
+  const onOutput = callbacks?.onOutput
+  const signal = callbacks?.signal
   const cfg = agent.config?.advisor
   // Engineering mode overrides advisor toggle — reviews are mandatory regardless
   if (!cfg?.enabled && !agent.config?.agent?.engineering) return null
@@ -590,9 +648,8 @@ export async function runAdvisorReview(agent, onOutput, signal) {
 
   const repos = findReviewRepos(agent)
 
-  // Fast path: documentation-only changes need no code review — unless the project
-  // customized review criteria (.thincoder/advisor.md may genuinely care about docs).
-  if (!existsSync(join(agent.cwd, ADVISOR_MD_PATH)) && isDocOnlyChange(repos, agent.cwd)) {
+  // Fast path: documentation-only changes skip code review ONLY — design review runs on docs
+  if (reviewType !== "design" && !existsSync(join(agent.cwd, ADVISOR_MD_PATH)) && isDocOnlyChange(repos, agent.cwd)) {
     return "No issues found — documentation-only changes, code review skipped."
   }
 
@@ -601,7 +658,7 @@ export async function runAdvisorReview(agent, onOutput, signal) {
   // Set the advisor's cwd to the first repo (for tool context)
   const advisorCwd = repos.length > 0 ? repos[0] : agent.cwd
 
-  const messages = prepareAdvisorMessages(agent)
+  const messages = prepareAdvisorMessages(agent, reviewType)
 
   try {
     const result = await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)
