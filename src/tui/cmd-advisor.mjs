@@ -61,8 +61,8 @@ async function openAdvisorModelPicker(ctx, persist) {
     entries.push({ type: "item", text: `${mark}${p.model}`, action: "switch", provider: p.name, model: p.model })
   }
 
-  // Fetch models first, then show picker — avoids async state management complexity
-  await fetchAdvisorModels(entries, providers, agent).catch(() => {})
+  // Fetch models first, then show picker
+  await fetchAdvisorModels(entries, providers, agent)
 
   const e = await showPicker("Advisor Model", entries)
   if (!e) return
@@ -95,9 +95,9 @@ async function fetchAdvisorModels(entries, providers, agent) {
         .map((m) => ({ type: "item", text: `   ${m}`, action: "switch", provider: p.name, model: m })))
       const header = entries[at]
       header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}${agent.activeProvider === p.name ? " ← active" : ""}`
-    } catch {
+  } catch (err) {
       const header = entries.find((e) => e.type === "header" && e.text === p.name)
-      if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}${agent.activeProvider === p.name ? " ← active" : ""}  (fetch failed)`
+      if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}${agent.activeProvider === p.name ? " ← active" : ""}  (fetch failed: ${err.message.slice(0, 40)})`
     }
   }))
 }
