@@ -14,6 +14,7 @@ import {
   renderInputBox, renderStatus,
 } from "../src/tui/render-frame.mjs"
 import { createKeyHandler } from "../src/tui/key-handler.mjs"
+import { C } from "../src/tui/ansi.mjs"
 
 // ====================================================================
 // render.mjs — stringWidth, wrapText, sanitizeDisplay, formatTables
@@ -537,17 +538,39 @@ test("panel functions: renderSubagent shows running and done states", () => {
 test("panel functions: renderOutput formats active panels", () => {
   const state = tuiState({
     outputPanels: {
-      test: { text: "running 1/10\nrunning 2/10", done: false },
+      test: { parts: [{ kind: "text", text: "running 1/10\nrunning 2/10" }], len: 25, done: false },
     },
   })
   const lines = renderOutput(state, 80, 4)
   assert.ok(lines.some((l) => l.includes("running")))
 })
 
+test("panel functions: renderOutput colors lines by part kind", () => {
+  const state = tuiState({
+    outputPanels: {
+      advisor: {
+        parts: [
+          { kind: "think", text: "let me check the diff\n" },
+          { kind: "tool", text: "→ git diff\n" },
+          { kind: "text", text: "final answer line" },
+        ],
+        len: 60, done: false,
+      },
+    },
+  })
+  const lines = renderOutput(state, 80, 6)
+  const think = lines.find((l) => l.includes("let me check"))
+  const tool = lines.find((l) => l.includes("→ git diff"))
+  const text = lines.find((l) => l.includes("final answer"))
+  assert.ok(think?.includes(C.reason), "think lines use reason color")
+  assert.ok(tool?.includes(C.tool), "tool lines use tool color")
+  assert.ok(text?.includes(C.dim), "text lines use dim color")
+})
+
 test("panel functions: renderOutput hides done panels", () => {
   const state = tuiState({
     outputPanels: {
-      test: { text: "done all tests pass", done: true },
+      test: { parts: [{ kind: "text", text: "done all tests pass" }], len: 19, done: true },
     },
   })
   const lines = renderOutput(state, 80, 4)
@@ -558,7 +581,10 @@ test("panel functions: renderFrame (legacy) produces valid ANSI", () => {
   const state = tuiState({ lines: [{ text: "hello", color: "" }] })
   const agent = { provider: { model: "test-model" }, cwd: "/test", planMode: false, autoApprove: false, config: {} }
   const result = renderFrame(state, agent, { cols: 80, rows: 24, slashCommands: [] })
-  assert.ok(result.frame.startsWith("\x1b[H")) // starts with home
+  // Frame must start directly with the header row — a leading home/newline here
+  // used to shift the whole frame one row down and scroll the terminal.
+  assert.ok(!result.frame.startsWith("\x1b[H"))
+  assert.ok(result.frame.startsWith("\x1b[")) // header color codes
   assert.ok(result.frame.includes("hello"))
   assert.ok(result.frame.includes("ThinCoder"))
 })

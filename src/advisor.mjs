@@ -285,17 +285,37 @@ export function buildAdvisorUserMessage(agent, _prior) {
 // ────────────────────────────────────────
 
 /**
+ * Compact one-line summary of tool args for panel progress lines.
+ * Picks the most identifying field; falls back to truncated JSON.
+ */
+function summarizeToolArgs(args) {
+  // e.g. "git diff HEAD", "read src/x.mjs" — action first when present
+  const parts = [args.action, args.path ?? args.pattern ?? args.command].filter((v) => v != null)
+  let s = parts.length > 0 ? parts.map(String).join(" ") : JSON.stringify(args)
+  s = s.replace(/\s+/g, " ").trim()
+  return s.length > 80 ? s.slice(0, 79) + "…" : s
+}
+
+/**
  * Run the advisor's tool loop: chat → execute tools → repeat.
  * Stops when the model produces text without tool calls.
+ *
+ * Progress lines (→ tool args) are emitted via onOutput between model bursts so
+ * the panel keeps moving while the advisor explores — otherwise the panel sits
+ * frozen through every tool-call phase and the review appears to have stalled.
  */
 async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, cwd) {
+  // Kind-tagged wrappers: the TUI panel colors reasoning / answer / tool progress differently.
+  const emit = (kind) => (onOutput ? (text) => onOutput({ kind, text }) : undefined)
+  const onThink = emit("think")
+  const onText = emit("text")
   while (true) {
     const response = await chat(provider, {
       messages,
       tools: ADVISOR_TOOL_SCHEMAS,
       signal: (signal && !signal.aborted) ? signal : new AbortController().signal,
-      onToken: onOutput,
-      onReasoning: onOutput,
+      onToken: onText,
+      onReasoning: onThink,
     })
 
     // No tool calls — this is the final review text
@@ -317,12 +337,14 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     // Execute each tool call
     for (const tc of response.toolCalls) {
       const tool = ADVISOR_TOOL_BY_NAME.get(tc.name)
+      let args = {}
+      try { args = JSON.parse(tc.arguments || "{}") } catch { /* summarized as raw JSON below */ }
+      onOutput?.({ kind: "tool", text: `\n→ ${tc.name} ${summarizeToolArgs(args)}\n` })
       let result
       if (!tool) {
         result = `Error: unknown tool "${tc.name}". Available: ${[...ADVISOR_TOOL_BY_NAME.keys()].join(", ")}`
       } else {
         try {
-          const args = JSON.parse(tc.arguments || "{}")
           result = await tool.execute(args, {
             cwd,
             agent,

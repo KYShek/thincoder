@@ -83,24 +83,47 @@ export function renderSubagent(allSubs, W) {
   return out
 }
 
-/** Tool output panels (streaming output like tail -f). Returns empty when no active output. */
+/** Per-kind panel colors: reasoning faint, tool progress cyan, main output gray. */
+const PANEL_KIND_COLORS = { think: C.reason, tool: C.tool, text: C.dim }
+
+/**
+ * Flatten panel parts into display lines, tracking each line's kind.
+ * A part not starting mid-line continues the previous line (kind of the line's first fragment wins).
+ */
+function panelLines(p) {
+  const lines = []
+  for (const part of p.parts ?? []) {
+    part.text.split("\n").forEach((seg, j) => {
+      if (j === 0 && lines.length > 0) {
+        const last = lines[lines.length - 1]
+        // Empty trailing line = previous part ended exactly at a line break — the new
+        // part owns this line's kind. Otherwise it's a genuine mid-line continuation.
+        if (last.text === "") last.kind = part.kind
+        last.text += seg
+      } else {
+        lines.push({ kind: part.kind, text: seg })
+      }
+    })
+  }
+  return lines.filter((l) => l.text.trim())
+}
+
+/** Tool output panels (streaming output like tail -f). Returns empty when no visible output. */
 export function renderOutput(state, W, panelH) {
-  const active = Object.values(state.outputPanels).filter((p) => !p.done)
+  // Same visibility predicate as computeLayout: done panels linger until closeAt
+  const active = Object.values(state.outputPanels).filter((p) => !p.done || (p.closeAt ?? 0) > Date.now())
   if (active.length === 0) return []
   const out = []
   const linesPerPanel = Math.max(1, Math.floor(panelH / active.length))
-  for (const p of active) {
-    const textLines = (p.text ?? "").split("\n").filter((l) => l.trim())
-    const tail = textLines.slice(-linesPerPanel)
-    for (const line of tail) {
-      out.push(`${C.dim}  │ ${sliceByWidth(sanitizeDisplay(line), W - 5)}${ansi.reset}`)
+  const perPanel = active.map((p) => panelLines(p).slice(-linesPerPanel))
+  for (const lines of perPanel) {
+    for (const l of lines) {
+      const color = PANEL_KIND_COLORS[l.kind] ?? C.dim
+      out.push(`${color}  │ ${sliceByWidth(sanitizeDisplay(l.text), W - 5)}${ansi.reset}`)
     }
   }
   // Fill remaining rows to match panelH exactly
-  const used = active.reduce((s, p) => {
-    const tl = (p.text ?? "").split("\n").filter((l) => l.trim()).slice(-linesPerPanel)
-    return s + tl.length
-  }, 0)
+  const used = perPanel.reduce((s, lines) => s + lines.length, 0)
   for (let i = used; i < panelH; i++) out.push("")
   return out
 }
@@ -230,80 +253,59 @@ export function renderStatus(state, agent, cols, slashCommands) {
 }
 
 // ====================================================================
-// Legacy: full-frame renderer (wraps individual panel functions)
+// Frame composition
 // ====================================================================
 
 /**
- * Render one frame, returns { frame, cursorRow, cursorCol }.
- * Pure function: does not modify state/agent.
- * @deprecated Prefer individual panel functions for incremental rendering.
+ * Compose the whole screen as a rows array, placing each panel at its
+ * layout-computed y coordinate. Single source of truth for what the screen
+ * should look like — the render loop diffs these rows against what it last
+ * wrote and repaints only changed rows (absolute positioning).
+ *
+ * @returns {{ rows: string[], cursorRow: number, cursorCol: number, layout: object }}
  */
-export function renderFrame(state, agent, opts) {
+export function renderRows(state, agent, opts) {
   const cols = opts.cols || 80
   const rows = opts.rows || 24
   const slashCommands = opts.slashCommands ?? []
-  const platform = opts.platform ?? process.platform
 
   const layout = computeLayout(state, { cols, rows })
   const { W, panels, inputLayout, inputOffset, boxLines, visibleTasks, allSubs, permPreviewLines, overlay } = layout
 
-  const out = [ansi.home]
-  let cursorRow = 0, cursorCol = 0
-
-  // header
-  out.push(`${renderHeader(agent, cols)}\x1b[K`)
-
-  // conversation
-  for (const l of renderConversation(state, cols, panels.conversation.h, state.scroll)) {
-    out.push(`${l}\x1b[K`)
-  }
-
-  // picker
-  if (panels.picker) {
-    for (const l of renderPicker(state, cols, panels.picker, overlay)) {
-      out.push(`${l}\x1b[K`)
+  const screen = new Array(rows).fill("")
+  const put = (y, lines) => {
+    for (let i = 0; i < lines.length && y + i < rows; i++) {
+      if (y + i >= 0) screen[y + i] = `${lines[i]}\x1b[K`
     }
   }
 
-  // todo
-  for (const l of renderTodo(visibleTasks, cols)) out.push(`${l}\x1b[K`)
+  put(panels.header.y, [renderHeader(agent, cols)])
+  put(panels.conversation.y, renderConversation(state, cols, panels.conversation.h, state.scroll))
+  if (panels.subagent) put(panels.subagent.y, renderSubagent(allSubs, W))
+  if (panels.output) put(panels.output.y, renderOutput(state, W, panels.output.h))
+  if (panels.todo) put(panels.todo.y, renderTodo(visibleTasks, cols))
+  if (panels.picker) put(panels.picker.y, renderPicker(state, cols, panels.picker, overlay))
+  if (panels.permission) put(panels.permission.y, renderPermission(permPreviewLines))
+  if (panels.queue) put(panels.queue.y, [renderQueue(state, W)])
+  put(panels.inputBox.y, renderInputBox(state, W, boxLines, cols, inputLayout, inputOffset))
+  put(panels.status.y, [renderStatus(state, agent, cols, slashCommands)])
 
-  // subagent
-  if (panels.subagent) {
-    for (const l of renderSubagent(allSubs, W)) out.push(`${l}\x1b[K`)
-  }
-
-  // output panels
-  if (panels.output) {
-    for (const l of renderOutput(state, W, panels.output.h)) out.push(`${l}\x1b[K`)
-  }
-
-  // permission preview
-  if (panels.permission) {
-    for (const l of renderPermission(permPreviewLines)) out.push(`${l}\x1b[K`)
-  }
-
-  // queue preview
-  if (panels.queue) {
-    const qLine = renderQueue(state, W)
-    if (qLine) out.push(`${qLine}\x1b[K`)
-  }
-
-  // input box
-  for (const l of renderInputBox(state, W, boxLines, cols, inputLayout, inputOffset)) out.push(`${l}\x1b[K`)
-
-  // status bar
-  out.push(`${renderStatus(state, agent, cols, slashCommands)}\x1b[K`)
-
-  const frame = out.join("\r\n")
-
-  // cursor position
+  let cursorRow = 0, cursorCol = 0
   if (!state.permission && !state.question && !state.picker && state.wizard?.step !== "provider") {
     cursorRow = panels.inputBox.y + 1 + (inputLayout.cursorLine - inputOffset) + 1
     cursorCol = 3 + inputLayout.cursorCol
   }
 
-  return { frame, cursorRow, cursorCol }
+  return { rows: screen, cursorRow, cursorCol, layout }
+}
+
+/**
+ * Render one frame, returns { frame, cursorRow, cursorCol }.
+ * @deprecated Use renderRows + row-diff (render-loop). Kept for tests/legacy callers.
+ */
+export function renderFrame(state, agent, opts) {
+  const { rows, cursorRow, cursorCol } = renderRows(state, agent, opts)
+  return { frame: rows.join("\r\n"), cursorRow, cursorCol }
 }
 
 // ====================================================================

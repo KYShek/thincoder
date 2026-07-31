@@ -80,7 +80,7 @@ export async function startTUI(agent, opts = {}) {
     completion: null, // Tab completion state { candidates, index }
     toolStreams: {}, // per-tool live output (isolated by tool name, parallel tools don't interleave)
     subTasks: {}, // sub-agent panel: { roleName: { role, text, done } }, one line per role, marked done briefly after completion
-    outputPanels: {}, // generic tool output panel: { toolName: { text, done } } — streamed live during execution, collapsed to summary on completion
+    outputPanels: {}, // tool output panels: { toolName: { parts: [{kind, text}], len, done, closeAt } } — streamed live during execution, kept visible for a grace period after completion
     currentTool: null, // currently executing tool name (shown in status bar)
     processingStarted: 0, // current turn start time (status bar timer)
     status: "Ready",

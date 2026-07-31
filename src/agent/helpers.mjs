@@ -3,6 +3,7 @@
  */
 import { configDir } from "../config.mjs"
 import { readFileSync, readdirSync, existsSync } from "node:fs"
+import { homedir } from "node:os"
 import { writeFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { execSync } from "node:child_process"
@@ -178,14 +179,22 @@ export function readonlyToolNames(tools) {
 
 const MAX_INSTRUCTION_CHARS = 32_000
 
-/** Load AGENTS.md / project_rules.md from the project root, return as project instructions */
+/** Load AGENTS.md / project_rules.md from user home and project root.
+ *  User-level (~/.thincoder/AGENTS.md) loaded first (lower priority).
+ *  Project-level overrides take precedence. */
 export async function loadProjectInstructions(cwd) {
   const parts = []
+  // 1. User-level: global preferences across all projects
+  try {
+    const userPath = join(homedir(), ".thincoder", "AGENTS.md")
+    const content = readFileSync(userPath, "utf8").trim()
+    if (content) parts.push(`<!-- From: ${userPath} -->\n${content}`)
+  } catch { /* file does not exist */ }
+  // 2. Project-level: project-specific conventions
   for (const name of ["AGENTS.md", "project_rules.md"]) {
     try {
       const content = readFileSync(join(cwd, name), "utf8").trim()
       if (!content) continue
-      const key = name.toLowerCase()
       parts.push(`<!-- From: ${join(cwd, name)} -->\n${content}`)
     } catch { /* file does not exist */ }
   }

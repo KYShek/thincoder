@@ -69,8 +69,9 @@ export function computeLayout(state, { cols, rows }) {
     ? Math.min(allSubs.length, MAX_SUB_LINES) + (allSubs.length > MAX_SUB_LINES ? 1 : 0)
     : 0
 
-  // Tool output panels: max 8 lines per panel, capped at reasonable total
-  const panels = Object.values(state.outputPanels).filter((p) => !p.done || p._pendingDone)
+  // Tool output panels: max 8 lines per panel, capped at reasonable total.
+  // Done panels stay visible until their closeAt grace elapses (render loop prunes them).
+  const panels = Object.values(state.outputPanels).filter((p) => !p.done || (p.closeAt ?? 0) > Date.now())
   const outputPanelsH = panels.length > 0 ? Math.min(panels.length * 8, rows - 10) : 0
 
   // Permission preview (height depends on wrapped content)

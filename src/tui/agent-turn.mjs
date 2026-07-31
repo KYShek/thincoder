@@ -137,8 +137,12 @@ export async function runAgentTurn(ctx, text) {
       const panel = state.outputPanels[name]
       if (panel) {
         delete state.toolStreams[name]
-        panel._pendingDone = true  // defer done until next render cycle flushes it
-        scheduleRender()  // trigger one final render while panel is still alive
+        // Keep the panel visible for a 3s grace period (layout filters by closeAt);
+        // the render loop prunes it once expired. No defer hacks needed — row-diff
+        // repaints whatever should be on screen.
+        panel.done = true
+        panel.closeAt = Date.now() + 3000
+        scheduleRender()
         if (name === "advisor") {
           const text = String(result ?? "")
           const lines = text.split("\n")
@@ -151,10 +155,8 @@ export async function runAgentTurn(ctx, text) {
           const summary = formatPanelSummary(name, result)
           if (summary) pushLine(`  ${summary}`, C.dim)
         }
-        setTimeout(() => {
-          delete state.outputPanels[name]
-          if (state.processing) render()
-        }, 3000)
+        // Trigger a repaint after the grace period so the pruned panel disappears
+        setTimeout(() => render(), 3000)
       } else if (stream) {
         const tail = stream.trimEnd().slice(-4000)
         if (tail) pushLine(tail, C.dim)
@@ -167,22 +169,39 @@ export async function runAgentTurn(ctx, text) {
     },
     onToolOutput: (name, chunk) => {
       // Route streaming output to a panel if one exists or was requested via outputPanel flag.
+      // Chunk may be a string or { kind, text } — kind ("think" | "text" | "tool") drives
+      // per-kind coloring in renderOutput so reasoning / answer / tool progress are distinct.
       let panel = state.outputPanels[name]
       if (!panel) {
         // Lazy-create panel: defensive against race conditions where setupOutputPanel
         // hasn't fired yet or the callbacks chain dropped it (subagent relay, reconnect, etc.)
-        state.outputPanels[name] = { text: "", done: false }
+        state.outputPanels[name] = { parts: [], len: 0, done: false }
         panel = state.outputPanels[name]
       }
-      panel.text = (panel.text ?? "") + chunk
-      if (panel.text.length > 4000) panel.text = panel.text.slice(-4000)
-      panel.seq = (panel.seq ?? 0) + 1 // render-loop cache key: survives the 4000-char cap
+      const part = typeof chunk === "string"
+        ? { kind: "text", text: chunk }
+        : { kind: chunk?.kind ?? "text", text: String(chunk?.text ?? "") }
+      if (!part.text) return
+      panel.parts.push(part)
+      panel.len += part.text.length
+      // Cap at 4000 chars, trimming oldest parts first
+      while (panel.len > 4000 && panel.parts.length > 1) {
+        const first = panel.parts[0]
+        const excess = panel.len - 4000
+        if (first.text.length <= excess) {
+          panel.len -= first.text.length
+          panel.parts.shift()
+        } else {
+          first.text = first.text.slice(excess)
+          panel.len -= excess
+        }
+      }
       scheduleRender()
     },
     onPermissionRequest: (name, args) => askPermission(name, args),
     onQuestion: (text, options) => askQuestion(text, options),
     setupOutputPanel: (name) => {
-      state.outputPanels[name] = { text: "", done: false }
+      state.outputPanels[name] = { parts: [], len: 0, done: false }
       scheduleRender()
     },
     onCompress: () => {
