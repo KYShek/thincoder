@@ -8,7 +8,8 @@ export async function handleAdvisorCommand(ctx) {
   const enabled = cfg.enabled === true
   const curProvider = cfg.provider || "(main)"
   const curModel = cfg.model || agent.provider.model
-  const thinkInfo = cfg.thinking?.type === "disabled" ? "off"
+  const thinkInfo = cfg.thinking === null ? "off"
+    : cfg.thinking?.type === "disabled" ? "off"
     : cfg.reasoningEffort ? `on (${cfg.reasoningEffort})`
     : cfg.thinking ? `on (${cfg.thinking.type})` : "(main)"
 
