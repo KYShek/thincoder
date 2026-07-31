@@ -15,6 +15,8 @@ import {
   extractAgentResponseTable,
   buildAdvisorSystemPrompt,
   buildAdvisorUserMessage,
+  buildAdvisorFollowUp,
+  prepareAdvisorMessages,
 } from "../src/advisor.mjs"
 
 // ────────────────────────────────────────
@@ -392,4 +394,80 @@ test("agent: _advisorRound increments only on advisor tool call", () => {
   }
 
   assert.equal(_advisorRound, 2)
+})
+
+// ────────────────────────────────────────
+// Session memory — prepareAdvisorMessages / buildAdvisorFollowUp
+// ────────────────────────────────────────
+
+test("prepareAdvisorMessages: first call creates a fresh [system, user] session", () => {
+  const agent = { history: [], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const session = prepareAdvisorMessages(agent)
+  assert.equal(session.length, 2)
+  assert.equal(session[0].role, "system")
+  assert.equal(session[1].role, "user")
+})
+
+test("prepareAdvisorMessages: later calls append a follow-up to the SAME session", () => {
+  const agent = { history: [], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const first = prepareAdvisorMessages(agent)
+  agent._advisorSession = first // runAdvisorReview persists it after a successful review
+  agent._advisorRound = 1
+
+  const second = prepareAdvisorMessages(agent)
+  assert.equal(second, first, "same array — conversation continues, not rebuilt")
+  assert.equal(second.length, 3)
+  assert.equal(second[2].role, "user")
+  assert.ok(second[2].content.includes("Round 2"), "follow-up carries round number")
+  assert.ok(second[2].content.includes("Agent Response"), "follow-up asks for the response table")
+
+  agent._advisorRound = 2
+  const third = prepareAdvisorMessages(agent)
+  assert.ok(third[3].content.includes("Round 3"))
+  assert.ok(third[3].content.includes("Strict"), "round 3+ is strict verification")
+})
+
+test("buildAdvisorFollowUp: includes agent response table when present", () => {
+  const agent = {
+    _advisorRound: 1,
+    cwd: tmpdir(),
+    _touchedFiles: [],
+    history: [
+      { role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" },
+      { role: "assistant", content: "| # | Action | Detail |\n| 1 | fixed | added null check |" },
+    ],
+  }
+  const msg = buildAdvisorFollowUp(agent)
+  assert.ok(msg.includes("added null check"), "response table extracted from history")
+})
+
+test("buildAdvisorFollowUp: tolerates missing response table", () => {
+  const agent = {
+    _advisorRound: 1,
+    cwd: tmpdir(),
+    _touchedFiles: [],
+    history: [{ role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
+  }
+  const msg = buildAdvisorFollowUp(agent)
+  assert.ok(msg.includes("did not provide a response table"))
+})
+
+test("buildAdvisorFollowUp: skips re-pushing an unchanged diff snapshot", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
+  try {
+    createGitRepo(tmp)
+    writeFileSync(join(tmp, "app.js"), "// changed")
+    const agent = {
+      _advisorRound: 1,
+      cwd: tmp,
+      _touchedFiles: [join(tmp, "app.js")],
+      history: [{ role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
+    }
+    const first = buildAdvisorFollowUp(agent)
+    assert.ok(first.includes("refreshed"), "first follow-up carries the diff")
+    const second = buildAdvisorFollowUp(agent)
+    assert.ok(second.includes("No changes since your previous review"), "identical diff is not re-pushed")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 })

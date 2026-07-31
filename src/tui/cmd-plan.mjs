@@ -1,7 +1,9 @@
 /** /plan command: toggle plan mode (read-only explore → design → implement).
- *  ctx: { agent } */
+ *  ctx: { agent, pushLine, pushLabel } */
+import { ansi, C } from "./ansi.mjs"
+
 export async function handlePlanCommand(ctx) {
-  const { agent } = ctx
+  const { agent, pushLine, pushLabel } = ctx
   agent.planMode = !agent.planMode
   agent._pendingReminders = agent._pendingReminders ?? []
   if (agent.planMode) {
@@ -9,4 +11,6 @@ export async function handlePlanCommand(ctx) {
   } else {
     agent._pendingReminders.push("[System reminder: plan mode is now OFF. You may edit files, run commands, and implement changes.]")
   }
+  pushLabel("❯ Plan", ansi.bold + C.tool)
+  pushLine(`Plan mode: ${agent.planMode ? "ON" : "OFF"}`, C.tool)
 }

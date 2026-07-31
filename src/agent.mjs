@@ -49,6 +49,7 @@ const STALL_THRESHOLD = 3
 const GOAL_BUDGET_WARN_RATIO = 0.75
 const MAX_VERIFY_PUSHBACKS = 2
 const MAX_VERIFY_RETRIES = 3
+const MAX_ADVISOR_PUSHBACKS = 3
 
 /** Create a new agent state object with all fields initialized to defaults */
 export function createAgent({
@@ -62,7 +63,7 @@ export function createAgent({
     overlay, tasks, history,
     planMode, autoApprove, goal,
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined, _calledAdvisorThisRun: false,
-    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0,
+    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null,
     _pendingReminders: [],
     _pendingTimers: [],
     _sessionStart: sessionStart,
@@ -85,7 +86,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   agent._touchedFiles = []
   agent._verifyRetries = 0
   agent._advisorRound = 0
+  agent._advisorSession = null // advisor session is per-run: discard when the task ends, next task starts fresh
   let guardPushbacks = 0
+  let advisorPushbacks = 0
   let honestReminderInjected = false
   const recentCallSigs = []
   // repeat: "once" stream rules fire at most once per runAgent call (user turn):
@@ -284,16 +287,19 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           continue
         }
       }
-      // --- advisor guard: push model to review changes before completion ---
-      // When advisor is enabled and guard is not explicitly disabled, mutated files
-      // must be reviewed before the turn ends. No hard round cap — convergence protocol
-      // (round 3+ strict verification) naturally limits divergence.
+      // --- advisor guard: review of mutated files is mandatory before completion ---
+      // When advisor is enabled and guard is not explicitly disabled, the model MUST
+      // call advisor after mutating files — skipping is not offered as an option
+      // (offering it caused a skip → pushback loop). Pushbacks are capped as a
+      // backstop against pathological loops; convergence is unbounded by design.
       if (depth === 0 && agent.config?.advisor?.enabled && agent.config?.advisor?.guard !== false) {
-        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && (agent._touchedFiles ?? []).length > 0) {
+        if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && (agent._touchedFiles ?? []).length > 0
+            && advisorPushbacks < MAX_ADVISOR_PUSHBACKS) {
+          advisorPushbacks++
           agent.history.push({ role: "assistant", content: response.content })
           agent.history.push({
             role: "user",
-            content: `[System reminder: you changed code in this run but haven't reviewed with advisor (round ${agent._advisorRound + 1}). Call the \`advisor\` tool to get an independent code review. After the review, produce a response table for every issue found (see discipline rules for format). If the changes are trivial (typo, one-liner, formatting only), you may skip and explain why in your reply.]`,
+            content: `[System reminder: you changed code in this run and MUST get an advisor review before finishing (round ${agent._advisorRound + 1}). Call the \`advisor\` tool now. This is required, not optional — do not skip it even if you believe the changes are trivial; a small diff just makes the review fast. After the review, produce a response table for every issue found (see discipline rules for format).]`,
           })
           callbacks.onTurnEnd?.(agent, turn)
           continue
@@ -333,6 +339,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
 
     // Model is executing tools → doing real work, reset guard pushback counter
     guardPushbacks = 0
+    advisorPushbacks = 0
 
     for (const { toolCall, result, ok } of results) {
       const tool = toolByName.get(toolCall.name)

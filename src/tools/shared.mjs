@@ -203,9 +203,34 @@ export function shellSegments(command) {
   return command.split(/&&|\|\||>>|\$\(|[;|\n<>]|`|[(]/)
 }
 
-/** Detect shell output/input redirection (> >> < followed by filename) — not excluded inside quotes, conservative block */
+/**
+ * Blank out quoted regions (single/double/backtick) with spaces, preserving length.
+ * Lets safety checks ignore shell metacharacters inside quoted script bodies —
+ * e.g. `node -e "if (a > b) …"` comparisons are not redirections.
+ */
+function blankQuoted(command) {
+  let out = ""
+  let quote = null
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    if (quote) {
+      if (ch === "\\" && quote !== "'") { out += " "; i++; out += " "; continue }
+      if (ch === quote) quote = null
+      out += " "
+    } else if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch
+      out += " "
+    } else {
+      out += ch
+    }
+  }
+  return out
+}
+
+/** Detect shell output/input redirection (> >> < followed by filename) outside quoted regions */
 export function hasFileRedirection(command) {
-  return /(^|[\s;&|])>{1,2}\s*\S/.test(command) || /(^|[\s;&|])<\s*\S/.test(command)
+  const bare = blankQuoted(command)
+  return /(^|[\s;&|])>{1,2}\s*\S/.test(bare) || /(^|[\s;&|])<\s*\S/.test(bare)
 }
 
 /** Whether a single command segment is a destructive non-git command (conservative: prefer false positives) */

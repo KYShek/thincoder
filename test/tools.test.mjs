@@ -446,6 +446,31 @@ test("bash 护栏：checkout ./restore/clean -f/链式写法拦截，安全写�
   }
 })
 
+test("bash 护栏：重定向检测引号感知——脚本内比较运算符不误伤，真重定向仍拦截", async () => {
+  const { hasFileRedirection } = await import("../src/tools/shared.mjs")
+  // 放行：引号脚本里的 > < => 比较/箭头函数不是重定向
+  for (const ok of [
+    `node -e "if (a.length > 0) console.log(a)"`,
+    `node -e "const f = (x) => x * 2"`,
+    `node -e "while (i < 10) i++"`,
+    `echo "a > b"`,
+    `node -e 'console.log(JSON.stringify({a:1}))'`,
+  ]) {
+    assert.equal(hasFileRedirection(ok), false, `不应误判: ${ok}`)
+  }
+  // 拦截：引号外的真实重定向（含 heredoc）
+  for (const blocked of [
+    "echo hi > out.txt",
+    "echo hi >> out.txt",
+    "cat < input.txt",
+    "echo ok && node app.js > log.txt",
+    "cat << EOF",
+    "node app.js 2> err.txt".replace("2> ", "> "), // fd 前缀形式也拦
+  ]) {
+    assert.equal(hasFileRedirection(blocked), true, `应拦截: ${blocked}`)
+  }
+})
+
 // ---------------------------------------------------------------- skills 系统
 
 test("skills: load / list / read", async () => {

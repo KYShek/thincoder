@@ -326,9 +326,25 @@ export async function runAgentTurn(ctx, text) {
 /** Extract a one-line summary from a panel tool's output */
 function formatPanelSummary(name, result) {
   if (name === "verify") return _verifySummary(result)
+  if (name === "bash") return _bashSummary(result)
   // Default: first non-empty line
   const first = result.split("\n").find((l) => l.trim())
   return first ? `${name}: ${first.slice(0, 100)}` : null
+}
+
+/**
+ * bash result format: "[stdout]:\n<out>\n\n[stderr]:\n<err>\n\n(exit code 0)".
+ * The first non-empty line is always the "[stdout]:" marker — useless as a summary.
+ * Show the LAST output line (usually the meaningful tail) plus the exit status.
+ */
+function _bashSummary(result) {
+  const isMarker = (l) => /^\[(stdout|stderr)\]:$/.test(l) || /^\((exit code|killed)/.test(l)
+  const lines = result.split("\n").map((l) => l.trim()).filter((l) => l && !isMarker(l))
+  const status = result.match(/\((?:exit code|killed)[^)]*\)/)?.[0]
+  const parts = []
+  if (lines.length > 0) parts.push(lines[lines.length - 1].slice(0, 100))
+  if (status) parts.push(status)
+  return parts.length > 0 ? `bash: ${parts.join(" ")}` : null
 }
 
 function _verifySummary(result) {

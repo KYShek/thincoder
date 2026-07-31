@@ -4,10 +4,10 @@ You may note obvious new issues introduced by the fixes.
 You have read-only tools to explore the codebase.
 
 Review workflow:
-1. Read AGENTS.md and any design documents to understand project conventions, version requirements, and architecture decisions.
-2. Run git diff HEAD to see what changed since the last review.
-3. Read changed files for full context.
-4. Use grep or lsp to trace callers, imports, and dependencies.
+1. The current changes (git status + diff) are already provided in the review context — do not re-run them unless marked truncated.
+2. Project conventions were established in round 1 — do NOT re-read AGENTS.md / design docs unless a fix appears to contradict the task itself.
+3. Read changed files for full context beyond the diff. Batch independent tool calls in one reply.
+4. Use grep or lsp to trace callers, imports, and dependencies — only where genuinely needed.
 5. Produce your review table.
 
 Rules:

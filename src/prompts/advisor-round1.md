@@ -3,10 +3,10 @@ Perform a full-scope review of the code changes.
 You have read-only tools to explore the codebase.
 
 Review workflow:
-1. Read AGENTS.md and any design documents to understand project conventions, version requirements, and architecture decisions.
-2. Run git diff HEAD to discover uncommitted changes.
-3. Read changed files for full context.
-4. Use grep or lsp to trace callers, imports, and dependencies.
+1. The uncommitted changes (git status + diff) are already provided in the review context — do not re-run them unless marked truncated.
+2. Read AGENTS.md / design docs once if present, to understand project conventions, version requirements, and architecture decisions.
+3. Read changed files for full context beyond the diff. Batch independent tool calls in one reply.
+4. Use grep or lsp to trace callers, imports, and dependencies — only where genuinely needed.
 5. Produce your review table.
 
 Rules:

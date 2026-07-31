@@ -18,6 +18,15 @@
  *   Round 3+: strict convergence — only checks the prior issue table.
  *   No hard round cap — the convergence protocol naturally limits divergence.
  *
+ * Session memory (agent._advisorSession):
+ *   All advisor calls within one run share a single conversation — round 2+
+ *   just appends a follow-up (agent response + refreshed diff + round rules),
+ *   so the advisor keeps its exploration context instead of re-discovering
+ *   everything. The session is discarded when the run ends (runAgent resets it);
+ *   the next task starts a fresh advisor session. After an app restart the
+ *   in-memory session is gone — falls back to a fresh session seeded from the
+ *   issue/response tables in the main history.
+ *
  *
  * Project customisation: .thincoder/advisor.md in the project root.
  */
@@ -180,6 +189,39 @@ function findReviewRepos(agent) {
 
 // ────────────────────────────────────────
 
+/** Cap per-repo embedded diff — the advisor can fetch the rest via its git tool */
+const MAX_EMBEDDED_DIFF = 12_000
+
+/**
+ * Collect git status + diff for each repo, embedded into the review context so
+ * the advisor doesn't need to spend its first tool calls discovering changes.
+ */
+function collectRepoSnapshots(repos, cwd) {
+  const targets = repos.length > 0 ? repos : [cwd]
+  const parts = []
+  for (const repo of targets) {
+    let status = "", diff = ""
+    try {
+      status = execFileSync("git", ["status", "--porcelain"], {
+        cwd: repo, encoding: "utf8", timeout: GIT_TIMEOUT, stdio: ["ignore", "pipe", "pipe"],
+      }).trim()
+      diff = execFileSync("git", ["diff", "HEAD"], {
+        cwd: repo, encoding: "utf8", timeout: GIT_TIMEOUT, stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 8 * 1024 * 1024,
+      })
+    } catch { continue /* not a git repo or git failed */ }
+    if (!status && !diff.trim()) continue
+    parts.push(`### ${repo}`)
+    if (status) parts.push("```", status, "```")
+    if (diff.trim()) {
+      const truncated = diff.length > MAX_EMBEDDED_DIFF
+      parts.push("```diff", truncated ? diff.slice(0, MAX_EMBEDDED_DIFF) : diff.trimEnd(), "```")
+      if (truncated) parts.push(`(diff truncated at ${MAX_EMBEDDED_DIFF} chars — use the git tool to see the rest)`)
+    }
+  }
+  return parts
+}
+
 export function loadAdvisorMd(cwd) {
   const path = join(cwd, ADVISOR_MD_PATH)
   if (!existsSync(path)) return DEFAULT_CRITERIA
@@ -191,16 +233,45 @@ export function loadAdvisorMd(cwd) {
   }
 }
 
-function extractTaskSummary(history) {
-  for (let i = history.length - 1; i >= 0; i--) {
+const MAX_BACKGROUND_CHARS = 2500
+const MAX_BG_USER_CHARS = 400
+const MAX_BG_ASSISTANT_CHARS = 300
+
+/**
+ * Recent conversation context for the advisor: the last few user↔assistant
+ * exchanges (default 3 user turns). The last user message alone often lacks
+ * context ("把那个问题改一下" means nothing without the preceding turns) —
+ * the advisor needs the background to judge whether the changes match intent.
+ * Tool messages are skipped (noise); texts are truncated and whitespace-collapsed.
+ */
+export function extractConversationBackground(history, maxTurns = 3) {
+  const isNoise = (c) => c.startsWith("[System reminder:") || c.startsWith("[User interrupt:")
+  const picked = []
+  let userCount = 0
+  for (let i = history.length - 1; i >= 0 && userCount < maxTurns; i--) {
     const m = history[i]
-    if (m.role !== "user") continue
-    const content = typeof m.content === "string" ? m.content : ""
-    if (content.startsWith("[System reminder:") || content.startsWith("[User interrupt:")) continue
-    const firstPara = content.split("\n\n")[0]
-    return firstPara.length > MAX_TASK_SUMMARY ? firstPara.slice(0, MAX_TASK_SUMMARY) + "…" : firstPara
+    if (m.role !== "user" && m.role !== "assistant") continue
+    const content = typeof m.content === "string" ? m.content.trim() : ""
+    if (!content || isNoise(content)) continue
+    picked.unshift({ role: m.role === "user" ? "User" : "Assistant", text: content })
+    if (m.role === "user") userCount++
   }
-  return null
+  if (picked.length === 0) return null
+
+  const lines = picked.map((e) => {
+    const cap = e.role === "User" ? MAX_BG_USER_CHARS : MAX_BG_ASSISTANT_CHARS
+    const flat = e.text.replace(/\s+/g, " ").trim()
+    return `${e.role}: ${flat.length > cap ? flat.slice(0, cap) + "…" : flat}`
+  })
+  // Keep the most recent lines within the total budget
+  const out = []
+  let total = 0
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (out.length > 0 && total + lines[i].length > MAX_BACKGROUND_CHARS) break
+    total += lines[i].length
+    out.unshift(lines[i])
+  }
+  return out.join("\n")
 }
 
 // ────────────────────────────────────────
@@ -254,11 +325,21 @@ export function buildAdvisorUserMessage(agent, _prior) {
   parts.push(repoList)
   parts.push("")
 
-  // Task summary
-  const taskSummary = extractTaskSummary(agent.history)
-  if (taskSummary) {
-    parts.push("## Task")
-    parts.push(taskSummary)
+  // Pre-collected changes — saves the advisor from spending its first tool
+  // calls on discovery (git status / git diff) every single round.
+  const snapshots = collectRepoSnapshots(repos, agent.cwd)
+  agent._advisorLastSnapshot = snapshots.join("\n") // dedup baseline for follow-up rounds
+  if (snapshots.length > 0) {
+    parts.push("## Current Changes (git status + git diff HEAD, pre-collected)")
+    parts.push(...snapshots)
+    parts.push("")
+  }
+
+  // Conversation background — recent user↔assistant exchanges for intent context
+  const background = extractConversationBackground(agent.history)
+  if (background) {
+    parts.push("## Conversation Background (recent turns)")
+    parts.push(background)
     parts.push("")
   }
 
@@ -268,16 +349,90 @@ export function buildAdvisorUserMessage(agent, _prior) {
   parts.push(criteria)
   parts.push("")
 
-  // Instructions
+  // Instructions — round-aware: re-reviews skip convention discovery entirely
+  const isReReview = prior && (agent._advisorRound || 0) > 0
   parts.push("## Instructions")
-  parts.push("1. Read `AGENTS.md` and any design documents first — understand project conventions, version requirements, and architecture decisions before flagging issues.")
-  parts.push("2. Run `git diff HEAD` in each repo to discover uncommitted changes.")
-  parts.push("3. `read` changed files for full context beyond the diff.")
-  parts.push("4. Use `grep` or `lsp` to trace callers, imports, and dependencies.")
-  parts.push("5. Produce your review table based on the review criteria above.")
+  parts.push("1. The uncommitted changes are already provided above — do NOT re-run `git status` / `git diff` unless the embedded diff is marked truncated.")
+  if (isReReview) {
+    parts.push("2. Do NOT re-read AGENTS.md / design docs — conventions were established in round 1. Focus on verifying the prior issue table against the current diff.")
+    parts.push("3. `read` only the files touched by the fixes. Batch independent reads/greps in a single reply.")
+    parts.push("4. Produce your verification table. Do not re-read content you already have.")
+  } else {
+    parts.push("2. Read `AGENTS.md` / design docs only if they exist (check once; do not re-probe with multiple patterns).")
+    parts.push("3. `read` changed files for full context beyond the diff. Batch independent reads/greps in a single reply instead of one call per round-trip.")
+    parts.push("4. Use `grep` or `lsp` to trace callers, imports, and dependencies — only where the diff leaves genuine doubt.")
+    parts.push("5. Produce your review table based on the review criteria above. Do not re-read content you already have.")
+  }
   parts.push("Do NOT flag features that are valid under the project's stated platform requirements.")
 
   return parts.join("\n")
+}
+
+// ────────────────────────────────────────
+// Session continuity — one advisor conversation per run
+// ────────────────────────────────────────
+
+/**
+ * Follow-up message for round 2+ in a continued advisor session.
+ * The advisor already has full context (its exploration, its issue table) in
+ * the conversation — the follow-up only carries what changed: the agent's
+ * response table, the fresh diff snapshot, and this round's rules.
+ */
+export function buildAdvisorFollowUp(agent, _prior) {
+  const prior = _prior ?? extractPriorIssueTable(agent.history)
+  const round = (agent._advisorRound || 0) + 1
+  const response = (prior ? extractAgentResponseTable(agent.history, prior.sinceIdx) : null)
+    || "(Agent did not provide a response table — re-evaluate each issue)"
+  const rules = round === 2
+    ? "Verify each item in your prior issue table against the current changes. " +
+      "You may flag obvious NEW issues introduced by the fixes — but only crashes, data loss, or logic errors clearly visible in the diff. Do not nitpick style."
+    : "Strictly verify only your prior issue table against the current changes. Do NOT look for new issues."
+
+  const parts = [
+    `## Round ${round} — ${round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"}`,
+    "",
+    rules,
+    "",
+    'If every prior issue is resolved, say exactly: "All issues resolved — review passed."',
+    "",
+    "Do NOT re-read AGENTS.md / design docs or re-run git status/diff (current changes are below) — you already have full context from previous rounds.",
+    "",
+    "## Agent Response to Your Review",
+    response,
+    "",
+  ]
+  const snapshots = collectRepoSnapshots(findReviewRepos(agent), agent.cwd)
+  const snapshotText = snapshots.join("\n")
+  // Skip re-pushing an identical diff (e.g. advisor re-run without any file changes) —
+  // the previous snapshot is already in the conversation, duplicating it wastes tokens.
+  if (snapshotText && snapshotText === agent._advisorLastSnapshot) {
+    parts.push("## Current Changes", "(No changes since your previous review.)")
+  } else if (snapshots.length > 0) {
+    parts.push("## Current Changes (git status + git diff HEAD, refreshed)", ...snapshots)
+  }
+  agent._advisorLastSnapshot = snapshotText
+  return parts.join("\n")
+}
+
+/**
+ * Build or continue the advisor conversation for this run.
+ * First call in a run: fresh [system, user] session. Later calls: append a
+ * follow-up to the existing session so the advisor keeps its context.
+ * After an app restart (session lost), falls back to a fresh session whose
+ * system prompt is picked from history tables (round 2/3 style).
+ */
+export function prepareAdvisorMessages(agent) {
+  const prior = extractPriorIssueTable(agent.history)
+  let session = agent._advisorSession
+  if (session) {
+    session.push({ role: "user", content: buildAdvisorFollowUp(agent, prior) })
+    return session
+  }
+  session = [
+    { role: "system", content: buildAdvisorSystemPrompt(agent, prior) },
+    { role: "user", content: buildAdvisorUserMessage(agent, prior) },
+  ]
+  return session
 }
 
 // ────────────────────────────────────────
@@ -394,20 +549,18 @@ export async function runAdvisorReview(agent, onOutput, signal) {
   if ((agent._touchedFiles ?? []).length === 0) return null
 
   const provider = resolveAdvisorProvider(agent)
-  const priorIssue = extractPriorIssueTable(agent.history)
-  const systemPrompt = buildAdvisorSystemPrompt(agent, priorIssue)
-  const userMessage = buildAdvisorUserMessage(agent, priorIssue)
 
   // Set the advisor's cwd to the first repo (for tool context)
   const advisorCwd = repos.length > 0 ? repos[0] : agent.cwd
 
-  const messages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
-  ]
+  const messages = prepareAdvisorMessages(agent)
 
   try {
-    return await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)
+    const result = await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)
+    // Persist the conversation: the next advisor call in this run continues here
+    // (reset by runAgent when the run ends — each task gets a fresh advisor session)
+    agent._advisorSession = messages
+    return result
   } catch (e) {
     if (e.name === "AbortError" && signal?.reason?.interrupt) throw e
     return `Advisor: review failed — ${e.message || "unknown error"}. You may retry or proceed to verify.`

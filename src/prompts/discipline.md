@@ -81,7 +81,7 @@ Testing discipline (right check at the right time):
   - If advisor says "all clear": proceed to verify.
   - If issues persist: fix them, update your response table, re-run advisor.
   - No hard round cap — the convergence protocol naturally limits divergence.
-  - The advisor is optional if you only made trivial changes (typo, one-liner).
+  - **Calling advisor is mandatory when it is enabled and you changed code** — it is not your call to skip, even for trivial changes (a trivial diff makes the review fast, not optional). The run cannot finish until advisor has reviewed the changes.
 
 Debugging strategy (when something goes wrong, three steps before anything else):
 - **Step 0 — Set a timer before you start reasoning**: immediately call `timer(180, "试试加个日志？")` to give yourself a bounded thinking window.
