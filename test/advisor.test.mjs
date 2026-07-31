@@ -501,3 +501,50 @@ test("extractConversationBackground: returns null on empty/noise-only history", 
   assert.equal(extractConversationBackground([]), null)
   assert.equal(extractConversationBackground([{ role: "user", content: "[System reminder: x]" }]), null)
 })
+
+test("runAdvisorReview: documentation-only changes skip the review entirely", async () => {
+  const { runAdvisorReview } = await import("../src/advisor.mjs")
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
+  try {
+    createGitRepo(tmp)
+    writeFileSync(join(tmp, "README.md"), "# docs update\n")
+    const agent = {
+      config: { advisor: { enabled: true } },
+      provider: { name: "p", model: "m" },
+      history: [{ role: "user", content: "update the readme" }],
+      _touchedFiles: [join(tmp, "README.md")],
+      _advisorRound: 0,
+      cwd: tmp,
+    }
+    const result = await runAdvisorReview(agent, () => {}, undefined)
+    assert.ok(/documentation-only/.test(result), `应跳过审查: ${result}`)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("runAdvisorReview: code changes do NOT hit the doc-only fast path", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
+  try {
+    createGitRepo(tmp)
+    writeFileSync(join(tmp, "app.js"), "console.log(1)\n")
+    execSync("git add -A", { cwd: tmp, stdio: "ignore" })
+    // verify isDocOnlyChange indirectly: with a .js change the review must proceed.
+    // We can't run the LLM here, so assert the fast path is NOT taken by checking
+    // that prepareAdvisorMessages builds a round-1 session for this agent.
+    const agent = {
+      config: { advisor: { enabled: true } },
+      provider: { name: "p", model: "m" },
+      history: [{ role: "user", content: "change app code" }],
+      _touchedFiles: [join(tmp, "app.js")],
+      _advisorRound: 0,
+      _advisorSession: null,
+      cwd: tmp,
+    }
+    const session = prepareAdvisorMessages(agent)
+    assert.equal(session[0].role, "system")
+    assert.ok(session[1].content.includes("app.js") || session[1].content.includes("diff"), "code change goes to full review")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})

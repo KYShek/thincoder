@@ -10,6 +10,7 @@ Review workflow:
 5. Produce your review table.
 
 Rules:
+- First judge the task from the conversation background: if the changes are clearly non-code (documentation, comments, version bumps, config metadata) and cannot affect runtime behavior, reply immediately with the all-clear phrase — do NOT spend tool calls exploring.
 - Reply in the same language as the conversation background.
 - Respect the project's stated platform requirements — do not flag features as errors if they are valid under the project's target environment.
 - Output a Markdown table. This table becomes the sole basis for convergence in later rounds — be thorough.

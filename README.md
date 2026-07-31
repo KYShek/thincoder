@@ -205,6 +205,9 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.1 (2026-07)
+- **Fix: `/exit` screen artifacts** — `/exit` now uses synchronous `process.exit(0)` instead of the deferred cleanup callback, preventing the post-handler `render()` from redrawing the TUI over the cleaned terminal. Ctrl+C and `/exit` now produce identical clean exits.
+
 ### 0.12.0 (2026-07)
 - **Interactive slash command UX** — `/advisor`, `/think`, `/config`, `/mcp` now use persistent menu loops with live state feedback. Toggle, change settings, and see results without re-entering the command. Cursor position is remembered across menu cycles. `/plan` and `/auto` now show immediate local feedback (`❯ Plan: ON/OFF`).
 - **User-level AGENTS.md** — `~/.thincoder/AGENTS.md` is now loaded alongside the project-level `AGENTS.md`. User-level preferences (language, style, format) apply across all projects; project-level rules take priority.

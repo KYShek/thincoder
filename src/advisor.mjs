@@ -541,12 +541,44 @@ export function resolveAdvisorProvider(agent) {
   return provider
 }
 
+/**
+ * Whether every changed file across the review repos is documentation-only.
+ * Used to skip pointless code reviews for doc updates (README, docs/, LICENSE…).
+ */
+function isDocOnlyChange(repos, cwd) {
+  const DOC_FILE = /(?:^|[/\\])(?:LICENSE|NOTICE|CHANGELOG|AUTHORS)(?:\.\w+)?$|\.(?:md|markdown|mdx|txt|rst|adoc)$/i
+  const targets = repos.length > 0 ? repos : [cwd]
+  let sawChanges = false
+  for (const repo of targets) {
+    let status = ""
+    try {
+      status = execFileSync("git", ["status", "--porcelain"], {
+        cwd: repo, encoding: "utf8", timeout: GIT_TIMEOUT, stdio: ["ignore", "pipe", "pipe"],
+      }).trim()
+    } catch { return false /* can't tell — let the advisor run */ }
+    if (!status) continue
+    sawChanges = true
+    for (const line of status.split("\n")) {
+      // porcelain: "XY path" or "XY old -> new" (rename)
+      const filePath = line.slice(3).split(" -> ").pop().replace(/^"|"$/g, "")
+      if (!DOC_FILE.test(filePath)) return false
+    }
+  }
+  return sawChanges
+}
+
 export async function runAdvisorReview(agent, onOutput, signal) {
   const cfg = agent.config?.advisor
   if (!cfg?.enabled) return null
 
   const repos = findReviewRepos(agent)
   if ((agent._touchedFiles ?? []).length === 0) return null
+
+  // Fast path: documentation-only changes need no code review — unless the project
+  // customized review criteria (.thincoder/advisor.md may genuinely care about docs).
+  if (!existsSync(join(agent.cwd, ADVISOR_MD_PATH)) && isDocOnlyChange(repos, agent.cwd)) {
+    return "No issues found — documentation-only changes, code review skipped."
+  }
 
   const provider = resolveAdvisorProvider(agent)
 
