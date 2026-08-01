@@ -11,6 +11,11 @@ import { prepareAdvisorMessages, ADVISOR_MD_PATH } from "../advisor.mjs"
 import { findReviewRepos, isDocOnlyChange } from "./repos.mjs"
 
 export const MAX_ADVISOR_TURNS = 30
+// Mechanical convergence cap: the protocol assumes up to 5 rounds suffice
+// (full review, verify+fix cycles, strict verification). A 6th call means the
+// model is looping — refuse it instead of burning tokens on a review that cannot
+// converge. Design reviews are exempt (each call resets the round).
+export const MAX_ADVISOR_ROUNDS = 5
 
 const { gitTool, readTool, globTool, grepTool, lsTool } = await import("../tools/index.mjs")
 const { lspTool } = await import("../tools/lsp.mjs")
@@ -155,7 +160,16 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
   // Design reviews rely on git discovery (design docs may pre-exist, untracked, or
   // written by the parent) — never block on _touchedFiles. For code reviews:
   // engineering mode allows empty _touchedFiles (eng-coder did the mutations).
+  // Checked BEFORE the convergence cap so an empty-files call gets the accurate
+  // "nothing to review" answer instead of a misleading cap message.
   if (reviewType !== "design" && !agent.config?.agent?.engineering && (agent._touchedFiles ?? []).length === 0) return null
+
+  // Mechanical convergence cap — refuse further reviews once the protocol has run
+  // its rounds. _advisorRound counts completed advisor calls (incremented by the
+  // agent after each one), so >= MAX_ADVISOR_ROUNDS blocks the next call.
+  if (reviewType !== "design" && (agent._advisorRound || 0) >= MAX_ADVISOR_ROUNDS) {
+    return `Advisor: convergence cap reached after ${MAX_ADVISOR_ROUNDS} rounds — the protocol assumes convergence by round ${MAX_ADVISOR_ROUNDS}. Accept the current state or manually re-review; do not call advisor again.`
+  }
 
   const repos = findReviewRepos(agent)
 

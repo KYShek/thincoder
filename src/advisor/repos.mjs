@@ -63,6 +63,9 @@ export function collectRepoSnapshots(repos, cwd) {
     if (status) parts.push("```", status, "```")
     if (diff.trim()) {
       const truncated = diff.length > MAX_EMBEDDED_DIFF
+      // Prepend a blockquote explaining diff notation to the LLM so it doesn't
+      // treat deleted lines (-) as still-present content (phantom-issue fix).
+      parts.push("**⚠️ IMPORTANT:** In the diff below, `-` lines are **REMOVED** (no longer in the file); `+` lines are **ADDED**. Always `read` the actual file for its current state — never treat a `-` line as still-present content.")
       parts.push("```diff", truncated ? diff.slice(0, MAX_EMBEDDED_DIFF) : diff.trimEnd(), "```")
       if (truncated) parts.push(`(diff truncated at ${MAX_EMBEDDED_DIFF} chars — use the git tool to see the rest)`)
     }
@@ -84,8 +87,8 @@ export function collectChangedFiles(repos, cwd) {
       const repoLabel = targets.length > 1 ? `[${basename(repo)}] ` : ""
       for (const line of status.split("\n")) {
         // "XY path" or "XY old -> new" (rename) — take the final path, strip quotes
-        const parts = line.slice(3).split(" -> ")
-        const p = parts[parts.length - 1].trim().replace(/^"|"$/g, "")
+        const pathParts = line.slice(3).split(" -> ")
+        const p = pathParts[pathParts.length - 1].trim().replace(/^"|"$/g, "")
         if (p) files.push(repoLabel + p)
       }
     } catch { /* not a git repo — skip */ }

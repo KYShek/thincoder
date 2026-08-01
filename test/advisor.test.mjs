@@ -37,16 +37,25 @@ test("extractPriorIssueTable: returns null when no advisor output found", () => 
   assert.equal(extractPriorIssueTable(history), null)
 })
 
+test("extractPriorIssueTable: ignores header constants quoted inside source code", () => {
+  // An advisor output that quotes the header constants' own definitions (e.g. from
+  // history.mjs) must NOT be mistaken for a review table — headers match at line start only.
+  const history = [
+    { role: "tool", tool_call_id: "a1", content: 'Reviewing src/advisor/history.mjs:\nconst LEGACY_ADVISOR_HEADER = "| # | 文件 | 严重程度 | 问题描述 | 建议修复 |"\nconst ADVISOR_TABLE_HEADER = "| # | File | Severity | Issue | Suggestion |"\nThese constants are only matched at line start — this message has no table.' },
+  ]
+  assert.equal(extractPriorIssueTable(history), null)
+})
+
 test("extractPriorIssueTable: returns null when last review says all clear", () => {
   const history = [
-    { role: "tool", tool_call_id: "a1", content: "No issues found — code quality looks good." },
+    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n|---|------|----------|-------|------------|\n\nNo issues found — code quality looks good." },
   ]
   assert.equal(extractPriorIssueTable(history), null)
 })
 
 test("extractPriorIssueTable: returns null when last review says all resolved", () => {
   const history = [
-    { role: "tool", tool_call_id: "a1", content: "All issues resolved — review passed." },
+    { role: "tool", tool_call_id: "a1", content: "| # | Orig# | File | Severity | Status | Notes |\n|---|-------|------|----------|--------|-------|\n| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |\nAll issues resolved — review passed." },
   ]
   assert.equal(extractPriorIssueTable(history), null)
 })
@@ -107,6 +116,36 @@ test("extractPriorIssueTable: returns null when legacy Chinese all-clear", () =>
   ]
   assert.equal(extractPriorIssueTable(history), null)
 })
+
+test("extractPriorIssueTable: convergence table with mixed fixed/unfixed returns table", () => {
+  const table = `| # | Orig# | File | Severity | Status | Notes |
+|---|-------|------|----------|--------|-------|
+| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |
+| 2 | 5 | src/y.mjs | 🟡 | Unfixed | still broken |`
+  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
+  assert.notEqual(result, null, "有未修复项不应视为 all-clear")
+  assert.ok(result.text.includes("Unfixed"))
+})
+
+test("extractPriorIssueTable: all-fixed table with 'still' in notes returns null", () => {
+  const table = `| # | Orig# | File | Severity | Status | Notes |
+|---|-------|------|----------|--------|-------|
+| 1 | 3 | src/x.mjs | 🔴 | Fixed | we should still add tests later |
+All issues resolved — review passed.`
+  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
+  assert.equal(result, null, "全 Fixed + all-clear 短语 + Notes 里普通 'still' 不触发部分修复")
+})
+
+test("extractPriorIssueTable: Chinese mixed 已修复/未修复 returns table", () => {
+  const table = `| # | 文件 | 严重程度 | 问题描述 | 建议修复 |
+|---|------|----------|----------|----------|
+| 1 | src/x.mjs | 🔴 | bug A | fix A |
+| 2 | src/y.mjs | 🟡 | bug B | 未修复 |`
+  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
+  assert.notEqual(result, null, "含未修复项应返回表格")
+  assert.ok(result.text.includes("未修复"))
+})
+
 
 // ────────────────────────────────────────
 // extractAgentResponseTable
@@ -437,20 +476,30 @@ test("agent: _advisorRound initialized to 0 in runAgent", () => {
   assert.equal(_mutatedThisRun && !_calledAdvisorThisRun, false)
 })
 
-test("agent: _advisorRound increments only on advisor tool call", () => {
+test("agent: _advisorRound increments only on code-review advisor calls", () => {
+  // Mirrors agent.mjs: design reviews (type="design") are a separate gate and
+  // must NOT consume the code-review convergence budget.
   let _advisorRound = 0
   const toolCalls = [
-    { name: "write", ok: true },
-    { name: "advisor", ok: true },
-    { name: "edit", ok: true },
-    { name: "advisor", ok: true },
+    { name: "write", ok: true, arguments: "{}" },
+    { name: "advisor", ok: true, arguments: "{}" },
+    { name: "advisor", ok: true, arguments: JSON.stringify({ type: "design" }) },
+    { name: "edit", ok: true, arguments: "{}" },
+    { name: "advisor", ok: true, arguments: "{}" },
   ]
 
   for (const tc of toolCalls) {
-    if (tc.name === "advisor") _advisorRound++
+    if (tc.name === "advisor") {
+      try {
+        const advArgs = JSON.parse(tc.arguments || "{}")
+        if (advArgs.type !== "design") _advisorRound++
+      } catch {
+        _advisorRound++
+      }
+    }
   }
 
-  assert.equal(_advisorRound, 2)
+  assert.equal(_advisorRound, 2) // 两次 code review；design 不计数
 })
 
 // ────────────────────────────────────────
@@ -469,6 +518,7 @@ test("prepareAdvisorMessages: later calls append a follow-up to the SAME session
   const priorTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |"
   const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
   const first = prepareAdvisorMessages(agent)
+  const firstSystemPrompt = first[0].content // snapshot: second === first (same array), direct compare is tautological
   agent._advisorSession = first // runAdvisorReview persists it after a successful review
   agent._advisorRound = 1
 
@@ -478,11 +528,15 @@ test("prepareAdvisorMessages: later calls append a follow-up to the SAME session
   assert.equal(second[2].role, "user")
   assert.ok(second[2].content.includes("Round 2"), "follow-up carries round number")
   assert.ok(second[2].content.includes("Agent Response"), "follow-up asks for the response table")
+  assert.notEqual(second[0].content, firstSystemPrompt, "system prompt replaced for round 2 — round-1 full-scope mandate must not leak in")
+  assert.ok(second[0].content.includes("Verify the prior issue table"), "round 2 system prompt is the narrowed ROUND2")
 
   agent._advisorRound = 2
   const third = prepareAdvisorMessages(agent)
   assert.ok(third[3].content.includes("Round 3"))
   assert.ok(third[3].content.includes("Strict"), "round 3+ is strict verification")
+  assert.ok(third[0].content.includes("Strictly verify only the prior issue table"), "round 3 system prompt is ROUND3 — do not look for new issues")
+  assert.ok(third[0].content.includes("Do NOT look for new issues"))
 })
 
 test("buildAdvisorFollowUp: includes agent response table when present", () => {
@@ -572,6 +626,41 @@ test("runAdvisorReview: documentation-only changes skip the review entirely", as
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+test("runAdvisorReview: convergence cap blocks a 6th review call", async () => {
+  const { runAdvisorReview, MAX_ADVISOR_ROUNDS } = await import("../src/advisor/run.mjs")
+  const agent = {
+    config: { advisor: { enabled: true } },
+    provider: { name: "p", model: "m" },
+    history: [],
+    _touchedFiles: ["x.js"],
+    _advisorRound: MAX_ADVISOR_ROUNDS, // cap already reached — 5 reviews completed
+    _advisorSession: [],
+    cwd: tmpdir(),
+  }
+  const result = await runAdvisorReview(agent, "code", {})
+  assert.ok(result.includes("convergence cap reached"), `cap message expected, got: ${result}`)
+  assert.ok(result.includes(String(MAX_ADVISOR_ROUNDS)), "cap message names the round limit")
+})
+
+test("runAdvisorReview: cap does not block design reviews (each resets the round)", async () => {
+  const { runAdvisorReview, MAX_ADVISOR_ROUNDS } = await import("../src/advisor/run.mjs")
+  const agent = {
+    config: { advisor: { enabled: true } },
+    provider: { name: "p", model: "m" },
+    history: [],
+    _touchedFiles: [],
+    _advisorRound: MAX_ADVISOR_ROUNDS + 5,
+    _advisorSession: null,
+    cwd: tmpdir(),
+  }
+  // Pre-aborted signal: the tool loop returns "interrupted" immediately — no
+  // network call. If the cap guard wrongly blocked design reviews, we'd see the
+  // cap message instead, so this also proves the guard let the review through.
+  const result = await runAdvisorReview(agent, "design", { signal: { aborted: true } })
+  assert.ok(!result.includes("convergence cap reached"), `design review must bypass cap, got: ${result}`)
+  assert.ok(result.includes("interrupted"), `design review must reach the tool loop, got: ${result}`)
 })
 
 test("runAdvisorReview: code changes do NOT hit the doc-only fast path", async () => {

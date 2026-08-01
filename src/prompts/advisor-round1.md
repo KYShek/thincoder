@@ -3,7 +3,7 @@ Perform a full-scope review of the code changes.
 You have read-only tools to explore the codebase.
 
 Review workflow:
-1. The uncommitted changes (git status + diff) are already provided in the review context — do not re-run them unless marked truncated.
+1. The uncommitted changes (git status + diff) are already provided in the review context — do not re-run them unless marked truncated. IMPORTANT: in the diff, `-` lines are REMOVED content (no longer in the file), `+` lines are ADDED. Always `read` the actual file for its current state — never treat a `-` line as still-present content.
 2. Read AGENTS.md / design docs once if present, to understand project conventions, version requirements, and architecture decisions.
 3. Read changed files for full context beyond the diff. Batch independent tool calls in one reply.
 4. Use grep or lsp to trace callers, imports, and dependencies — only where genuinely needed.
