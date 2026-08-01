@@ -154,10 +154,10 @@ export const subagentTool = {
 
 /**
  * Merge an eng-coder child's mutations into the parent agent's bookkeeping.
- * The parent must stay aware of delegated file changes: its `_touchedFiles`
- * feed `runAdvisorReview`'s engineering-mode exemption and any opt-in guards
- * (verifyGuard / advisor.guard), and a prior verify/advisor is invalidated
- * because it judged an older state.
+ * The parent must stay aware of delegated file changes: `_touchedFiles` enables
+ * the advisor guard (completion.mjs) to detect that code was modified and
+ * pushback for review. Prior verify/advisor state is invalidated because it
+ * judged an older state.
  *
  * `_advisorRound` is reset to 0: merged code is new code that deserves a fresh
  * convergence budget. Mirrors the design-review reset semantics.

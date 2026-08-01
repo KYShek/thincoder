@@ -3,7 +3,7 @@
  * Shared by message building (advisor.mjs) and the review runner (advisor/run.mjs).
  */
 import { execFileSync } from "node:child_process"
-import { dirname, basename } from "node:path"
+import { dirname, basename, resolve } from "node:path"
 
 export const GIT_TIMEOUT = 5_000
 export const MAX_EMBEDDED_DIFF = 50_000
@@ -12,11 +12,12 @@ export const MAX_EMBEDDED_DIFF = 50_000
  * Find the git repository roots that contain the agent's touched files.
  * Falls back to cwd if no repos found.
  */
-export function findReviewRepos(agent) {
+export function findReviewRepos(agent, paths = null) {
   const touched = agent._touchedFiles ?? []
+  const sources = paths ? [...touched, ...paths.map((p) => resolve(agent.cwd, p))] : touched
   const repos = []
 
-  for (const abs of touched) {
+  for (const abs of sources) {
     try {
       const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
         cwd: dirname(abs), encoding: "utf8", timeout: GIT_TIMEOUT,

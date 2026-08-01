@@ -59,6 +59,7 @@ export async function startTUI(agent, opts = {}) {
   const state = {
     lines: [], // conversation lines: { text, color }
     streaming: "", // current streaming buffer
+    advisorStreaming: "", // advisor streaming buffer (formatted like main response)
     input: [], // input buffer (codepoint array)
     cursor: 0,
     history: [],

@@ -4,11 +4,8 @@
  */
 import { chat } from "../provider/core.mjs"
 import { findProvider } from "../config.mjs"
-import { existsSync } from "node:fs"
-import { join } from "node:path"
 import { toOpenAISchema } from "../tools/index.mjs"
-import { prepareAdvisorMessages, ADVISOR_MD_PATH } from "../advisor.mjs"
-import { findReviewRepos, isDocOnlyChange } from "./repos.mjs"
+import { prepareAdvisorMessages } from "../advisor.mjs"
 
 export const MAX_ADVISOR_TURNS = 30
 // Mechanical convergence cap: the protocol assumes up to 5 rounds suffice
@@ -151,19 +148,12 @@ export function resolveAdvisorProvider(agent) {
  * @param {string|null} [designToken] — injected into the design-review prompt; the advisor echoes it only on approval.
  * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review; passed through to the message builder.
  */
-export async function runAdvisorReview(agent, reviewType, callbacks, designToken = null, documents = null) {
+export async function runAdvisorReview(agent, reviewType, callbacks, designToken = null, documents = null, paths = null) {
   const onOutput = callbacks?.onOutput
   const signal = callbacks?.signal
   const cfg = agent.config?.advisor
   // Engineering mode overrides advisor toggle — reviews are mandatory regardless
   if (!cfg?.enabled && !agent.config?.agent?.engineering) return "Advisor: not enabled (set advisor.enabled in config.json)."
-
-  // Design reviews rely on git discovery (design docs may pre-exist, untracked, or
-  // written by the parent) — never block on _touchedFiles. For code reviews:
-  // engineering mode allows empty _touchedFiles (eng-coder did the mutations).
-  // Checked BEFORE the convergence cap so an empty-files call gets the accurate
-  // "nothing to review" answer instead of a misleading cap message.
-  if (reviewType !== "design" && !agent.config?.agent?.engineering && (agent._touchedFiles ?? []).length === 0) return "Advisor: no changed files to review."
 
   // Mechanical convergence cap — refuse further reviews once the protocol has run
   // its rounds. _advisorRound counts completed advisor calls (incremented by the
@@ -172,19 +162,11 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
     return `Advisor: convergence cap reached after ${MAX_ADVISOR_ROUNDS} rounds — the protocol assumes convergence by round ${MAX_ADVISOR_ROUNDS}. Accept the current state or manually re-review; do not call advisor again.`
   }
 
-  const repos = findReviewRepos(agent)
-
-  // Fast path: documentation-only changes skip code review ONLY — design review runs on docs
-  if (reviewType !== "design" && !existsSync(join(agent.cwd, ADVISOR_MD_PATH)) && isDocOnlyChange(repos, agent.cwd)) {
-    return "CODE_REVIEW_PASSED — documentation-only changes, code review skipped."
-  }
-
   const provider = resolveAdvisorProvider(agent)
+  // Advisor always works in the agent's cwd — scope is defined by paths/documents.
+  const advisorCwd = agent.cwd
 
-  // Set the advisor's cwd to the first repo (for tool context)
-  const advisorCwd = repos.length > 0 ? repos[0] : agent.cwd
-
-  const messages = prepareAdvisorMessages(agent, reviewType, designToken, documents)
+  const messages = prepareAdvisorMessages(agent, reviewType, designToken, documents, paths)
 
   try {
     const result = await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)

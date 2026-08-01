@@ -141,17 +141,18 @@ export function buildAdvisorFollowUp(agent, _prior) {
  * follow-up to the existing session so the advisor keeps its context.
  * After an app restart (session lost), starts a fresh round-1 full review —
  * exploration context is gone, so prior tables from history are not injected.
+ * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review
  * @param {string} [reviewType] — "design" or "code" (default)
  * @param {string|null} [designToken] — design-review approval token (design only)
  * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (passed through to buildAdvisorUserMessage)
  */
-export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null) {
+export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null, paths = null) {
   const prior = extractPriorIssueTable(agent.history)
   // Design review: always fresh session, no convergence
   if (reviewType === "design") {
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents) },
+      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths) },
     ]
   }
   let session = agent._advisorSession
@@ -159,10 +160,12 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     // Session exists but no prior table (last review was all-clear or none) —
     // a follow-up "Verify Prior Table" would be meaningless; start a fresh full review
     if (!prior) {
-      agent._advisorRound = 0
       agent._advisorSession = null
       agent._advisorLastSnapshot = null
       session = null
+      // Only reset the round counter on a truly fresh start (no prior reviews at all).
+      // If _advisorRound > 0, there WAS a prior review — it just passed (all-clear).
+      if (!agent._advisorRound) agent._advisorRound = 0
     } else {
       // Convergence rounds (2+): replace the system prompt so the round-1
       // "full-scope review" mandate cannot override the follow-up's narrowed scope.
@@ -176,13 +179,14 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   }
   session = [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents) },
+    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths) },
   ]
-  // Fresh session with no prior issue table → reset convergence round and stale snapshot
+  // Fresh session. Only reset round if this is truly the first review.
+  // If _advisorRound > 0, there was a prior review that passed (all-clear).
+  if (!agent._advisorRound) agent._advisorRound = 0
+  agent._advisorLastSnapshot = null
   if (!prior) {
-    agent._advisorRound = 0
-    agent._advisorLastSnapshot = null
-    // Tell the advisor why no prior issue table is present (first review, restart, or session clear)
+    // Tell the advisor why no prior issue table is present
     session[1] = {
       role: "user",
       content: `[System reminder: no prior issue table is being carried into this review (first review, app restart, or session clear) — start with a fresh full review.]\n\n${session[1].content}`,

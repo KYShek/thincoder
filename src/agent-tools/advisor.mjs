@@ -16,7 +16,7 @@ export const advisorTool = {
   description:
     "Run an independent review on your work. " +
     "Use type='design' to review design documents before implementation — pass documents=[...] with the explicit list of doc paths to review; use documents in code review too (the task's Docs involved list). " +
-    "Use type='code' (default) to review code changes after implementation. " +
+    "Use type='code' (default) to review code changes after implementation — pass paths=[...] to specify which files or directories to review, or documents=[...] for acceptance criteria context. " +
     "The advisor is an independent read-only sub-agent that explores the codebase, runs git diff, " +
     "reads files, and traces callers via grep/lsp. " +
     "For code review: round 1 does a full review, round 2 verifies the prior table, " +
@@ -29,6 +29,11 @@ export const advisorTool = {
     type: "object",
     properties: {
       type: { type: "string", enum: ["code", "design"], description: "Review type: 'design' for design doc review, 'code' for code review (default)" },
+      paths: {
+        type: "array",
+        items: { type: "string" },
+        description: "Code files or directories to review (for code review). Required unless documents is provided. The advisor reviews git diff filtered to these paths.",
+      },
       documents: {
         type: "array",
         items: { type: "string" },
@@ -43,6 +48,12 @@ export const advisorTool = {
     const agent = ctx.agent
     const reviewType = args.type || "code"
     const documents = args.documents || null
+    const paths = args.paths || null
+
+    // Code review must have a scope — no implicit fallback.
+    if (reviewType !== "design" && !paths && !documents) {
+      return "Advisor: no review scope specified. Provide paths (files/directories to review) or documents (acceptance criteria — code diff is still used)."
+    }
 
     // Design review: always starts from round 1 (no convergence)
     if (reviewType === "design") {
@@ -58,7 +69,7 @@ export const advisorTool = {
     const result = await runAdvisorReview(agent, reviewType, {
       onOutput: ctx.onOutput,
       signal: ctx.signal,
-    }, designToken, documents)
+    }, designToken, documents, paths)
 
     if (reviewType === "design") {
       // Whitespace-tolerant match (LLM may add spaces or wrap in fences).

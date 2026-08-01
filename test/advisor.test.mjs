@@ -48,14 +48,14 @@ test("extractPriorIssueTable: ignores header constants quoted inside source code
 
 test("extractPriorIssueTable: returns null when last review says all clear", () => {
   const history = [
-    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n|---|------|----------|-------|------------|\n\nCODE_REVIEW_PASSED" },
+    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n|---|------|----------|-------|------------|\n\nNo 🔴 issues found. Review passed." },
   ]
   assert.equal(extractPriorIssueTable(history), null)
 })
 
 test("extractPriorIssueTable: returns null when last review says all resolved", () => {
   const history = [
-    { role: "tool", tool_call_id: "a1", content: "| # | Orig# | File | Severity | Status | Notes |\n|---|-------|------|----------|--------|-------|\n| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |\nCODE_REVIEW_PASSED" },
+    { role: "tool", tool_call_id: "a1", content: "| # | Orig# | File | Severity | Status | Notes |\n|---|-------|------|----------|--------|-------|\n| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |\nNo 🔴 issues remaining." },
   ]
   assert.equal(extractPriorIssueTable(history), null)
 })
@@ -131,7 +131,7 @@ test("extractPriorIssueTable: all-fixed table with 'still' in notes returns null
   const table = `| # | Orig# | File | Severity | Status | Notes |
 |---|-------|------|----------|--------|-------|
 | 1 | 3 | src/x.mjs | 🔴 | Fixed | we should still add tests later |
-CODE_REVIEW_PASSED`
+No 🔴 issues remaining.`
   const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
   assert.equal(result, null, "全 Fixed + all-clear 短语 + Notes 里普通 'still' 不触发部分修复")
 })
@@ -217,7 +217,7 @@ test("buildAdvisorSystemPrompt: returns round 1 file when no prior table", () =>
 
 test("buildAdvisorSystemPrompt: returns round 1 file when last review was all clear", () => {
   const agent = {
-    history: [{ role: "tool", tool_call_id: "a1", content: "CODE_REVIEW_PASSED" }],
+    history: [{ role: "tool", tool_call_id: "a1", content: "No 🔴 issues found. Review passed." }],
     _advisorRound: 1, cwd: tmpdir(),
   }
   const prompt = buildAdvisorSystemPrompt(agent)
@@ -402,31 +402,20 @@ function createGitRepo(testDir) {
   execSync("git add -A && git commit -m init", { cwd: testDir, stdio: "ignore" })
 }
 
-test("buildAdvisorUserMessage: lists review repos from _touchedFiles", () => {
+test("buildAdvisorUserMessage: scope lists paths when provided", () => {
   const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
   try {
-    createGitRepo(tmp)
-    const subdir = join(tmp, "src")
-    mkdirSync(subdir, { recursive: true })
-    const touchedFile = join(subdir, "app.js")
-    // Commit a file so git repo is well-formed, then modify it (simulate agent edit)
-    writeFileSync(touchedFile, "// original")
-    execSync("git add -A && git commit -m init", { cwd: tmp, stdio: "ignore" })
-    writeFileSync(touchedFile, "// changed by agent")
-
     const agent = {
-      _touchedFiles: [touchedFile],
+      _touchedFiles: [],
       cwd: tmp,
       history: [],
       _advisorRound: 0,
     }
-    const msg = buildAdvisorUserMessage(agent)
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.js", "src/util.mjs"])
     assert.ok(msg.includes("## Review Scope"))
-    // git rev-parse may return paths with forward slashes on Windows
-    const normalized = msg.replace(/\\/g, "/")
-    assert.ok(normalized.includes(tmp.replace(/\\/g, "/")))
+    assert.ok(msg.includes("src/app.js"))
+    assert.ok(msg.includes("src/util.mjs"))
     assert.ok(msg.includes("## Instructions"))
-    assert.ok(msg.includes("git diff HEAD"))
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
@@ -674,25 +663,20 @@ test("extractConversationBackground: returns null on empty/noise-only history", 
   assert.equal(extractConversationBackground([{ role: "user", content: "[System reminder: x]" }]), null)
 })
 
-test("runAdvisorReview: documentation-only changes skip the review entirely", async () => {
+test("runAdvisorReview: documentation-only auto-skip removed", async () => {
+  // Doc-only fast path was removed — scope is now explicit via paths/documents.
+  // runAdvisorReview without paths just tries to run (fake provider → error).
   const { runAdvisorReview } = await import("../src/advisor/run.mjs")
-  const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
-  try {
-    createGitRepo(tmp)
-    writeFileSync(join(tmp, "README.md"), "# docs update\n")
-    const agent = {
-      config: { advisor: { enabled: true } },
-      provider: { name: "p", model: "m" },
-      history: [{ role: "user", content: "update the readme" }],
-      _touchedFiles: [join(tmp, "README.md")],
-      _advisorRound: 0,
-      cwd: tmp,
-    }
-    const result = await runAdvisorReview(agent, "code", {})
-    assert.ok(/CODE_REVIEW_PASSED/.test(result), `应跳过审查: ${result}`)
-  } finally {
-    rmSync(tmp, { recursive: true, force: true })
+  const agent = {
+    config: { advisor: { enabled: true } },
+    provider: { name: "p", model: "m" },
+    history: [{ role: "user", content: "update the readme" }],
+    _touchedFiles: [],
+    _advisorRound: 0,
+    cwd: tmpdir(),
   }
+  const result = await runAdvisorReview(agent, "code", {})
+  assert.ok(!result.includes("CODE_REVIEW_PASSED"), "CODE_REVIEW_PASSED should no longer appear")
 })
 
 test("runAdvisorReview: convergence cap blocks a 6th review call", async () => {

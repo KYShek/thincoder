@@ -27,5 +27,5 @@ Rules:
 |---|-------|------|----------|--------|-------|
 | 1 | 3     | src/x.mjs | 🔴 | Unfixed | ... |
 | N | (new) | src/y.mjs | 🔴 | New: null check missing after fix | ... |
-- If all issues are resolved, say exactly: "CODE_REVIEW_PASSED"
+- If all 🔴 issues are resolved and remaining items are only 🟡/🔵, the review passes (🟡/🔵 do not block approval). If any 🔴 issue persists, do not claim it passed.
 - Stop calling tools once you are ready to produce the review table.

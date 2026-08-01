@@ -5,8 +5,6 @@ import { ansi, C } from "./ansi.mjs"
 
 /** Tool execution start timestamps (performance.now ms), keyed by tool name. */
 const _toolTicks = Object.create(null)
-/** Streamed-output line counters for inline blocks (cap at 5 preview lines). */
-const _toolLines = Object.create(null)
 
 /** Execute one agent conversation turn (triggered by submit or queue).
  *  Extracted from index.mjs: agent loop + callback construction + error handling + queue processing.
@@ -34,6 +32,7 @@ export async function runAgentTurn(ctx, text) {
   state.status = "Processing..."
   state.streaming = ""
   state.reasoning = ""
+  state.advisorStreaming = ""
   state.subTasks = {}
   state.currentTool = null
   state.processingStarted = Date.now()
@@ -54,6 +53,7 @@ export async function runAgentTurn(ctx, text) {
       pushLine(state.streaming, C.text)
       state.streaming = ""
     }
+    state.advisorStreaming = ""
   }
 
   const callbacks = {
@@ -107,6 +107,7 @@ export async function runAgentTurn(ctx, text) {
         scheduleRender()
         return
       }
+      if (name === "advisor") state.advisorStreaming = ""
       flushStream()
       ensureAssistantLabel()
       state.currentTool = name
@@ -146,15 +147,15 @@ export async function runAgentTurn(ctx, text) {
           if (state.processing) render()
         }, 3000)
       }
-      if (name === "advisor") {
+      if (!isSubagent && name !== "advisor") {
         // Remove live streaming lines — done line handles the summary.
         for (let i = state.lines.length - 1; i >= 0; i--) {
-          if (state.lines[i]._live === "advisor") state.lines.splice(i, 1)
+          if (state.lines[i]._live === name) state.lines.splice(i, 1)
         }
-      } else if (!isSubagent) {
         const summary = formatToolSummary(name, result)
         if (summary) pushLine(`  ${summary}`, C.dim)
       }
+      if (name === "advisor") state.advisorStreaming = ""
       // Done line for ALL tools (panel area abolished — inline only).
       if (!isSubagent) {
         const elapsed = _toolTicks[name] ? ` (${Math.round(performance.now() - _toolTicks[name])}ms)` : ""
@@ -163,7 +164,6 @@ export async function runAgentTurn(ctx, text) {
         pushLine(`❯ ${name} — done${elapsed}${tail}`, C.dim)
       }
       delete _toolTicks[name]
-      delete _toolLines[name]
     },
     onToolOutput: (name, chunk) => {
       // All tools use inline conversation blocks — panel area is abolished.
@@ -173,48 +173,34 @@ export async function runAgentTurn(ctx, text) {
         : { kind: chunk?.kind ?? "text", text: String(chunk?.text ?? "").trimEnd() }
       if (!part.text) return
       if (name === "advisor") {
-        // Live streaming with kind-aware coloring: think (dim), tool calls (cyan),
-        // review text (bright green). Chunks without \n append to the previous
-        // same-kind line so tokens flow together. \n in a chunk means "start a new
-        // line" — segments after the first \n always begin fresh lines.
-        const color = part.kind === "think" ? C.reason
-          : part.kind === "tool" ? C.tool
-          : C.advisor
-        const appendable = part.kind !== "tool"
-        const segments = part.text.split("\n")
-        for (let i = 0; i < segments.length; i++) {
-          const trimmed = segments[i].trimEnd()
-          if (!trimmed) continue
-          if (appendable && i === 0) {
-            // First segment — append to previous same-kind line if one exists.
-            const last = state.lines.filter(l => l._live === "advisor").at(-1)
-            if (last && last._kind === part.kind) {
-              last.text += trimmed
-            } else {
-              state.lines.push({ text: `  ${trimmed}`, color, _live: "advisor", _kind: part.kind })
-            }
-          } else {
-            // After a \n, or tool chunk — always a new line.
-            const prefix = part.kind === "tool" ? "" : "  "
-            state.lines.push({ text: `${prefix}${trimmed}`, color, _live: "advisor", _kind: part.kind })
-          }
-        }
-        // Prune overflow: keep at most 20 advisor streaming lines
-        let count = 0
-        for (let i = state.lines.length - 1; i >= 0; i--) {
-          if (state.lines[i]._live === "advisor") {
-            if (++count > 20) state.lines.splice(i, 1)
-          }
-        }
+        // Accumulate to buffer — formatTables + wrapText in render-conversation
+        // handles markdown formatting and line wrapping, same as main agent response.
+        state.advisorStreaming += typeof chunk === "string" ? chunk : String(chunk?.text ?? "")
         scheduleRender()
         return
       }
-      const count = (_toolLines[name] = (_toolLines[name] ?? 0) + 1)
-      if (count <= 5) {
-        const color = ({ think: C.reason, tool: C.tool }[part.kind] ?? C.dim)
-        pushLine(`  │ ${sliceByWidth(part.text, 120)}`, color)
-      } else if (count === 6) {
-        pushLine(`  │ …`, C.dim)
+      // Rolling output — show latest N lines with fold marker per tool.
+      // _live marker per tool enables per-tool pruning without affecting other content.
+      const color = ({ think: C.reason, tool: C.tool }[part.kind] ?? C.dim)
+      for (const line of part.text.split("\n")) {
+        const trimmed = line.trimEnd()
+        if (!trimmed) continue
+        state.lines.push({ text: `│ ${trimmed}`, color, _live: name })
+      }
+      // Prune: keep at most 5 lines + "│ …" fold marker per tool
+      let count = 0
+      let hasFold = false
+      for (let i = state.lines.length - 1; i >= 0; i--) {
+        if (state.lines[i]._live === name) {
+          if (++count > 5) {
+            if (!hasFold) {
+              state.lines[i] = { text: "│ …", color: C.dim, _live: name }
+              hasFold = true; count = 5
+            } else {
+              state.lines.splice(i, 1)
+            }
+          }
+        }
       }
       scheduleRender()
     },
@@ -320,6 +306,7 @@ export async function runAgentTurn(ctx, text) {
     clearInterval(ticker)
     state.processing = false
     state.subTasks = {}
+    state.advisorStreaming = ""
     state.controller = null
     state.status = "Ready"
     // Auto-collapse todo panel when all tasks done (matching kimi-code TUI; agent.tasks are preserved)
@@ -377,7 +364,10 @@ function _bashSummary(result) {
 
 function _advisorSummary(result) {
   const text = String(result ?? "")
-  if (text.includes("CODE_REVIEW_PASSED")) return "advisor: passed"
+  if (/no 🔴|all.*(?:resolved|fixed|pass)/im.test(text)) return "advisor: passed"
+  // Error / skip messages — extract the reason after "Advisor:"
+  const errMatch = text.trimStart().match(/^Advisor:\s*(.+)/)
+  if (errMatch) return `advisor: ${errMatch[1].split(".")[0]}`
   const critical = (text.match(/\| \d+ \|.*\| 🔴/g) || []).length
   const advisory = (text.match(/\| \d+ \|.*\| 🟡/g) || []).length
   const style = (text.match(/\| \d+ \|.*\| 🔵/g) || []).length

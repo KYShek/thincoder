@@ -9,7 +9,7 @@ let _convCache = { key: "", cols: 0, lines: [] }
 
 export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
-  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.foldEnabled !== false ? "f" : "u"}`
+  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}`
 }
 
 function buildConvLines(state, cols) {
@@ -27,6 +27,17 @@ function buildConvLines(state, cols) {
   if (state.reasoning) {
     for (const wrapped of wrapText(sanitizeDisplay(state.reasoning), cols - 1)) {
       convLines.push({ text: wrapped, color: C.reason })
+    }
+  }
+  if (state.advisorStreaming) {
+    const formatted = formatTables(sanitizeDisplay(state.advisorStreaming), cols - 3)
+    const truncated = formatted.length > 5
+    if (truncated) convLines.push({ text: "│ …", color: C.dim })
+    const shown = truncated ? formatted.slice(-5) : formatted
+    for (const line of shown) {
+      for (const wrapped of wrapText(line, cols - 3)) {
+        convLines.push({ text: `│ ${wrapped}`, color: C.text })
+      }
     }
   }
   if (state.streaming) {

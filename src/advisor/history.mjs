@@ -29,7 +29,7 @@ export function extractPriorIssueTable(history) {
   // allClear: exact phrases the prompts instruct the advisor to use on a clean review.
   // NOTE: "已修复" (Fixed) is NOT here — it's a per-row Status value in convergence tables,
   // and a mixed table must continue convergence even if some rows are Fixed.
-  const allClear = ["code_review_passed", "all clear", "全部通过", "review passed", "no issues found", "no new issues"]
+  const allClear = ["no 🔴", "all clear", "全部通过", "review passed", "no issues found", "no new issues"]
   // Negative signals: a table listing SOME items as unfixed is NOT all-clear.
   // Applied when the message carries a Status column (English or Chinese convergence
   // format) — "failed"/"❌" in a round-1 Issue description must NOT trigger it.

@@ -374,15 +374,15 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           agent._calledAdvisorThisRun = true
           // Design reviews are a separate gate with no convergence protocol —
           // they must not consume code-review rounds (MAX_ADVISOR_ROUNDS budget).
-          // Only advance on successful reviews — timeout/interrupt/empty results
-          // should not burn convergence budget. (A retry with a narrower scope
-          // starts from the same round; the tools-cap formula handles convergence.)
-          const failed = typeof result === "string" && result.startsWith("Advisor:") && !result.includes("CODE_REVIEW_PASSED")
+          // Always advance the round — the convergence protocol cares about
+          // how many reviews have run (round 1→2→3→4→5), not how many succeeded.
+          // A failed/interrupted review is still a review attempt and should use
+          // the next round's prompt on retry.
           try {
             const advArgs = JSON.parse(toolCall.arguments || "{}")
-            if (advArgs.type !== "design" && !failed) agent._advisorRound++  // advance convergence round
+            if (advArgs.type !== "design") agent._advisorRound++
           } catch {
-            if (!failed) agent._advisorRound++ // unparseable args → treat as a code review
+            agent._advisorRound++
           }
         }
         if (FILE_MUTATORS.has(toolCall.name)) {

@@ -4,8 +4,9 @@
  * (.thincoder/advisor.md). System prompts live in advisor.mjs / prompts/.
  */
 import { readFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { resolve } from "node:path"
-import { findReviewRepos, collectRepoSnapshots, collectChangedFiles } from "./repos.mjs"
+import { findReviewRepos, collectRepoSnapshots, collectChangedFiles, MAX_EMBEDDED_DIFF } from "./repos.mjs"
 import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable, extractPriorIssueTable } from "./history.mjs"
 
 /**
@@ -19,20 +20,16 @@ import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable
  *   When absent, the legacy git-diff-based scope is kept (backward compatible).
  * @returns {string} the user message
  */
-export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken = null, documents = null) {
+export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken = null, documents = null, paths = null) {
   const prior = _prior ?? extractPriorIssueTable(agent.history)
-
-  // Repos to review
-  const repos = findReviewRepos(agent)
-  const repoList = repos.length > 0
-    ? repos.map((r, i) => `${i + 1}. ${r}`).join("\n")
-    : `(no git repository — working directory: ${agent.cwd})`
 
   const parts = []
   const docList = Array.isArray(documents) ? documents.filter((d) => typeof d === "string" && d.trim()) : []
+  const pathList = Array.isArray(paths) ? paths.filter((p) => typeof p === "string" && p.trim()) : []
 
   // Design review: simplified message — focus on the design doc, not code
   if (reviewType === "design") {
+    const repos = findReviewRepos(agent)
     parts.push("## Design Review")
     if (docList.length > 0) {
       // Explicit review scope (engineering mode, FR2): the caller hands over the
@@ -119,6 +116,12 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   }
 
   parts.push("## Review Scope")
+  if (pathList.length > 0) {
+    parts.push("Review these code files/directories — read them in full for context:")
+    parts.push("")
+    parts.push(pathList.map((p) => `- ${p}`).join("\n"))
+    parts.push("")
+  }
   if (docList.length > 0) {
     if (reviewType === "design") {
       parts.push("The documents below are the review scope. Review ONLY these files — do NOT scan git diff or read any other files.")
@@ -131,39 +134,22 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     parts.push("")
     parts.push("")
   }
-  // Code review always includes git diff for code inspection; design review
-  // with explicit documents skips it (docs ARE the change).
-  if (!docList.length || reviewType !== "design") {
-    parts.push(`Review the following git repositor${repos.length === 1 ? "y" : "ies"}:`)
-    parts.push(repoList)
-    parts.push("")
-
-    // Pre-collected changes — saves the advisor from spending its first tool
-    // calls on discovery (git status / git diff) every single round.
-    const snapshots = collectRepoSnapshots(repos, agent.cwd)
-    if (snapshots.length > 0) {
-      agent._advisorLastSnapshot = snapshots.join("\n")
-      parts.push("## Current Changes (git status + git diff HEAD, pre-collected)")
-      parts.push(...snapshots)
-      parts.push("")
-    } else {
-      // No uncommitted changes — but files were modified in this run.
-      // The system prompt says "uncommitted changes are already provided" —
-      // that's FALSE here, so correct the record so the advisor doesn't spend
-      // tool rounds re-discovering an empty diff.
-      const touched = agent._touchedFiles ?? []
-      if (touched.length > 0) {
-        parts.push("## Changed Files (no uncommitted diff)")
-        parts.push("All changes have been committed — `git diff HEAD` is empty.")
-        parts.push("Review these files (they were modified in this run):")
-        parts.push(touched.map((f) => `- ${f}`).join("\n"))
-        parts.push("")
-      } else {
-        parts.push("## Current Changes")
-        parts.push("(No uncommitted changes and no touched files — review may be unnecessary.)")
+  // Git diff as optional background — helps the advisor see what changed,
+  // but scope is defined by paths/documents, not by git.
+  if (reviewType !== "design") {
+    try {
+      const diff = execFileSync("git", ["diff", "HEAD"], {
+        cwd: agent.cwd, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 8 * 1024 * 1024,
+      })
+      if (diff.trim()) {
+        const truncated = diff.length > MAX_EMBEDDED_DIFF
+        parts.push("## Current Changes (git diff HEAD — for context)")
+        parts.push("```diff", truncated ? diff.slice(0, MAX_EMBEDDED_DIFF) : diff.trimEnd(), "```")
+        if (truncated) parts.push(`(diff truncated at ${MAX_EMBEDDED_DIFF} chars)`)
         parts.push("")
       }
-    }
+    } catch { /* git not available — fine, advisor uses read */ }
   }
 
   // Conversation background — recent user↔assistant exchanges for intent context
