@@ -6,9 +6,10 @@
 import { randomUUID } from "node:crypto"
 import { runAdvisorReview } from "../advisor/run.mjs"
 
-/** Build a [DESIGN-TOKEN:...] regex; escapes special chars as a safety net even though UUIDs contain only hex/hyphens. */
+/** Build a [DESIGN-TOKEN:...] regex; escapes special chars as a safety net even though UUIDs contain only hex/hyphens.
+ *  Anchored to its own line (multiline): an inline mention like "I would have included [DESIGN-TOKEN:x] but..." must NOT count as approval. */
 const makeDesignTokenRegex = (token, flags = "") =>
-  new RegExp(`\\[DESIGN-TOKEN:\\s*${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]`, flags)
+  new RegExp(`^\\[DESIGN-TOKEN:\\s*${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]\\s*$`, flags + "m")
 
 export const advisorTool = {
   name: "advisor",
@@ -41,6 +42,7 @@ export const advisorTool = {
     if (reviewType === "design") {
       agent._advisorRound = 0
       agent._advisorSession = null
+      agent._advisorLastSnapshot = null // stale diff dedup baseline must not leak into the next code review
     }
 
     // Generate the design token BEFORE the review and inject it into the advisor's prompt.
@@ -61,6 +63,15 @@ export const advisorTool = {
         // Advisor echoed the token → review passed. Issue it to the parent for eng-coder.
         // (session cleanup for design reviews is owned by runAdvisorReview)
         agent._engDesignToken = designToken
+        // Unlock the dispatch design gate (dispatch.mjs) for eng-coder SELF-review:
+        // an eng-coder whose own design review passed may write files without the
+        // parent spawn-time authorization. NOTE: unreachable today — eng-coder.md
+        // tells the child not to re-run the design review, and spawn already sets
+        // _engDesignReviewed (subagent.mjs). Kept as defense-in-depth for a future
+        // eng-coder autonomous design-revision entry. Parent agents (role undefined)
+        // don't use this flag — their runAgent resets it anyway; they are trusted
+        // via the engineering prompt.
+        if (agent._role === "eng-coder") agent._engDesignReviewed = true
         // Strip the bracketed token so only ONE unambiguous format (plain UUID) reaches the main agent
         const cleanResult = result.replace(makeDesignTokenRegex(designToken, "g"), "").trim()
         return `${cleanResult}\n\nApproved. Pass this exact token to eng-coder (designToken parameter): ${designToken}`

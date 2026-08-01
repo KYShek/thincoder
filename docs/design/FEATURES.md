@@ -92,6 +92,7 @@
 | `/new` | 新建会话（旧会话自动归档） |
 | `/goal` | 目标设置/取消 |
 | `/advisor` | 审查开关+模型选择 |
+| `/eng` | 工程模式开关（严格方法论：design-before-code，见 design/ENGINEERING-MODE.md） |
 | `/skills` | 列出项目技能 |
 | `/mcp` | MCP 服务器管理（add/remove/connect/list） |
 | `/reindex` | 重建代码索引 |

@@ -12,6 +12,7 @@ import { execSync } from "node:child_process"
 import { createMemory, put } from "../src/memory.mjs"
 import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
 import { goalTool } from "../src/agent-tools.mjs"
+import { mergeChildMutations } from "../src/agent-tools/subagent.mjs"
 
 function freshMemory() {
   return createMemory({ dbPath: ":memory:" })
@@ -2163,4 +2164,42 @@ action: abort
   assert.deepEqual(discoverRules(join(dir, "nonexistent")), [])
 
   rmSync(dir, { recursive: true, force: true })
+})
+
+// ────────────────────────────────────────
+// mergeChildMutations — engineering-mode mechanical code gate
+// ────────────────────────────────────────
+
+test("mergeChildMutations: eng-coder mutations trigger the parent's guards", () => {
+  const parent = {
+    _mutatedThisRun: false,
+    _touchedFiles: ["C:\\proj\\a.mjs"],
+    _calledAdvisorThisRun: true, // prior design review — must be invalidated
+    _verifiedThisRun: true,
+    _verifyPassed: true,
+  }
+  const child = {
+    _mutatedThisRun: true,
+    _touchedFiles: ["C:\\proj\\a.mjs", "C:\\proj\\b.mjs"], // a.mjs dup, b.mjs new
+  }
+  const merged = mergeChildMutations(parent, child)
+  assert.equal(merged, true)
+  assert.equal(parent._mutatedThisRun, true)
+  assert.deepEqual(parent._touchedFiles, ["C:\\proj\\a.mjs", "C:\\proj\\b.mjs"], "paths merged with dedup")
+  assert.equal(parent._calledAdvisorThisRun, false, "prior advisor review invalidated — code review must run AFTER eng-coder changes")
+  assert.equal(parent._verifiedThisRun, false, "prior verify invalidated")
+  assert.equal(parent._verifyPassed, undefined)
+})
+
+test("mergeChildMutations: child without mutations changes nothing", () => {
+  const parent = {
+    _mutatedThisRun: false,
+    _touchedFiles: [],
+    _calledAdvisorThisRun: false,
+    _verifiedThisRun: false,
+  }
+  const child = { _mutatedThisRun: false, _touchedFiles: [] }
+  assert.equal(mergeChildMutations(parent, child), false)
+  assert.equal(parent._mutatedThisRun, false)
+  assert.deepEqual(parent._touchedFiles, [])
 })

@@ -247,9 +247,10 @@ export function renderStatus(state, agent, cols, slashCommands) {
   const autoBanner = agent.autoApprove ? `${C.warn} AUTO${ansi.reset}${ansi.dim}│` : ""
   const planBanner = agent.planMode ? `${C.tool} PLAN${ansi.reset}${ansi.dim}│` : ""
   const advisorBanner = agent.config?.advisor?.enabled ? `${C.advisor} ADVISOR${ansi.reset}${ansi.dim}│` : ""
-  const bannerPrefix = (agent.planMode ? " PLAN│ " : "") + (agent.autoApprove ? " AUTO│ " : "") + (agent.config?.advisor?.enabled ? " ADVISOR│ " : "")
+  const engBanner = agent.config?.agent?.engineering ? `${C.advisor} ENG${ansi.reset}${ansi.dim}│` : ""
+  const bannerPrefix = (agent.planMode ? " PLAN│ " : "") + (agent.autoApprove ? " AUTO│ " : "") + (agent.config?.advisor?.enabled ? " ADVISOR│ " : "") + (agent.config?.agent?.engineering ? " ENG│ " : "")
   const statusMax = cols - 1 - (bannerPrefix ? stringWidth(bannerPrefix) : 0)
-  return `${ansi.dim}${planBanner}${autoBanner}${advisorBanner}${sliceByWidth(statusLine, Math.max(10, statusMax))}${ansi.reset}`
+  return `${ansi.dim}${planBanner}${autoBanner}${advisorBanner}${engBanner}${sliceByWidth(statusLine, Math.max(10, statusMax))}${ansi.reset}`
 }
 
 // ====================================================================

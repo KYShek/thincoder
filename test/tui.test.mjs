@@ -618,6 +618,14 @@ test("panel functions: renderStatus includes elapsed time during processing", ()
   assert.ok(line.includes("0s")) // just started
 })
 
+test("renderStatus: engineering mode shows ENG banner", () => {
+  const state = tuiState({ processing: false })
+  const on = renderStatus(state, { provider: { model: "test" }, cwd: "/test", planMode: false, autoApprove: false, config: { agent: { engineering: true } } }, 120, [])
+  assert.ok(on.includes("ENG"), "ENG banner shown when engineering mode is on")
+  const off = renderStatus(state, { provider: { model: "test" }, cwd: "/test", planMode: false, autoApprove: false, config: { agent: { engineering: false } } }, 120, [])
+  assert.ok(!off.includes("ENG"), "no ENG banner when engineering mode is off")
+})
+
 test("panel functions: renderPermission formats permission request", () => {
   const lines = renderPermission(["  Allow bash: rm -rf /", "  This is dangerous"])
   assert.equal(lines.length, 3)

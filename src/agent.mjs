@@ -67,7 +67,7 @@ export function createAgent({
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined, _calledAdvisorThisRun: false,
     _engDesignReviewed: false, // eng-coder: design review gate passed (hard gate in dispatch.mjs)
     _engDesignToken: null, // issued by advisor(type="design"); required to spawn eng-coder
-    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null,
+    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null, _advisorLastSnapshot: null,
     _pendingReminders: [],
     _pendingTimers: [],
     _sessionStart: sessionStart,
@@ -83,14 +83,21 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     { depth, signal, overrideTurns, resume, systemPrompt: SYSTEM_PROMPT, disciplineRules: DISCIPLINE_RULES, mainOverlay: MAIN_OVERLAY },
   )
 
-  agent._mutatedThisRun = false
-  agent._verifiedThisRun = false
-  agent._verifyPassed = undefined
-  agent._calledAdvisorThisRun = false
-  agent._touchedFiles = []
-  agent._verifyRetries = 0
-  agent._advisorRound = 0
-  agent._advisorSession = null // advisor session is per-run: discard when the task ends, next task starts fresh
+  // Per-run bookkeeping reset. On `resume` (ContinueError continuation) these are
+  // PRESERVED: the resumed run must keep mutation tracking so the advisor/verify
+  // guards stay active (a guard pushback on the last turn must not silently vanish),
+  // and the convergence budget must not be resettable by continuing the session.
+  if (!resume) {
+    agent._mutatedThisRun = false
+    agent._verifiedThisRun = false
+    agent._verifyPassed = undefined
+    agent._calledAdvisorThisRun = false
+    agent._touchedFiles = []
+    agent._verifyRetries = 0
+    agent._advisorRound = 0
+    agent._advisorSession = null // advisor session is per-run: discard when the task ends, next task starts fresh
+    agent._advisorLastSnapshot = null // dedup baseline is per-run too — stale snapshot could wrongly suppress a diff refresh
+  }
   // eng-coder authorization is set by subagent.mjs AFTER token validation but BEFORE runAgent —
   // only reset for the top-level agent (depth 0); child runs must keep their granted authorization
   if (depth === 0) agent._engDesignReviewed = false
@@ -262,7 +269,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         continue
       }
       // --- verify guard: push model to verify mutated files before completion ---
-      if (depth === 0 && agent.config.verifyGuard === true) {
+      // Engineering mode enforces verify mechanically (methodology requires
+      // verifiable acceptance criteria) — same pushback loop as opt-in verifyGuard.
+      if (depth === 0 && (agent.config.verifyGuard === true || agent.config?.agent?.engineering)) {
         // Not verified yet → pushback to run verify
         if (agent._mutatedThisRun && !agent._verifiedThisRun && guardPushbacks < MAX_VERIFY_PUSHBACKS) {
           guardPushbacks++
@@ -397,7 +406,14 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         if (toolCall.name === "verify") agent._verifiedThisRun = true
         if (toolCall.name === "advisor") {
           agent._calledAdvisorThisRun = true
-          agent._advisorRound++  // advance convergence round
+          // Design reviews are a separate gate with no convergence protocol —
+          // they must not consume code-review rounds (MAX_ADVISOR_ROUNDS budget).
+          try {
+            const advArgs = JSON.parse(toolCall.arguments || "{}")
+            if (advArgs.type !== "design") agent._advisorRound++  // advance convergence round
+          } catch {
+            agent._advisorRound++ // unparseable args → treat as a code review
+          }
         }
         if (FILE_MUTATORS.has(toolCall.name)) {
           const args = JSON.parse(toolCall.arguments)

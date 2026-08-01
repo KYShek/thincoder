@@ -142,6 +142,45 @@ export const subagentTool = {
       report = await runAgent(child, REPORT_CONTINUATION, childOpts, childRunOpts)
     }
 
+    // Engineering mode mechanical code gate: delegated file changes must not
+    // bypass the parent's advisor/verify guards. Merge the child's mutations
+    // into the parent so "advisor mandatory at both gates" is enforced, not just
+    // promised in the engineering prompt.
+    if (role === "eng-coder") mergeChildMutations(parent, child)
+
     return report
   },
+}
+
+/**
+ * Merge an eng-coder child's mutations into the parent agent's bookkeeping.
+ * Without this, delegating ALL file changes to an eng-coder leaves the parent's
+ * `_mutatedThisRun` false, so the advisor guard (agent.mjs) never fires and the
+ * mandatory code review is silently skipped.
+ *
+ * Invalidation chain: the parent's earlier `_calledAdvisorThisRun` (e.g. the
+ * design review) is explicitly invalidated here — the design review judged the
+ * DESIGN, not the implementation; the eng-coder's code needs its own review.
+ * Same for a prior verify.
+ *
+ * `_advisorRound` is reset to 0: merged code is new code that deserves a fresh
+ * convergence budget. Without this, a parent that accumulated code-review rounds
+ * before spawning could hit MAX_ADVISOR_ROUNDS right after the merge and deadlock
+ * (guard pushes → cap refuses → loop). Mirrors the design-review reset semantics.
+ *
+ * Returns true when mutations were merged (kept for future caller checks).
+ */
+export function mergeChildMutations(parent, child) {
+  if (!child._mutatedThisRun) return false
+  parent._mutatedThisRun = true
+  for (const abs of child._touchedFiles ?? []) {
+    if (!parent._touchedFiles.includes(abs)) parent._touchedFiles.push(abs)
+  }
+  if (parent._calledAdvisorThisRun) parent._calledAdvisorThisRun = false
+  if (parent._verifiedThisRun) {
+    parent._verifiedThisRun = false
+    parent._verifyPassed = undefined
+  }
+  parent._advisorRound = 0 // fresh code → fresh convergence budget
+  return true
 }
