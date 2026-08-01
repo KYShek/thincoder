@@ -15,7 +15,7 @@ export const advisorTool = {
   name: "advisor",
   description:
     "Run an independent review on your work. " +
-    "Use type='design' to review a design document before implementation. " +
+    "Use type='design' to review design documents before implementation — pass documents=[...] with the explicit list of doc paths to review; use documents in code review too (the task's Docs involved list). " +
     "Use type='code' (default) to review code changes after implementation. " +
     "The advisor is an independent read-only sub-agent that explores the codebase, runs git diff, " +
     "reads files, and traces callers via grep/lsp. " +
@@ -29,6 +29,11 @@ export const advisorTool = {
     type: "object",
     properties: {
       type: { type: "string", enum: ["code", "design"], description: "Review type: 'design' for design doc review, 'code' for code review (default)" },
+      documents: {
+        type: "array",
+        items: { type: "string" },
+        description: "Explicit list of doc paths to review (design docs, requirements docs, referenced docs). The advisor reviews ONLY these — it does NOT scan git diff. Use for both design review and code review to pass the task's Docs involved list.",
+      },
     },
   },
   readonly: true,
@@ -37,6 +42,7 @@ export const advisorTool = {
   async execute(args, ctx) {
     const agent = ctx.agent
     const reviewType = args.type || "code"
+    const documents = args.documents || null
 
     // Design review: always starts from round 1 (no convergence)
     if (reviewType === "design") {
@@ -52,7 +58,7 @@ export const advisorTool = {
     const result = await runAdvisorReview(agent, reviewType, {
       onOutput: ctx.onOutput,
       signal: ctx.signal,
-    }, designToken)
+    }, designToken, documents)
 
     if (reviewType === "design") {
       // Whitespace-tolerant match (LLM may add spaces or wrap in fences).
@@ -86,6 +92,6 @@ export const advisorTool = {
         return stripped || "Advisor: design review did not pass."
       }
     }
-    return result ?? "Advisor: review is disabled or no changes to review."
+    return result
   },
 }

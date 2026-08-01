@@ -154,19 +154,13 @@ export const subagentTool = {
 
 /**
  * Merge an eng-coder child's mutations into the parent agent's bookkeeping.
- * Without this, delegating ALL file changes to an eng-coder leaves the parent's
- * `_mutatedThisRun` false, so the advisor guard (agent.mjs) never fires and the
- * mandatory code review is silently skipped.
- *
- * Invalidation chain: the parent's earlier `_calledAdvisorThisRun` (e.g. the
- * design review) is explicitly invalidated here — the design review judged the
- * DESIGN, not the implementation; the eng-coder's code needs its own review.
- * Same for a prior verify.
+ * The parent must stay aware of delegated file changes: its `_touchedFiles`
+ * feed `runAdvisorReview`'s engineering-mode exemption and any opt-in guards
+ * (verifyGuard / advisor.guard), and a prior verify/advisor is invalidated
+ * because it judged an older state.
  *
  * `_advisorRound` is reset to 0: merged code is new code that deserves a fresh
- * convergence budget. Without this, a parent that accumulated code-review rounds
- * before spawning could hit MAX_ADVISOR_ROUNDS right after the merge and deadlock
- * (guard pushes → cap refuses → loop). Mirrors the design-review reset semantics.
+ * convergence budget. Mirrors the design-review reset semantics.
  *
  * Returns true when mutations were merged (kept for future caller checks).
  */
@@ -181,6 +175,11 @@ export function mergeChildMutations(parent, child) {
     parent._verifiedThisRun = false
     parent._verifyPassed = undefined
   }
-  parent._advisorRound = 0 // fresh code → fresh convergence budget
+  // Fresh code → fresh convergence budget + stale session/diff cleanup.
+  // _advisorRound reset ensures new code gets a full round-1 review;
+  // _advisorSession + _advisorLastSnapshot prevent cross-contamination.
+  parent._advisorRound = 0
+  parent._advisorSession = null
+  parent._advisorLastSnapshot = null
   return true
 }

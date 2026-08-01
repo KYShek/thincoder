@@ -14,9 +14,12 @@ import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable
  * @param {Object|null} [_prior] — prior issue table
  * @param {string} [reviewType] — "design" or "code" (default)
  * @param {string|null} [designToken] — token injected into the design-review prompt; the advisor echoes it only on approval
+ * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (requirements + design + referenced docs).
+ *   When set, the review input is built from this list ONLY — no git-diff change-set collection.
+ *   When absent, the legacy git-diff-based scope is kept (backward compatible).
  * @returns {string} the user message
  */
-export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken = null) {
+export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken = null, documents = null) {
   const prior = _prior ?? extractPriorIssueTable(agent.history)
 
   // Repos to review
@@ -26,31 +29,45 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     : `(no git repository — working directory: ${agent.cwd})`
 
   const parts = []
+  const docList = Array.isArray(documents) ? documents.filter((d) => typeof d === "string" && d.trim()) : []
 
   // Design review: simplified message — focus on the design doc, not code
   if (reviewType === "design") {
     parts.push("## Design Review")
-    parts.push("The following changes are a design document. Review it against the project's methodology.")
-    parts.push("")
+    if (docList.length > 0) {
+      // Explicit review scope (engineering mode, FR2): the caller hands over the
+      // doc list — the advisor reviews ONLY these. No git-diff change-set
+      // collection: diff-based discovery reviewed unrelated files, and untracked
+      // design docs were invisible to git diff anyway (ENGINEERING-MODE.md §2.4).
+      parts.push("The documents below are the review scope. Review ONLY these files — do not scan git diff or read any other files.")
+      parts.push("")
+      parts.push("## Documents to Review")
+      parts.push(docList.map((d) => `- ${d} — Read this file in full`).join("\n"))
+      parts.push("")
+    } else {
+      // Backward-compatible fallback (no documents): discover docs via git status/diff.
+      parts.push("The following changes are a design document. Review it against the project's methodology.")
+      parts.push("")
 
-    // List changed file paths explicitly — new design docs are untracked,
-    // so git diff HEAD won't show their content; the advisor must read the file itself
-    const changedFiles = collectChangedFiles(repos, agent.cwd)
-    if (changedFiles.length > 0) {
-      parts.push("## Changed Files")
-      parts.push(changedFiles.map((f) => `- ${f}`).join("\n"))
-      parts.push("")
-      parts.push("Read each changed file in full — untracked files are not shown in the diff below.")
-      parts.push("")
-    }
+      // List changed file paths explicitly — new design docs are untracked,
+      // so git diff HEAD won't show their content; the advisor must read the file itself
+      const changedFiles = collectChangedFiles(repos, agent.cwd)
+      if (changedFiles.length > 0) {
+        parts.push("## Changed Files")
+        parts.push(changedFiles.map((f) => `- ${f}`).join("\n"))
+        parts.push("")
+        parts.push("Read each changed file in full — untracked files are not shown in the diff below.")
+        parts.push("")
+      }
 
-    // Pre-collected changes — the design doc diff.
-    // _advisorLastSnapshot is only consumed by code-review convergence — skip the write here.
-    const snapshots = collectRepoSnapshots(repos, agent.cwd)
-    if (snapshots.length > 0) {
-      parts.push("## Design Document (git diff)")
-      parts.push(...snapshots)
-      parts.push("")
+      // Pre-collected changes — the design doc diff.
+      // _advisorLastSnapshot is only consumed by code-review convergence — skip the write here.
+      const snapshots = collectRepoSnapshots(repos, agent.cwd)
+      if (snapshots.length > 0) {
+        parts.push("## Design Document (git diff)")
+        parts.push(...snapshots)
+        parts.push("")
+      }
     }
 
     // Engineering mode: inject project methodology
@@ -66,7 +83,11 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     }
 
     parts.push("## Instructions")
-    parts.push("1. Read the design document fully. Read METHODOLOGY.md to understand the project's standards.")
+    if (docList.length > 0) {
+      parts.push("1. Read every document in the Documents to Review list in full — review ONLY those files. Read METHODOLOGY.md to understand the project's standards.")
+    } else {
+      parts.push("1. Read the design document fully. Read METHODOLOGY.md to understand the project's standards.")
+    }
     parts.push("2. Review against: completeness (all requirements covered?), feasibility (can this be built?), clarity (specific enough?), acceptance criteria (verifiable?), scope (appropriate?).")
     parts.push("3. Do NOT run git diff or look for code changes — there are none at this stage.")
     parts.push("4. If you find issues, produce your review table with the format: | # | Category | Severity | Issue | Suggestion |. If the design passes, no table is needed.")
@@ -97,24 +118,52 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     parts.push("")
   }
 
-  // Review scope
   parts.push("## Review Scope")
-  parts.push(`Review the following git repositor${repos.length === 1 ? "y" : "ies"}:`)
-  parts.push(repoList)
-  parts.push("")
-
-  // Pre-collected changes — saves the advisor from spending its first tool
-  // calls on discovery (git status / git diff) every single round.
-  const snapshots = collectRepoSnapshots(repos, agent.cwd)
-  // Set the dedup baseline for follow-up rounds: buildAdvisorFollowUp compares
-  // the next snapshot against this to skip re-pushing an identical diff. Only
-  // set when snapshots are non-empty — an empty snapshot must not suppress a
-  // legitimate diff refresh in buildAdvisorFollowUp.
-  if (snapshots.length > 0) {
-    agent._advisorLastSnapshot = snapshots.join("\n")
-    parts.push("## Current Changes (git status + git diff HEAD, pre-collected)")
-    parts.push(...snapshots)
+  if (docList.length > 0) {
+    if (reviewType === "design") {
+      parts.push("The documents below are the review scope. Review ONLY these files — do NOT scan git diff or read any other files.")
+    } else {
+      parts.push("The documents below define acceptance criteria and review context. Read them for context, then use git diff and read to inspect the actual code changes. Judge the implementation against these documents.")
+    }
     parts.push("")
+    parts.push("## Documents to Review")
+    parts.push(docList.map((d) => `- ${d} — Read this file in full`).join("\n"))
+    parts.push("")
+    parts.push("")
+  }
+  // Code review always includes git diff for code inspection; design review
+  // with explicit documents skips it (docs ARE the change).
+  if (!docList.length || reviewType !== "design") {
+    parts.push(`Review the following git repositor${repos.length === 1 ? "y" : "ies"}:`)
+    parts.push(repoList)
+    parts.push("")
+
+    // Pre-collected changes — saves the advisor from spending its first tool
+    // calls on discovery (git status / git diff) every single round.
+    const snapshots = collectRepoSnapshots(repos, agent.cwd)
+    if (snapshots.length > 0) {
+      agent._advisorLastSnapshot = snapshots.join("\n")
+      parts.push("## Current Changes (git status + git diff HEAD, pre-collected)")
+      parts.push(...snapshots)
+      parts.push("")
+    } else {
+      // No uncommitted changes — but files were modified in this run.
+      // The system prompt says "uncommitted changes are already provided" —
+      // that's FALSE here, so correct the record so the advisor doesn't spend
+      // tool rounds re-discovering an empty diff.
+      const touched = agent._touchedFiles ?? []
+      if (touched.length > 0) {
+        parts.push("## Changed Files (no uncommitted diff)")
+        parts.push("All changes have been committed — `git diff HEAD` is empty.")
+        parts.push("Review these files (they were modified in this run):")
+        parts.push(touched.map((f) => `- ${f}`).join("\n"))
+        parts.push("")
+      } else {
+        parts.push("## Current Changes")
+        parts.push("(No uncommitted changes and no touched files — review may be unnecessary.)")
+        parts.push("")
+      }
+    }
   }
 
   // Conversation background — recent user↔assistant exchanges for intent context

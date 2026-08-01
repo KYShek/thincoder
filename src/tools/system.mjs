@@ -378,7 +378,7 @@ export const lsTool = {
       }),
     )
     rows.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1))
-    if (rows.length === 0) return "(empty directory)"
+    if (rows.length === 0) return "(no entries)"
     const out = rows.map((r) => `${r.dir ? "d" : "-"}  ${r.name.padEnd(40)} ${String(r.size).padStart(10)}  ${r.mtime}`)
     return truncate(out.join("\n"))
   },

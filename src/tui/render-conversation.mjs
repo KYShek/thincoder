@@ -9,7 +9,7 @@ let _convCache = { key: "", cols: 0, lines: [] }
 
 export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
-  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${Object.keys(state.toolStreams).length}|${state.foldEnabled !== false ? "f" : "u"}`
+  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.foldEnabled !== false ? "f" : "u"}`
 }
 
 function buildConvLines(state, cols) {
@@ -36,14 +36,6 @@ function buildConvLines(state, cols) {
       }
     }
   }
-  const allStreams = Object.values(state.toolStreams).join("")
-  if (allStreams) {
-    const tail = sanitizeDisplay(allStreams.slice(-4000))
-    for (const wrapped of wrapText(tail, cols - 1)) {
-      convLines.push({ text: wrapped, color: C.dim })
-    }
-  }
-
   // Fold long blocks (> 8 consecutive dim lines)
   const FOLD_LINES = 8
   let foldCounter = 0

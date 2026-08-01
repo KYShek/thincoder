@@ -542,7 +542,8 @@ test("panel functions: renderOutput formats active panels", () => {
     },
   })
   const lines = renderOutput(state, 80, 4)
-  assert.ok(lines.some((l) => l.includes("running")))
+  assert.ok(lines.some((l) => l.includes("❯ test")), "title row shows tool name")
+  assert.ok(lines.some((l) => l.includes("running")), "title row shows running status")
 })
 
 test("panel functions: renderOutput colors lines by part kind", () => {
@@ -575,6 +576,30 @@ test("panel functions: renderOutput hides done panels", () => {
   })
   const lines = renderOutput(state, 80, 4)
   assert.equal(lines.length, 0)
+})
+
+test("panel functions: renderOutput keeps done panel during closeAt grace", () => {
+  const state = tuiState({
+    outputPanels: {
+      bash: { parts: [{ kind: "text", text: "build ok" }], len: 8, done: true, closeAt: Date.now() + 60000 },
+    },
+  })
+  const lines = renderOutput(state, 80, 4)
+  assert.ok(lines.some((l) => l.includes("❯ bash")), "title still visible during grace")
+  assert.ok(lines.some((l) => l.includes("build ok")), "content still visible during grace")
+})
+
+test("panel functions: renderOutput splits height across multiple panels", () => {
+  const state = tuiState({
+    outputPanels: {
+      a: { parts: [{ kind: "text", text: "a1\na2" }], len: 4, done: false },
+      b: { parts: [{ kind: "text", text: "b1" }], len: 2, done: false },
+    },
+  })
+  const lines = renderOutput(state, 80, 8)
+  assert.ok(lines.some((l) => l.includes("❯ a")), "panel a title visible")
+  assert.ok(lines.some((l) => l.includes("❯ b")), "panel b title visible")
+  assert.equal(lines.length, 8, "fills exactly allocated height")
 })
 
 test("panel functions: renderFrame (legacy) produces valid ANSI", () => {

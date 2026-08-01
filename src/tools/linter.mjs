@@ -5,11 +5,7 @@ import { join, relative } from "node:path"
 
 export const lintTool = {
   name: "lint",
-  description:
-    "Run the appropriate linter/checker for a file. Auto-detects based on file extension and project config.\n" +
-    "Without 'full', runs a fast node --check (JS/TS syntax only, catches parse errors in milliseconds).\n" +
-    "With 'full', runs the language-aware cascade: eslint → tsc –noEmit → node --check (JS/TS/TSX); ruff (Python); cargo check (Rust); go vet (Go).\n" +
-    "Use the fast default after every write/edit; use 'full' before declaring a task complete.",
+  description: DESC("lint"),
   parameters: {
     type: "object",
     properties: {

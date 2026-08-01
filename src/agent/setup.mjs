@@ -21,13 +21,19 @@ const MEMORY_SEARCH_LIMIT = 3
 
 /** Build engineering-mode system prompt by reading METHODOLOGY.md and wrapping it in the engineering template */
 async function buildEngineeringPrompt(cwd, role) {
-  const methodologyPath = resolve(cwd, "METHODOLOGY.md")
-  if (!existsSync(methodologyPath)) return null
-  const methodology = readFileSync(methodologyPath, "utf8")
   const engFile = role === "eng-coder" ? "engineering-sub.md" : "engineering.md"
   const engTemplatePath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "prompts", engFile)
   let engTemplate = ""
-  try { engTemplate = readFileSync(engTemplatePath, "utf8") } catch { /* ignore */ }
+  try { engTemplate = readFileSync(engTemplatePath, "utf8") } catch {
+    if (role === "eng-coder") console.warn(`[setup] engineering-sub.md missing — eng-coder will run with degraded engineering constraints. Path: ${engTemplatePath}`)
+  }
+  const methodologyPath = resolve(cwd, "METHODOLOGY.md")
+  if (!existsSync(methodologyPath)) {
+    // Template-only — engineering constraints stay active, minus project rules.
+    // The caller injects a warning into the history.
+    return engTemplate || null
+  }
+  const methodology = readFileSync(methodologyPath, "utf8")
   return engTemplate
     ? `${engTemplate}\n\n---\n\n## Project METHODOLOGY.md\n\n${methodology}`
     : `[ENGINEERING MODE]\n\nFollow this methodology strictly:\n\n${methodology}`
@@ -135,7 +141,7 @@ export async function prepareRun(agent, input, callbacks, {
 
   // task/plan tools are injected with the main loop; subagent/skill/goal/verify only at top level
   // eng-coder subagents get advisor for mandatory design review before coding
-  const { planTool, subagentTool, taskTool, skillTool, goalTool, verifyTool, recentChangesTool, timerTool, advisorTool } = await import("../agent-tools.mjs")
+  const { planTool, subagentTool, taskTool, skillTool, goalTool, verifyTool, recentChangesTool, timerTool, advisorTool, engTool } = await import("../agent-tools.mjs")
   // Role enum is mutually exclusive: normal mode has "coder", engineering mode has "eng-coder"
   const subagentRoles = (depth === 0 && agent.config?.agent?.engineering)
     ? {
@@ -160,7 +166,7 @@ export async function prepareRun(agent, input, callbacks, {
     },
   } : subagentTool
 
-  const depthOnly = depth === 0 ? [filteredSubagent, skillTool, goalTool, verifyTool, recentChangesTool, advisorTool]
+  const depthOnly = depth === 0 ? [filteredSubagent, skillTool, goalTool, engTool, verifyTool, recentChangesTool, advisorTool]
     : agent._role === "eng-coder" ? [advisorTool, verifyTool] : []
   const tools = [...agent.tools, taskTool, planTool, timerTool, ...depthOnly]
   const toolSchemas = tools.map(toOpenAISchema)
@@ -171,27 +177,29 @@ export async function prepareRun(agent, input, callbacks, {
   const needsDiscipline = depth === 0 || agent._role === "coder" || agent._role === "eng-coder"
   let base
   if ((depth === 0 || agent._role === "eng-coder") && agent.config?.agent?.engineering) {
-    // Engineering mode: strict methodology, no standard discipline
+    // Engineering mode: strict methodology, NO standard discipline injection.
+    // Falling back to standard discipline on METHODOLOGY.md absence would leak
+    // advisor enforcement into engineering mode — the two prompt sets stay separate.
     const engRules = await buildEngineeringPrompt(agent.cwd, agent._role)
     if (engRules) {
       base = `${corePrompt}\n\n${engRules}`
     } else {
-      // METHODOLOGY.md missing — fall back to standard discipline, push warning as user message
-      // (user message avoids breaking system prompt cache)
-      base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt
-      if (depth === 0) {
-        agent.history.push({
-          role: "user",
-          content: "[System reminder: ENGINEERING MODE is active but METHODOLOGY.md was not found. Engineering constraints are NOT in effect. Create METHODOLOGY.md or disable engineering mode (/eng).]",
-        })
-      }
+      // Template unreadable — last resort: core prompt only, no methodology.
+      base = corePrompt
+    }
+    // Warn when METHODOLOGY.md is missing (template-only engineering constraints).
+    if (depth === 0 && !existsSync(resolve(agent.cwd, "METHODOLOGY.md"))) {
+      agent.history.push({
+        role: "user",
+        content: "[System reminder: ENGINEERING MODE is active but METHODOLOGY.md was not found. Engineering constraints are template-only — the project-specific rules are absent. Create METHODOLOGY.md for full enforcement or disable engineering mode (/eng).]",
+      })
     }
   } else {
     base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt
   }
   let systemPrompt = agent.overlay
     ? `${agent.overlay}\n\n${base}`
-    : depth === 0
+    : depth === 0 && !agent.config?.agent?.engineering
       ? `${base}\n\n${mainOverlay}`
       : base
 

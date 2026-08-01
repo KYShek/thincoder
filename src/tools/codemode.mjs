@@ -24,7 +24,7 @@
 import { Script, createContext } from "node:vm"
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync } from "node:fs"
 import { join, dirname, relative, resolve } from "node:path"
-import { globToRegex, normalizeEOL, isPrivateHost } from "./shared.mjs"
+import { DESC, globToRegex, normalizeEOL, isPrivateHost } from "./shared.mjs"
 
 const MAX_OUTPUT = 50_000
 const MAX_SCRIPT = 50_000
@@ -53,9 +53,7 @@ async function sandboxFetch(url) {
 
 export const codeModeTool = {
   name: "execute",
-  description:
-    "Execute sandboxed JavaScript code. Use this to compose multiple file operations into one call — " +
-    "read, write, glob, grep, and log results. No network or system access. Max 30s timeout, 50KB output.",
+  description: DESC("execute"),
   parameters: {
     type: "object",
     properties: {

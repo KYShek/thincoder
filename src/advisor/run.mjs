@@ -73,7 +73,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     const response = await chat(provider, {
       messages,
       tools: ADVISOR_TOOL_SCHEMAS,
-      signal: (signal && !signal.aborted) ? signal : new AbortController().signal,
+      signal: (signal && !signal.aborted) ? signal : null,
       onToken: onText,
       onReasoning: onThink,
     })
@@ -148,21 +148,22 @@ export function resolveAdvisorProvider(agent) {
 
 /**
  * Run an advisor review. reviewType: "code" (default) or "design". Returns review text or null when skipped.
- * @param {string|null} designToken — injected into the design-review prompt; the advisor echoes it only on approval.
+ * @param {string|null} [designToken] — injected into the design-review prompt; the advisor echoes it only on approval.
+ * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review; passed through to the message builder.
  */
-export async function runAdvisorReview(agent, reviewType, callbacks, designToken) {
+export async function runAdvisorReview(agent, reviewType, callbacks, designToken = null, documents = null) {
   const onOutput = callbacks?.onOutput
   const signal = callbacks?.signal
   const cfg = agent.config?.advisor
   // Engineering mode overrides advisor toggle — reviews are mandatory regardless
-  if (!cfg?.enabled && !agent.config?.agent?.engineering) return null
+  if (!cfg?.enabled && !agent.config?.agent?.engineering) return "Advisor: not enabled (set advisor.enabled in config.json)."
 
   // Design reviews rely on git discovery (design docs may pre-exist, untracked, or
   // written by the parent) — never block on _touchedFiles. For code reviews:
   // engineering mode allows empty _touchedFiles (eng-coder did the mutations).
   // Checked BEFORE the convergence cap so an empty-files call gets the accurate
   // "nothing to review" answer instead of a misleading cap message.
-  if (reviewType !== "design" && !agent.config?.agent?.engineering && (agent._touchedFiles ?? []).length === 0) return null
+  if (reviewType !== "design" && !agent.config?.agent?.engineering && (agent._touchedFiles ?? []).length === 0) return "Advisor: no changed files to review."
 
   // Mechanical convergence cap — refuse further reviews once the protocol has run
   // its rounds. _advisorRound counts completed advisor calls (incremented by the
@@ -175,7 +176,7 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
 
   // Fast path: documentation-only changes skip code review ONLY — design review runs on docs
   if (reviewType !== "design" && !existsSync(join(agent.cwd, ADVISOR_MD_PATH)) && isDocOnlyChange(repos, agent.cwd)) {
-    return "No issues found — documentation-only changes, code review skipped."
+    return "CODE_REVIEW_PASSED — documentation-only changes, code review skipped."
   }
 
   const provider = resolveAdvisorProvider(agent)
@@ -183,15 +184,20 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
   // Set the advisor's cwd to the first repo (for tool context)
   const advisorCwd = repos.length > 0 ? repos[0] : agent.cwd
 
-  const messages = prepareAdvisorMessages(agent, reviewType, designToken)
+  const messages = prepareAdvisorMessages(agent, reviewType, designToken, documents)
 
   try {
     const result = await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)
-    // Persist the conversation: the next advisor call in this run continues here
-    // (reset by runAgent when the run ends — each task gets a fresh advisor session).
-    // Design reviews never persist — they always start fresh (no convergence), so a
-    // design session must not leak into a later code review.
-    agent._advisorSession = reviewType === "design" ? null : messages
+    // Only persist the session on success — timeout/interrupt/empty results
+    // would poison the next review call (the conversation is truncated mid-review,
+    // and the model picks up from a broken state, burning more rounds).
+    if (!result.trimStart().startsWith("Advisor:")) {
+      // Assign only for fresh sessions; re-assignment of the same reference on
+      // continued sessions is a no-op but communicating intent matters.
+      agent._advisorSession = reviewType === "design" ? null : messages
+    } else {
+      agent._advisorSession = null
+    }
     return result
   } catch (e) {
     if (e.name === "AbortError" && signal?.reason?.interrupt) throw e

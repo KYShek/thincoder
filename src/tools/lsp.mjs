@@ -17,6 +17,7 @@
 import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join, extname } from "node:path"
+import { DESC } from "./shared.mjs"
 
 // ---- JSON-RPC transport over stdio ----
 
@@ -184,9 +185,7 @@ async function ensureOpen(proc, uri, ext) {
 
 export const lspTool = {
   name: "lsp",
-  description:
-    "LSP code intelligence: go to definition, find references, hover info, document symbols, diagnostics. " +
-    "Use this to understand code structure without grep-guessing function locations or type shapes.",
+  description: DESC("lsp"),
   parameters: {
     type: "object",
     properties: {
@@ -240,7 +239,7 @@ export const lspTool = {
             textDocument: { uri },
             position: { line: args.line - 1, character: args.character - 1 },
           }, 10)
-          if (!res?.result) return "No definition found."
+          if (!res?.result) return "(no definition found)"
           const locs = Array.isArray(res.result) ? res.result : [res.result]
           return locs.map((l) => {
             const path = l.uri.replace(/^file:\/\/\//, "").replace(/%3A/, ":")
@@ -255,7 +254,7 @@ export const lspTool = {
             position: { line: args.line - 1, character: args.character - 1 },
             context: { includeDeclaration: false },
           }, 10)
-          if (!res?.result?.length) return "No references found."
+          if (!res?.result?.length) return "(no references found)"
           return res.result.slice(0, 50).map((l) => {
             const path = l.uri.replace(/^file:\/\/\//, "").replace(/%3A/, ":")
             return `${path}:${l.range.start.line + 1}:${l.range.start.character + 1}`
@@ -268,7 +267,7 @@ export const lspTool = {
             textDocument: { uri },
             position: { line: args.line - 1, character: args.character - 1 },
           }, 10)
-          if (!res?.result?.contents) return "No hover info available."
+          if (!res?.result?.contents) return "(no hover info)"
           const contents = res.result.contents
           if (typeof contents === "string") return contents
           if (Array.isArray(contents)) return contents.map((c) => typeof c === "string" ? c : c.value).join("\n")
@@ -280,7 +279,7 @@ export const lspTool = {
           const res = await request(proc, "textDocument/documentSymbol", {
             textDocument: { uri },
           }, 10)
-          if (!res?.result?.length) return "No symbols found."
+          if (!res?.result?.length) return "(no symbols found)"
           function render(nodes, depth) {
             const lines = []
             for (const n of nodes) {
@@ -295,7 +294,7 @@ export const lspTool = {
 
         case "diagnostics": {
           const diags = proc._diagnostics?.[uri]
-          if (!diags?.length) return "No diagnostics."
+          if (!diags?.length) return "(no diagnostics)"
           return diags.slice(0, 30).map((d) => {
             const sev = { 1: "ERROR", 2: "WARN", 3: "INFO", 4: "HINT" }[d.severity] || "?"
             return `L${d.range.start.line + 1}: ${sev}: ${d.message}${d.code ? ` [${d.code}]` : ""}`
@@ -306,7 +305,7 @@ export const lspTool = {
           return `Unknown subcommand: ${args.subcommand}`
       }
     } catch (err) {
-      return `LSP error: ${err.message}`
+      return `lsp error: ${err.message}`
     }
   },
 }

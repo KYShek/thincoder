@@ -111,20 +111,26 @@ function panelLines(p) {
 /** Tool output panels (streaming output like tail -f). Returns empty when no visible output. */
 export function renderOutput(state, W, panelH) {
   // Same visibility predicate as computeLayout: done panels linger until closeAt
-  const active = Object.values(state.outputPanels).filter((p) => !p.done || (p.closeAt ?? 0) > Date.now())
+  const active = Object.entries(state.outputPanels ?? {}).filter(([_, p]) => !p.done || (p.closeAt ?? 0) > Date.now())
   if (active.length === 0) return []
   const out = []
   const linesPerPanel = Math.max(1, Math.floor(panelH / active.length))
-  const perPanel = active.map((p) => panelLines(p).slice(-linesPerPanel))
-  for (const lines of perPanel) {
+  for (const [toolName, p] of active) {
+    const status = p.done ? `${C.dim}done${ansi.reset}` : `${C.tool}running${ansi.reset}`
+    out.push(`${C.text}❯ ${sliceByWidth(sanitizeDisplay(toolName), Math.max(10, W - 25))} — ${status}`)
+    const titleRows = 1
+    const contentRows = Math.max(0, linesPerPanel - titleRows)
+    const lines = contentRows > 0 ? panelLines(p).slice(-contentRows) : []
     for (const l of lines) {
       const color = PANEL_KIND_COLORS[l.kind] ?? C.dim
       out.push(`${color}  │ ${sliceByWidth(sanitizeDisplay(l.text), W - 5)}${ansi.reset}`)
     }
   }
-  // Fill remaining rows to match panelH exactly
-  const used = perPanel.reduce((s, lines) => s + lines.length, 0)
-  for (let i = used; i < panelH; i++) out.push("")
+  // Safety: never exceed allocated height (could happen with many panels + small terminal)
+  if (out.length > panelH) out.length = panelH
+  // Fill remaining rows to match panelH exactly. `out.length` is accurate because
+  // every pushed entry is a non-empty string (title or content line with prefix).
+  for (let i = out.length; i < panelH; i++) out.push("")
   return out
 }
 

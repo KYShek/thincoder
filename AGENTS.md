@@ -27,7 +27,7 @@ Design docs in `docs/design/`. Complete pipeline: [`PHILOSOPHY.md`](docs/design/
 ```
 bin/thincoder.cjs    CLI entry
 src/agent.mjs        main loop + reminder injection + verifyGuard (opt-in) + incremental indexing
-src/agent/           loop helpers (dispatch, setup, helpers)
+src/agent/           loop helpers (dispatch, setup, helpers, post-turn, completion)
 src/agent-tools/     self-discipline tools (task/plan/goal/verify/subagent/skill)
 src/prompts/         system prompts (system.md / discipline.md / main.md + subagent roles)
 src/provider/        LLM calls (native fetch + SSE)

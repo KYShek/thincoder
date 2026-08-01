@@ -15,6 +15,6 @@ Parameters:
 - replace_all: Replace all occurrences instead of just one (default false)
 
 Notes:
-- Prefer this over write for targeted edits — it's safer and keeps diffs small
+- Prefer this over write for targeted edits — it's safer and keeps changes targeted
 - If old_string matches zero times: error. If it matches multiple times without replace_all: error — add more surrounding context to make it unique
 - Never fabricate the old_string — copy it verbatim from the actual file using read first

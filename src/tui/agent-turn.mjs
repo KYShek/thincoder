@@ -3,6 +3,11 @@ import { saveSession } from "../session.mjs"
 import { sliceByWidth } from "./render.mjs"
 import { ansi, C } from "./ansi.mjs"
 
+/** Tool execution start timestamps (performance.now ms), keyed by tool name. */
+const _toolTicks = Object.create(null)
+/** Streamed-output line counters for inline blocks (cap at 5 preview lines). */
+const _toolLines = Object.create(null)
+
 /** Execute one agent conversation turn (triggered by submit or queue).
  *  Extracted from index.mjs: agent loop + callback construction + error handling + queue processing.
  *  ctx: { agent, state, pushLine, pushLabel, render, scheduleRender,
@@ -109,7 +114,11 @@ export async function runAgentTurn(ctx, text) {
       // is unreliable (it glues onto the previous line), so the round belongs here.
       const roundTag = name === "advisor" ? ` (round ${(agent._advisorRound || 0) + 1})` : ""
       const argSummary = summarize(args)
-      pushLine(`  [tool] ${name}${roundTag}${argSummary ? ` ${argSummary}` : ""}`, C.tool)
+      // Inline block title — panel tools get both the title AND the
+      // streaming output panel, complementary display.
+      const color = ({ advisor: C.advisor, bash: C.warn, verify: C.tool }[name] ?? C.text)
+      pushLine(`❯ ${name}${roundTag}${argSummary ? ` ${argSummary}` : ""}`, color)
+      _toolTicks[name] = performance.now()
     },
     onToolResult: (name, result) => {
       state.currentTool = null
@@ -137,83 +146,80 @@ export async function runAgentTurn(ctx, text) {
           if (state.processing) render()
         }, 3000)
       }
-      const stream = state.toolStreams[name]
-      const panel = state.outputPanels[name]
-      if (panel) {
-        delete state.toolStreams[name]
-        // Keep the panel visible for a 3s grace period (layout filters by closeAt);
-        // the render loop prunes it once expired. No defer hacks needed — row-diff
-        // repaints whatever should be on screen.
-        panel.done = true
-        panel.closeAt = Date.now() + 3000
-        scheduleRender()
-        if (name === "advisor") {
-          const text = String(result ?? "")
-          const lines = text.split("\n")
-          const maxShow = Math.min(60, lines.length)
-          // Push as single multiline block so formatTables aligns MD table columns
-          const shown = lines.slice(0, maxShow).map((l) => `  ${l.slice(0, 200)}`).join("\n")
-          pushLine(shown, C.advisor)
-          if (lines.length > maxShow) pushLine(`  ... (${lines.length - maxShow} more lines — call advisor again or scroll through the tool result for full output)`, C.dim)
-        } else {
-          const summary = formatPanelSummary(name, result)
-          if (summary) pushLine(`  ${summary}`, C.dim)
+      if (name === "advisor") {
+        // Remove live streaming lines — done line handles the summary.
+        for (let i = state.lines.length - 1; i >= 0; i--) {
+          if (state.lines[i]._live === "advisor") state.lines.splice(i, 1)
         }
-        // Trigger a repaint after the grace period so the pruned panel disappears
-        setTimeout(() => render(), 3000)
-      } else if (stream) {
-        const tail = stream.trimEnd().slice(-4000)
-        if (tail) pushLine(tail, C.dim)
-        delete state.toolStreams[name]
+      } else if (!isSubagent) {
+        const summary = formatToolSummary(name, result)
+        if (summary) pushLine(`  ${summary}`, C.dim)
       }
-      if (!isSubagent && !panel) {
-        const first = result.split("\n")[0]
-        pushLine(`  [done] ${name} → ${sliceByWidth(first, 100)}`, C.dim)
+      // Done line for ALL tools (panel area abolished — inline only).
+      if (!isSubagent) {
+        const elapsed = _toolTicks[name] ? ` (${Math.round(performance.now() - _toolTicks[name])}ms)` : ""
+        const summary = formatToolSummary(name, result)
+        const tail = summary ? ` → ${sliceByWidth(summary, 60)}` : ""
+        pushLine(`❯ ${name} — done${elapsed}${tail}`, C.dim)
       }
+      delete _toolTicks[name]
+      delete _toolLines[name]
     },
     onToolOutput: (name, chunk) => {
-      // Route streaming output to a panel if one exists or was requested via outputPanel flag.
-      // Chunk may be a string or { kind, text } — kind ("think" | "text" | "tool") drives
-      // per-kind coloring in renderOutput so reasoning / answer / tool progress are distinct.
-      let panel = state.outputPanels[name]
-      if (!panel) {
-        // Lazy-create panel: defensive against race conditions where setupOutputPanel
-        // hasn't fired yet or the callbacks chain dropped it (subagent relay, reconnect, etc.)
-        state.outputPanels[name] = { parts: [], len: 0, done: false }
-        panel = state.outputPanels[name]
-      }
+      // All tools use inline conversation blocks — panel area is abolished.
+      // Stream up to 5 preview lines; the full result is in the tool message.
       const part = typeof chunk === "string"
-        ? { kind: "text", text: chunk }
-        : { kind: chunk?.kind ?? "text", text: String(chunk?.text ?? "") }
+        ? { kind: "text", text: chunk.trimEnd() }
+        : { kind: chunk?.kind ?? "text", text: String(chunk?.text ?? "").trimEnd() }
       if (!part.text) return
-      // Separate phase transitions with a newline — think → answer → tool progress
-      // would otherwise glue onto each other mid-line.
-      const last = panel.parts[panel.parts.length - 1]
-      if (last && last.kind !== part.kind && !last.text.endsWith("\n") && !part.text.startsWith("\n")) {
-        part.text = "\n" + part.text
-      }
-      panel.parts.push(part)
-      panel.len += part.text.length
-      // Cap at 4000 chars, trimming oldest parts first
-      while (panel.len > 4000 && panel.parts.length > 1) {
-        const first = panel.parts[0]
-        const excess = panel.len - 4000
-        if (first.text.length <= excess) {
-          panel.len -= first.text.length
-          panel.parts.shift()
-        } else {
-          first.text = first.text.slice(excess)
-          panel.len -= excess
+      if (name === "advisor") {
+        // Live streaming with kind-aware coloring: think (dim), tool calls (cyan),
+        // review text (bright green). Chunks without \n append to the previous
+        // same-kind line so tokens flow together. \n in a chunk means "start a new
+        // line" — segments after the first \n always begin fresh lines.
+        const color = part.kind === "think" ? C.reason
+          : part.kind === "tool" ? C.tool
+          : C.advisor
+        const appendable = part.kind !== "tool"
+        const segments = part.text.split("\n")
+        for (let i = 0; i < segments.length; i++) {
+          const trimmed = segments[i].trimEnd()
+          if (!trimmed) continue
+          if (appendable && i === 0) {
+            // First segment — append to previous same-kind line if one exists.
+            const last = state.lines.filter(l => l._live === "advisor").at(-1)
+            if (last && last._kind === part.kind) {
+              last.text += trimmed
+            } else {
+              state.lines.push({ text: `  ${trimmed}`, color, _live: "advisor", _kind: part.kind })
+            }
+          } else {
+            // After a \n, or tool chunk — always a new line.
+            const prefix = part.kind === "tool" ? "" : "  "
+            state.lines.push({ text: `${prefix}${trimmed}`, color, _live: "advisor", _kind: part.kind })
+          }
         }
+        // Prune overflow: keep at most 20 advisor streaming lines
+        let count = 0
+        for (let i = state.lines.length - 1; i >= 0; i--) {
+          if (state.lines[i]._live === "advisor") {
+            if (++count > 20) state.lines.splice(i, 1)
+          }
+        }
+        scheduleRender()
+        return
+      }
+      const count = (_toolLines[name] = (_toolLines[name] ?? 0) + 1)
+      if (count <= 5) {
+        const color = ({ think: C.reason, tool: C.tool }[part.kind] ?? C.dim)
+        pushLine(`  │ ${sliceByWidth(part.text, 120)}`, color)
+      } else if (count === 6) {
+        pushLine(`  │ …`, C.dim)
       }
       scheduleRender()
     },
     onPermissionRequest: (name, args) => askPermission(name, args),
     onQuestion: (text, options) => askQuestion(text, options),
-    setupOutputPanel: (name) => {
-      state.outputPanels[name] = { parts: [], len: 0, done: false }
-      scheduleRender()
-    },
     onCompress: () => {
       pushLine("  [context] Context too long, auto-compacted (early conversation summarized by LLM, task state preserved)", C.warn)
     },
@@ -243,6 +249,17 @@ export async function runAgentTurn(ctx, text) {
     onTurnEnd: (() => {
       let n = 0
       return () => {
+        // Flush pending reasoning/streaming before the next turn starts.
+        // Guard pushbacks (verify/advisor) continue the agent loop without
+        // returning to the TUI — without flushing, old thinking bleeds into
+        // the next turn and the guard reminder is invisible.
+        flushStream()
+        // Mirror the last system-reminder from agent.history so guard
+        // pushback messages appear in the conversation at the right spot.
+        const last = agent.history.at(-1)
+        if (last?.role === "user" && typeof last.content === "string" && last.content.startsWith("[System reminder:")) {
+          pushLine(last.content, C.warn)
+        }
         if (++n % 5 !== 0) return
         try { saveSessionImpl(agent, state.lines) } catch (e) { console.error(`[session] incremental save failed: ${e.message}`) }
       }
@@ -333,10 +350,11 @@ export async function runAgentTurn(ctx, text) {
   }
 }
 
-/** Extract a one-line summary from a panel tool's output */
-function formatPanelSummary(name, result) {
+/** Extract a one-line summary from tool output for the done line */
+function formatToolSummary(name, result) {
   if (name === "verify") return _verifySummary(result)
   if (name === "bash") return _bashSummary(result)
+  if (name === "advisor") return _advisorSummary(result)
   // Default: first non-empty line
   const first = result.split("\n").find((l) => l.trim())
   return first ? `${name}: ${first.slice(0, 100)}` : null
@@ -355,6 +373,20 @@ function _bashSummary(result) {
   if (lines.length > 0) parts.push(lines[lines.length - 1].slice(0, 100))
   if (status) parts.push(status)
   return parts.length > 0 ? `bash: ${parts.join(" ")}` : null
+}
+
+function _advisorSummary(result) {
+  const text = String(result ?? "")
+  if (text.includes("CODE_REVIEW_PASSED")) return "advisor: passed"
+  const critical = (text.match(/\| \d+ \|.*\| 🔴/g) || []).length
+  const advisory = (text.match(/\| \d+ \|.*\| 🟡/g) || []).length
+  const style = (text.match(/\| \d+ \|.*\| 🔵/g) || []).length
+  const parts = []
+  if (critical) parts.push(`${critical} critical`)
+  if (advisory) parts.push(`${advisory} advisory`)
+  if (style) parts.push(`${style} style`)
+  if (parts.length === 0) return null
+  return `advisor: ${parts.join(", ")}`
 }
 
 function _verifySummary(result) {

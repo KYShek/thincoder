@@ -143,14 +143,15 @@ export function buildAdvisorFollowUp(agent, _prior) {
  * exploration context is gone, so prior tables from history are not injected.
  * @param {string} [reviewType] — "design" or "code" (default)
  * @param {string|null} [designToken] — design-review approval token (design only)
+ * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (passed through to buildAdvisorUserMessage)
  */
-export function prepareAdvisorMessages(agent, reviewType, designToken = null) {
+export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null) {
   const prior = extractPriorIssueTable(agent.history)
   // Design review: always fresh session, no convergence
   if (reviewType === "design") {
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken) },
+      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents) },
     ]
   }
   let session = agent._advisorSession
@@ -175,7 +176,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null) {
   }
   session = [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken) },
+    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents) },
   ]
   // Fresh session with no prior issue table → reset convergence round and stale snapshot
   if (!prior) {

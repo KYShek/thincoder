@@ -608,6 +608,63 @@ test("verify: quick 模式下语法失败不能算通过（_verifyPassed=false�
   }
 })
 
+test("verify: doc-only 改动走快路径（不跑语法检查/测试/任务列表/自检清单）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-verify-doc-"))
+  const { execSync } = await import("node:child_process")
+  const git = (...a) => execSync(`git ${a.join(" ")}`, { cwd: dir, stdio: "ignore" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    mkdirSync(join(dir, "docs", "design"), { recursive: true })
+    writeFileSync(join(dir, "README.md"), "# readme\n")
+    writeFileSync(join(dir, "docs/design/PLAN.md"), "# plan\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 纯文档改动（.md）→ 快路径
+    writeFileSync(join(dir, "README.md"), "# readme v2\n")
+    writeFileSync(join(dir, "docs/design/PLAN.md"), "# plan v2\n")
+    const agent = { cwd: dir, tasks: [{ title: "未完成", status: "pending" }] }
+    const result = await verifyTool.execute({}, { agent })
+    assert.ok(result.includes("Documentation-only changes"), result)
+    assert.strictEqual(agent._verifyPassed, true)
+    assert.ok(!result.includes("Syntax check"), "no syntax checks on doc-only")
+    assert.ok(!result.includes("Related tests"), "no tests on doc-only")
+    assert.ok(!result.includes("Task list"), "no task list on doc-only")
+    assert.ok(!result.includes("Self-review checklist"), "no checklist on doc-only")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("verify: mixed 改动（文档+代码）不走快路径，语法检查照常", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-verify-mixed-"))
+  const { execSync } = await import("node:child_process")
+  const git = (...a) => execSync(`git ${a.join(" ")}`, { cwd: dir, stdio: "ignore" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    mkdirSync(join(dir, "src"), { recursive: true })
+    writeFileSync(join(dir, "README.md"), "# readme\n")
+    writeFileSync(join(dir, "src/app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 文档 + 代码混合改动 → 全量路径
+    writeFileSync(join(dir, "README.md"), "# readme v2\n")
+    writeFileSync(join(dir, "src/app.js"), "const v = 2\n")
+    const agent = { cwd: dir, tasks: [] }
+    const result = await verifyTool.execute({}, { agent })
+    assert.ok(!result.includes("Documentation-only changes"), result)
+    assert.ok(result.includes("Syntax check"), "syntax checks still run on mixed changes")
+    assert.ok(result.includes("Self-review checklist"), "full path still shows the checklist")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ---------------------------------------------------------------- delete / git 工具
 
 test("delete: 未跟踪文件可删，跟踪文件拒绝，force 可删跟踪文件", async () => {

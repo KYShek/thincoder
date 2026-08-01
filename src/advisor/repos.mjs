@@ -98,7 +98,18 @@ export function collectChangedFiles(repos, cwd) {
 
 const DOC_FILE = /(?:^|[/\\])(?:LICENSE|NOTICE|CHANGELOG|AUTHORS)(?:\.\w+)?$|\.(?:md|markdown|mdx|txt|rst|adoc)$/i
 
-/** True when all changed files across repos are documentation (md/txt/LICENSE etc.) */
+/** True when a path matches the doc/license pattern by extension or name.
+ *  NOTE: this is extension-based only — it does NOT exclude src/ paths.
+ *  Callers must separately check the src/ prefix for product-code semantics
+ *  (e.g. src/prompts/*.md IS product code despite matching DOC_FILE).
+ *  See isDocOnlyChange for the combined check. */
+export function isDocFile(p) {
+  return DOC_FILE.test(p ?? "")
+}
+
+/** True when all changed files across repos are documentation (md/txt/LICENSE etc.).
+ *  Anything under src/ (incl. src/prompts/*.md) counts as product code —
+ *  isProductCode semantics, consistent with the design gate. */
 export function isDocOnlyChange(repos, cwd) {
   const targets = repos.length > 0 ? repos : [cwd]
   let sawChanges = false
@@ -114,7 +125,7 @@ export function isDocOnlyChange(repos, cwd) {
     for (const line of status.split("\n")) {
       // porcelain: "XY path" or "XY old -> new" (rename)
       const filePath = line.slice(3).split(" -> ").pop().replace(/^"|"$/g, "")
-      if (!DOC_FILE.test(filePath)) return false
+      if (/^src[\\/]/.test(filePath) || !DOC_FILE.test(filePath)) return false
     }
   }
   return sawChanges

@@ -78,9 +78,7 @@ export async function startTUI(agent, opts = {}) {
     ctxCache: { len: -1, tokens: 0 }, // context utilization estimate cache (estimateTokens is O(n), only recompute when history grows)
     reasoning: "", // thinking stream buffer (dimmed display)
     completion: null, // Tab completion state { candidates, index }
-    toolStreams: {}, // per-tool live output (isolated by tool name, parallel tools don't interleave)
     subTasks: {}, // sub-agent panel: { roleName: { role, text, done } }, one line per role, marked done briefly after completion
-    outputPanels: {}, // tool output panels: { toolName: { parts: [{kind, text}], len, done, closeAt } } — streamed live during execution, kept visible for a grace period after completion
     currentTool: null, // currently executing tool name (shown in status bar)
     processingStarted: 0, // current turn start time (status bar timer)
     status: "Ready",

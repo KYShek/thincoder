@@ -9,12 +9,7 @@ import { join } from "node:path";
 
 export const gitTool = {
   name: "git",
-  description:
-    "Run a git command. Use this to see uncommitted changes, staged changes, diff against a ref, recent commits, or manage checkpoints. Only works inside a git repository.\n" +
-    "- action='diff': Show unified diff — what changed since last commit. Set staged=true for staged-only diff, ref=<ref> to compare against a specific commit/branch, path=<dir> to scope to a file or directory.\n" +
-    "- action='status': Show working tree state — staged, unstaged, untracked files, and conflicts. Returns categorized lists.\n" +
-    "- action='log': Show recent commit history. Set count to limit, oneline=true for compact format, path=<file> to see history of one file.\n" +
-    "- action='checkpoint': Manage git-based snapshots. Use checkpointAction to choose: list (overview), create (snapshot now), rewind (restore snapshot by id), cat (read a file from a snapshot).",
+  description: DESC("git"),
   parameters: {
     type: "object",
     properties: {

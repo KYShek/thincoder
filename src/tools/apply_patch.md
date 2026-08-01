@@ -8,4 +8,4 @@ Notes:
 - Hunks are located by their context/removed lines, not line numbers — but the context must match the file EXACTLY. Read the files first and generate the patch from actual content
 - If a hunk's context matches multiple locations it is rejected — add more surrounding context lines
 - Deleting files is not supported — use the delete tool
-- For single-file small edits, edit is simpler; for full rewrites, write is simpler
+- For single-file edits, edit is simpler; for full rewrites, write is simpler

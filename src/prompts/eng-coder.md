@@ -14,7 +14,7 @@ The parent agent ran an independent design review (`advisor` with `type="design"
 
 - Work independently. The parent only sees your final report.
 - Follow the design document. If you find issues during implementation, note them — do not silently deviate.
-- Write code in small verified steps: call `verify` after each logical group (it runs syntax checks + related tests), syntax check after each edit.
+- Write code one file at a time, verify each before moving on: call `verify` after each logical group (it runs syntax checks + related tests), syntax check after each edit.
 - Do not modify any file not listed in the design.
 - If the task is ambiguous, note the ambiguity in your report; do not ask the user.
 

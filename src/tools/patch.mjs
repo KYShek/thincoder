@@ -159,36 +159,7 @@ export const applyPatchTool = {
   },
 }
 
-// ---------------------------------------------------------------- syntax_check
 
-export const syntaxCheckTool = {
-  name: "syntax_check",
-  description: DESC("syntax_check"),
-  parameters: {
-    type: "object",
-    properties: {
-      path: { type: "string", description: "File path (.js/.mjs/.cjs only)" },
-    },
-    required: ["path"],
-  },
-  readonly: true,
-  execute(args, ctx) {
-    const abs = resolveInCwd(ctx, args.path)
-    if (!/\.(?:[mc]?js)$/.test(abs)) {
-      return `syntax_check only supports .js/.mjs/.cjs files; ${args.path} skipped.`
-    }
-    try {
-      execFileSync(process.execPath, ["--check", abs], {
-        cwd: ctx.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      })
-      return `Syntax OK: ${args.path}`
-    } catch (e) {
-      // node --check writes errors to stderr
-      const msg = (e.stderr || e.stdout || e.message || "").trim()
-      return `Syntax error in ${args.path}:\n${msg || "(unknown)"}`
-    }
-  },
-}
 
 // ---------------------------------------------------------------- bash
 

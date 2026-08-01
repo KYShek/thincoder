@@ -2,6 +2,7 @@ Delete a file. Use when the agent created a temporary or junk file that should b
 
 Parameters:
 - path (required): File path, relative to cwd or absolute
+- force: Allow deleting git-tracked files (default false)
 
 Notes:
 - Untracked or non-git files are deleted immediately

@@ -31,6 +31,7 @@ export async function handleEngCommand(ctx) {
   }
 
   agent.config.agent.engineering = !agent.config.agent.engineering
+  if (!agent.config.agent.engineering) agent._engDesignToken = null // invalidate stale token
   await persistRaw((raw) => {
     raw.agent ??= {}
     raw.agent.engineering = agent.config.agent.engineering

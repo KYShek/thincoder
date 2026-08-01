@@ -13,6 +13,7 @@ import { createMemory, put } from "../src/memory.mjs"
 import { parseEntry, serializeEntry, slugify, entryFilename } from "../src/markdown.mjs"
 import { goalTool } from "../src/agent-tools.mjs"
 import { mergeChildMutations } from "../src/agent-tools/subagent.mjs"
+import { executeToolCalls } from "../src/agent/dispatch.mjs"
 
 function freshMemory() {
   return createMemory({ dbPath: ":memory:" })
@@ -957,6 +958,24 @@ test("runAgent: verify guard off — mutated files go straight through", async (
   }
 })
 
+test("hasCodeMutations: src/ 下一切（含 src/prompts/*.md）是产品代码，与 isProductCode 一致", async () => {
+  const { hasCodeMutations } = await import("../src/agent.mjs")
+  // 相对路径（判定表达式与 isProductCode 一致）
+  assert.equal(hasCodeMutations({ _touchedFiles: ["src/prompts/engineering.md"], _mutatedThisRun: true }), true, "src/prompts/*.md → code")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["docs/design/x.md"], _mutatedThisRun: true }), false, "docs/** → doc")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["README.md"], _mutatedThisRun: true }), false, "root doc → doc")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["src/app.mjs"], _mutatedThisRun: true }), true, "src code → code")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["docs/design/x.md", "src/app.mjs"], _mutatedThisRun: true }), true, "mixed → code")
+  // 生产环境 _touchedFiles 是绝对路径（join(cwd, p)）— src 组件同样判为代码
+  const absSrc = join(tmpdir(), "proj", "src", "prompts", "engineering.md")
+  const absDoc = join(tmpdir(), "proj", "docs", "design", "x.md")
+  assert.equal(hasCodeMutations({ _touchedFiles: [absSrc], _mutatedThisRun: true }), true, "absolute src/prompts/*.md → code")
+  assert.equal(hasCodeMutations({ _touchedFiles: [absDoc], _mutatedThisRun: true }), false, "absolute docs/** → doc")
+  // 空列表 → 回退 _mutatedThisRun
+  assert.equal(hasCodeMutations({ _touchedFiles: [], _mutatedThisRun: true }), true)
+  assert.equal(hasCodeMutations({ _touchedFiles: [], _mutatedThisRun: false }), false)
+})
+
 // ----------------------------------------------------------------
 
 test("runAgent: thinking 模式下 reasoning_content 跨请求回传（DeepSeek 要求）", async () => {
@@ -1315,6 +1334,35 @@ test("runAgent: 子 agent token + 工具调用 relay 到父回调（带 role#id 
     assert.deepStrictEqual(toolResults, ["subagent"])
     // 正文 token 带 coder#N/ 前缀 relay
     assert.ok(/coder#\d+\//.test(tokens), `expected coder#N/ prefix in tokens`)
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: eng-coder design token is NOT consumed — second spawn with same token succeeds", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  // 同一 token 两次 spawn：第一次实现，第二次（修复循环）重入——token 不消费
+  const script = [
+    { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "实现", role: "eng-coder", designToken: "tok-abc" }) } },
+    { content: "实现完成，报告见上。".repeat(30) },        // 子代理 1 交付
+    { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "修复评审问题", role: "eng-coder", designToken: "tok-abc" }) } },
+    { content: "修复完成，报告见上。".repeat(30) },        // 子代理 2 交付
+    { content: "全部完成" },
+  ]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-token-reuse-"))
+    const agent = createAgent({
+      provider, tools: [makeMutationTool()],
+      config: { agent: { engineering: true }, advisor: { enabled: false } },
+      cwd,
+    })
+    agent._engDesignToken = "tok-abc" // 设计评审已签发
+    const out = await runAgent(agent, "派两个实现任务", { onPermissionRequest: async () => true })
+    assert.equal(out, "全部完成")
+    assert.equal(agent._engDesignToken, "tok-abc", "token survives both spawns — not consumed")
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()
@@ -2164,6 +2212,248 @@ action: abort
   assert.deepEqual(discoverRules(join(dir, "nonexistent")), [])
 
   rmSync(dir, { recursive: true, force: true })
+})
+
+// ────────────────────────────────────────
+// dispatch: engineering parent gate (design before code)
+// ────────────────────────────────────────
+
+function makeWriteTool() {
+  return {
+    name: "write", readonly: false,
+    touchedPaths: (args) => [args.path],
+    async execute(args) { return `wrote ${args.path}` },
+  }
+}
+
+test("dispatch: engineering parent gate blocks code writes before design review", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: true } },
+    planMode: false, autoApprove: true,
+    _role: undefined, // parent
+    _engDesignToken: null,
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "src/app.mjs", content: "x" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, false)
+  assert.ok(results[0].result.includes("design review required"), results[0].result)
+  assert.ok(results[0].result.includes("docs/"), "hint points at the design doc")
+})
+
+test("dispatch: engineering parent gate allows design docs in docs/", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: true } },
+    planMode: false, autoApprove: true,
+    _role: undefined,
+    _engDesignToken: null,
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "docs/design/PLAN.md", content: "# design" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, true, results[0].result)
+})
+
+test("dispatch: engineering parent gate allows root-level doc files (METHODOLOGY.md)", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: true } },
+    planMode: false, autoApprove: true,
+    _role: undefined,
+    _engDesignToken: null,
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "METHODOLOGY.md", content: "# methodology" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, true, results[0].result)
+})
+
+test("dispatch: engineering parent gate blocks src/prompts/*.md (product code) before design review", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: true } },
+    planMode: false, autoApprove: true,
+    _role: undefined,
+    _engDesignToken: null,
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "src/prompts/x.md", content: "# prompt" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, false)
+  assert.ok(results[0].result.includes("design review required"), results[0].result)
+  assert.ok(results[0].result.includes("docs/"), "hint points at the design doc")
+})
+
+test("dispatch: engineering parent gate lifts after design review passed", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: true } },
+    planMode: false, autoApprove: true,
+    _role: undefined,
+    _engDesignToken: "tok-123", // design review approved
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "src/app.mjs", content: "x" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, true, results[0].result)
+})
+
+test("dispatch: eng-coder without design review is blocked from writing", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: true } },
+    planMode: false, autoApprove: true,
+    _role: "eng-coder",
+    _engDesignReviewed: false,
+    _engDesignToken: null,
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "src/app.mjs", content: "x" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, false)
+  assert.ok(results[0].result.includes("design review required"), results[0].result)
+})
+
+test("dispatch: normal mode has no design gate", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: false } },
+    planMode: false, autoApprove: true,
+    _role: undefined,
+    _engDesignToken: null,
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "src/app.mjs", content: "x" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, true, results[0].result)
+})
+
+test("dispatch: engineering parent gate treats missing/unknown path as code (conservative block)", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: true } },
+    planMode: false, autoApprove: true,
+    _role: undefined,
+    _engDesignToken: null,
+  }
+  // 工具无 touchedPaths 且参数缺 path → paths = [undefined] → 未知路径按代码保守拦截
+  const noPathTool = {
+    name: "write", readonly: false,
+    async execute(args) { return `wrote ${JSON.stringify(args)}` },
+  }
+  const results = await executeToolCalls(agent, new Map([["write", noPathTool]]), [
+    { name: "write", arguments: JSON.stringify({ content: "x" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, false)
+  assert.ok(results[0].result.includes("design review required"), results[0].result)
+})
+
+// ────────────────────────────────────────
+// guard granularity — engineering mode has NO per-turn guard pushback
+// (reviews are driven by the methodology flow, not mechanical reminders)
+// ────────────────────────────────────────
+
+function makeWriteFileTool() {
+  return {
+    name: "write", readonly: false,
+    touchedPaths: (args) => [args.path],
+    async execute(args) { return `ok ${args.path}` },
+  }
+}
+
+test("runAgent: engineering doc-only change skips advisor and verify guards", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "write", arguments: JSON.stringify({ path: "docs/design/TEST.md", content: "# t" }) } },
+    { content: "设计文档完成" },
+  ]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-doconly-"))
+    const agent = createAgent({
+      provider, tools: [makeWriteFileTool()],
+      config: { agent: { engineering: true }, advisor: { enabled: false } },
+      cwd,
+    })
+    const out = await runAgent(agent, "写个设计文档", { onPermissionRequest: async () => true })
+    assert.equal(out, "设计文档完成")
+    assert.equal(requests.length, 2, "no guard pushback rounds for doc-only change")
+    assert.ok(!agent.history.some((m) => typeof m.content === "string" && m.content.includes("advisor review before finishing")), "no advisor guard reminder")
+    assert.ok(!agent.history.some((m) => typeof m.content === "string" && m.content.includes("have not verified")), "no verify guard reminder")
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: engineering code change does NOT trigger advisor/verify guards", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "write", arguments: JSON.stringify({ path: "src/app.mjs", content: "x" }) } },
+    { content: "代码写完了" },
+  ]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-codechg-"))
+    const agent = createAgent({
+      provider, tools: [makeWriteFileTool()],
+      config: { agent: { engineering: true }, advisor: { enabled: false } },
+      cwd,
+    })
+    agent._engDesignToken = "tok-123" // design review passed — parent may write code
+    const out = await runAgent(agent, "写个代码文件", { onPermissionRequest: async () => true })
+    assert.equal(out, "代码写完了")
+    assert.equal(requests.length, 2, "no guard pushback rounds in engineering mode")
+    assert.ok(!agent.history.some((m) => typeof m.content === "string" && m.content.includes("advisor review before finishing")), "no advisor guard reminder")
+    assert.ok(!agent.history.some((m) => typeof m.content === "string" && m.content.includes("have not verified")), "no verify guard reminder")
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: verifyGuard does NOT apply in engineering mode", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "write", arguments: JSON.stringify({ path: "src/app.mjs", content: "x" }) } },
+    { content: "完成" },
+  ]
+  const { server, port, requests } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-engverify-"))
+    const agent = createAgent({
+      provider, tools: [makeWriteFileTool()],
+      config: { agent: { engineering: true }, advisor: { enabled: false }, verifyGuard: true },
+      cwd,
+    })
+    agent._engDesignToken = "tok-123"
+    const out = await runAgent(agent, "写个代码文件", { onPermissionRequest: async () => true })
+    assert.equal(out, "完成")
+    assert.equal(requests.length, 2, "verify guard must not push back in engineering mode even with verifyGuard: true")
+    assert.ok(!agent.history.some((m) => typeof m.content === "string" && m.content.includes("have not verified")), "no verify guard reminder")
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("dispatch: normal mode has no design gate", async () => {
+  const agent = {
+    cwd: tmpdir(),
+    config: { agent: { engineering: false } },
+    planMode: false, autoApprove: true,
+    _role: undefined,
+    _engDesignToken: null,
+  }
+  const results = await executeToolCalls(agent, new Map([["write", makeWriteTool()]]), [
+    { name: "write", arguments: JSON.stringify({ path: "src/app.mjs", content: "x" }) },
+  ], {}, 0)
+  assert.equal(results[0].ok, true, results[0].result)
 })
 
 // ────────────────────────────────────────

@@ -48,14 +48,14 @@ test("extractPriorIssueTable: ignores header constants quoted inside source code
 
 test("extractPriorIssueTable: returns null when last review says all clear", () => {
   const history = [
-    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n|---|------|----------|-------|------------|\n\nNo issues found — code quality looks good." },
+    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n|---|------|----------|-------|------------|\n\nCODE_REVIEW_PASSED" },
   ]
   assert.equal(extractPriorIssueTable(history), null)
 })
 
 test("extractPriorIssueTable: returns null when last review says all resolved", () => {
   const history = [
-    { role: "tool", tool_call_id: "a1", content: "| # | Orig# | File | Severity | Status | Notes |\n|---|-------|------|----------|--------|-------|\n| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |\nAll issues resolved — review passed." },
+    { role: "tool", tool_call_id: "a1", content: "| # | Orig# | File | Severity | Status | Notes |\n|---|-------|------|----------|--------|-------|\n| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |\nCODE_REVIEW_PASSED" },
   ]
   assert.equal(extractPriorIssueTable(history), null)
 })
@@ -131,7 +131,7 @@ test("extractPriorIssueTable: all-fixed table with 'still' in notes returns null
   const table = `| # | Orig# | File | Severity | Status | Notes |
 |---|-------|------|----------|--------|-------|
 | 1 | 3 | src/x.mjs | 🔴 | Fixed | we should still add tests later |
-All issues resolved — review passed.`
+CODE_REVIEW_PASSED`
   const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
   assert.equal(result, null, "全 Fixed + all-clear 短语 + Notes 里普通 'still' 不触发部分修复")
 })
@@ -217,7 +217,7 @@ test("buildAdvisorSystemPrompt: returns round 1 file when no prior table", () =>
 
 test("buildAdvisorSystemPrompt: returns round 1 file when last review was all clear", () => {
   const agent = {
-    history: [{ role: "tool", tool_call_id: "a1", content: "No issues found — code quality looks good." }],
+    history: [{ role: "tool", tool_call_id: "a1", content: "CODE_REVIEW_PASSED" }],
     _advisorRound: 1, cwd: tmpdir(),
   }
   const prompt = buildAdvisorSystemPrompt(agent)
@@ -298,6 +298,73 @@ test("buildAdvisorUserMessage: design review without token has no Approval Signa
   }
   const result = buildAdvisorUserMessage(agent, null, "design")
   assert.ok(!result.includes("Approval Signal"), "无令牌时不应有 Approval Signal")
+})
+
+test("advisorTool: schema declares documents parameter for design review", async () => {
+  const { advisorTool } = await import("../src/agent-tools/advisor.mjs")
+  const documents = advisorTool.parameters.properties.documents
+  assert.ok(documents, "documents 参数应存在于 advisor 工具 schema")
+  assert.equal(documents.type, "array", "documents 为数组")
+  assert.equal(documents.items.type, "string", "数组元素为 string")
+   assert.ok(documents.description.includes("design"), "描述覆盖 design/code review 用途")
+  assert.ok(documents.description.includes("reviews ONLY these"), "描述声明只评审清单内文档")
+})
+
+test("buildAdvisorUserMessage: design review with documents reviews ONLY the listed docs", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
+  try {
+    createGitRepo(tmp)
+    // Unrelated changed doc in the repo — must NOT leak into the review scope
+    writeFileSync(join(tmp, "Y.md"), "# Unrelated\n")
+    execSync("git add -A && git commit -m y", { cwd: tmp, stdio: "ignore" })
+    writeFileSync(join(tmp, "Y.md"), "# Unrelated — modified after commit\n")
+
+    const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {} }
+    const documents = ["docs/design/X.md", "docs/design/Z.md"]
+    const msg = buildAdvisorUserMessage(agent, null, "design", null, documents)
+
+    assert.ok(msg.includes("## Documents to Review"), "应含显式清单段")
+    assert.ok(msg.includes("docs/design/X.md — Read this file in full"), "清单第一条文档带 Read this file in full")
+    assert.ok(msg.includes("docs/design/Z.md — Read this file in full"), "清单第二条文档带 Read this file in full")
+    assert.ok(!msg.includes("## Changed Files"), "不收集 git 变更集")
+    assert.ok(!msg.includes("## Design Document (git diff)"), "不含 git diff 内容")
+    assert.ok(!msg.includes("- Y.md"), "清单外文档不被列为评审对象")
+    assert.ok(!msg.includes("Unrelated"), "清单外文档内容不被提及")
+    assert.ok(!msg.includes("git status"), "不出现 git status")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("buildAdvisorUserMessage: design review without documents keeps git-diff scope (backward compatible)", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
+  try {
+    createGitRepo(tmp)
+    writeFileSync(join(tmp, "Y.md"), "# Unrelated\n")
+    execSync("git add -A && git commit -m y", { cwd: tmp, stdio: "ignore" })
+    writeFileSync(join(tmp, "Y.md"), "# Unrelated — modified after commit\n")
+
+    const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {} }
+    const msg = buildAdvisorUserMessage(agent, null, "design")
+
+    assert.ok(msg.includes("## Changed Files"), "无 documents 时仍按 git 变更集构建")
+    assert.ok(msg.includes("Y.md"), "git 变更集中的文档被列出")
+    assert.ok(msg.includes("## Design Document (git diff)"), "无 documents 时含 git diff 段")
+    assert.ok(!msg.includes("## Documents to Review"), "无 documents 时不出现显式清单段")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("prepareAdvisorMessages: design review passes documents through to the user message", () => {
+  const agent = {
+    history: [], _advisorRound: 0, cwd: tmpdir(), config: {},
+    _advisorSession: null,
+  }
+  const msgs = prepareAdvisorMessages(agent, "design", null, ["docs/design/A.md"])
+  assert.equal(msgs.length, 2)
+  assert.ok(msgs[1].content.includes("docs/design/A.md"), "documents 透传到 user message")
+  assert.ok(msgs[1].content.includes("Read this file in full"), "documents 模式带 Read this file in full")
 })
 
 
@@ -622,7 +689,7 @@ test("runAdvisorReview: documentation-only changes skip the review entirely", as
       cwd: tmp,
     }
     const result = await runAdvisorReview(agent, "code", {})
-    assert.ok(/documentation-only/.test(result), `应跳过审查: ${result}`)
+    assert.ok(/CODE_REVIEW_PASSED/.test(result), `应跳过审查: ${result}`)
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

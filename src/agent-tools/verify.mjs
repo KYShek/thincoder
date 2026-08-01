@@ -1,4 +1,5 @@
 import { repairHistory, listWorkDir } from "../agent.mjs"
+import { isDocFile } from "../advisor/repos.mjs"
 import { execSync, spawn, spawnSync } from "node:child_process"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
@@ -39,6 +40,8 @@ function moduleName(srcPath) {
 
 /**
  * verify tool: pre-completion self-check. When called:
+ * 0. Doc-only fast path — all changed files are docs (docs/, *.md, LICENSE…):
+ *    short report, no syntax checks, no tests.
  * 1. git diff --stat — changed file list
  * 2. node --check — syntax check all changed .mjs/.js files
  * 3. Related tests — run test files that cover the changed modules (default)
@@ -80,6 +83,21 @@ export const verifyTool = {
       }
     } catch {
       lines.push("Changed files: (not a git repo or git unavailable)")
+    }
+
+    // 1b. Doc-only fast path: every changed file is documentation (docs/, *.md,
+    // LICENSE…) — syntax checks and tests are meaningless for doc changes, and
+    // the task list/self-review checklist add nothing either. Mirrors the
+    // advisor's doc-only review skip ("No issues found — documentation-only
+    // changes, code review skipped."). src/** (incl. prompts/*.md) is product
+    // code — excluded from the fast path, consistent with isProductCode.
+    // Empty list (no changes / git unavailable) intentionally falls through
+    // to the normal path below.
+    if (changedFiles.length > 0 && changedFiles.every((f) => !/^src[\\/]/.test(f) && isDocFile(f))) {
+      lines.push("")
+      lines.push("Documentation-only changes — skipping syntax checks and tests.")
+      ctx.agent._verifyPassed = true
+      return lines.join("\n")
     }
 
     // 2. Syntax check: run node --check on all changed .mjs/.js files (skip deleted files)

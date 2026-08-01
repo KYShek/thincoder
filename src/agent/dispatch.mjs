@@ -4,6 +4,7 @@
 import { offloadToolResult, FILE_MUTATORS } from "./helpers.mjs"
 import { runHooks } from "../hooks.mjs"
 import { snapshotForUndo } from "../tui/cmd-undo.mjs"
+import { isDocFile } from "../advisor/repos.mjs"
 import { writeFileSync, mkdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -81,6 +82,30 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       continue
     }
 
+    // Engineering mode PARENT gate: the parent agent must not touch code files
+    // before the design review passed. Signaled by _engDesignToken — set on
+    // design-review approval, survives across turns (_engDesignReviewed is
+    // eng-coder-only and reset per run). Exemptions cover ONLY design artifacts
+    // (docs/** and root-level docs like METHODOLOGY.md/README.md/AGENTS.md/
+    // LICENSE) — writing them IS the design/methodology step. Everything under
+    // src/ (incl. src/prompts/*.md) is product code, not documentation, and
+    // needs a design token. Mechanically blocks "talk then code".
+    if (agent.config?.agent?.engineering && depth === 0 && !agent._engDesignToken
+        && FILE_MUTATORS.has(toolCall.name)) {
+      const paths = tool.touchedPaths ? tool.touchedPaths(args) : [args.path]
+      // Unknown/missing paths (non-string, e.g. no path argument) are treated
+      // as code — cannot tell what they touch, so block conservatively.
+      const touchesCode = paths.some((p) => typeof p !== "string" || /^src[\\/]/.test(p) || !isDocFile(p))
+      if (touchesCode) {
+        prepared.push({
+          toolCall, tool, denied: true,
+          reason: "engineering design gate",
+          hint: "Engineering mode: write the design document in docs/ first, then call advisor with type='design' to review it, and wait for user approval. Implementation is done by eng-coder subagents.",
+        })
+        continue
+      }
+    }
+
     if (!tool.readonly) {
       // autoApprove short-circuit: skip prompt when agent is already marked for auto-approval
       const allowed = agent.autoApprove
@@ -94,13 +119,15 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       }
     }
 
-    callbacks.onToolCall?.(toolCall.name, args)
-
     // PreToolUse hooks: allow user scripts to gate tool execution
     if (!(await runHooks("PreToolUse", { agent, toolName: toolCall.name, toolArgs: args }))) {
       prepared.push({ toolCall, tool, denied: true, reason: "blocked by PreToolUse hook" })
       continue
     }
+
+    // Panel area abolished — all tools now stream inline via onToolOutput.
+
+    callbacks.onToolCall?.(toolCall.name, args)
 
     prepared.push({ toolCall, tool, args })
   }
@@ -121,8 +148,7 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       return { ...item, result: reason, ok: false }
     }
     try {
-      // Snapshot for undo before side-effect tools
-      if (item.tool?.outputPanel) callbacks.setupOutputPanel?.(item.toolCall.name)
+      // Snapshot for undo before side-effect tools (setupOutputPanel already fired in Phase 1)
       if (!item.tool?.readonly && item.args) {
         snapshotForUndo(agent, item.toolCall.name, item.args, agent.cwd)
       }

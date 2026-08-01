@@ -74,6 +74,7 @@ export async function handleThinkCommand(ctx, args = []) {
     if (e.action === "auto") {
       const newAuto = agent.config?.agent?.autoThink === true
       pushLine(`Auto-think: ${newAuto ? "ON" : "OFF"}`, C.tool)
+      return // exit loop — no useful actions remain when auto mode just changed
     } else if (e.action === "effort") {
       pushLine(`Reasoning effort: ${e.level}`, C.tool)
     } else {

@@ -77,12 +77,12 @@ export const websearchTool = {
       const engine = ENGINES.find(e => e.name === args.engine)
       if (!engine) return `Unknown engine '${args.engine}'. Available: ${ENGINE_NAMES.join(", ")}`
       const fetched = await fetchEngine(engine, args.query, page, ctx)
-      if (!fetched || fetched.results.length === 0) return `(no results from ${engine.label})`
-      return truncate(fetched.results.slice(0, limit).map((r, i) => `${i + 1}. ${r.title}\n   ${r.href}\n   ${r.snippet}`).join("\n\n"))
+      if (!fetched || fetched.results.length === 0) return "(no results)"
+      return truncate(fetched.results.slice(0, limit).map((r, i) => `${i + 1}. [${engine.label}] ${r.title}\n   ${r.href}\n   ${r.snippet}`).join("\n\n"))
     }
     const promises = ENGINES.map(e => fetchEngine(e, args.query, 1, ctx))
     const fetched = (await Promise.all(promises)).filter(Boolean)
-    if (fetched.length === 0) return "(no results — all search engines failed)"
+    if (fetched.length === 0) return "(no results)"
     const merged = [], indexes = fetched.map(() => 0)
     let done = false
     while (!done && merged.length < limit) {

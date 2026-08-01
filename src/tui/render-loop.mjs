@@ -60,7 +60,7 @@ export function createRenderLoop(state, agent, ctx, pushLine, write = (s) => pro
 
       // Expired output panels: prune once their close grace elapsed (done + closeAt in the past)
       const now = Date.now()
-      for (const [name, p] of Object.entries(state.outputPanels)) {
+      for (const [name, p] of Object.entries(state.outputPanels ?? {})) {
         if (p.done && (p.closeAt ?? 0) <= now) delete state.outputPanels[name]
       }
 
@@ -103,6 +103,7 @@ export function createRenderLoop(state, agent, ctx, pushLine, write = (s) => pro
       if (out.length || cursorSuffix) write(ansi.syncUpdateStart + out.join("") + ansi.syncUpdateEnd + cursorSuffix)
     } catch (e) {
       // Don't let a render error crash the TUI
+      if (process.env.THINCODER_DEBUG_RENDER) process.stderr.write(`[render-error] ${e?.stack ?? e}\n`)
     }
   }
 
