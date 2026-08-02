@@ -273,6 +273,23 @@ export function pushReal(agent, msg)          // 真实消息双写：同时追�
 
 **VS Code 端契约**（thincoder-vscode）：同一双结构语义，但两线由调用方（chat-panel）持有并经 `opts.history`（机读）/`opts.fullHistory`（人读）传入 `runAgent`，就地更新、跨调用存活。`session-io` 的 `saveMessages(msgDir, name, messages, contextHistory)` 把两条线写成 `{ messages, contextHistory }` 双字段；`loadSessionLines` 读回两线、`loadMessages` 只返回人读线供 UI。旧格式（裸数组或无 `contextHistory` 的对象）→ `contextHistory: null`，调用方回退从人读线播种机读线。
 
+### 会话存储统一（CLI ↔ VS Code 共享）
+
+两端使用**同一套磁盘格式与存储位置**，可互相读写同一份会话数据：
+
+```
+~/.thincoder/sessions/
+  <sha1(cwd)>.json.manifest   # { slots: { 1: {ts, title, firstMessage, turnCount, activeProvider, updatedAt}, ... }, active: N, sessionId }
+  <sha1(cwd)>.json.1          # 槽位1: { version:2, cwd, title, history, contextHistory, display, tasks, ... }
+  <sha1(cwd)>.json.2          # 槽位2
+```
+
+**设计要点**：
+- **槽位模型**：数字键 `1..N`（无上限），文件名 `session.json.N`；manifest 存元数据 + active 指针 + sessionId（PID 防多开）。
+- **标题**：`title` 字段两端都认。CLI 在**第一条用户消息后自动生成**（复用 VS Code 的 generate-title 逻辑）；VS Code 保留现有自动标题 + 下拉 UI。标题写入 manifest 与槽位文件，不再 rename 文件。
+- **VS Code 迁移**：废弃 `messages/` 目录 + base64 文件名 + Memento 索引，改用上述共享格式。旧 `messages/` 会话**不迁移**，直接丢弃（从空开始）。
+- **排序**：列表按 `updatedAt` 倒序（最新在前），两端一致。
+
 ### memory/ — 记忆系统
 
 核心在 `src/memory/core.mjs`，`memory.mjs` 重导出所有接口。三层记忆（Personal / Project / Team），FTS5 + 向量 RRF 混合检索。

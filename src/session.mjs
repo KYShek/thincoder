@@ -71,7 +71,7 @@ function isRealUserMsg(m) {
 }
 
 /** Extract slot metadata from history (shared by slotDigest and loadSlotMeta) */
-function extractSlotMeta(history, activeProvider, updatedAt) {
+function extractSlotMeta(history, activeProvider, updatedAt, title = "") {
   const userMsgs = history.filter(isRealUserMsg)
   const first = userMsgs[0]?.content ?? ""
   return {
@@ -80,12 +80,13 @@ function extractSlotMeta(history, activeProvider, updatedAt) {
     firstMessage: first.slice(0, 80),
     activeProvider: activeProvider ?? "",
     updatedAt: updatedAt ?? Date.now(),
+    title,
   }
 }
 
 /** Extract preview summary from session data for manifest storage (with current timestamp) */
 function slotDigest(data) {
-  const meta = extractSlotMeta(data.history ?? [], data.activeProvider, data.updatedAt)
+  const meta = extractSlotMeta(data.history ?? [], data.activeProvider, data.updatedAt, data.title ?? "")
   return { ts: Date.now(), ...meta }
 }
 
@@ -194,7 +195,7 @@ function loadSlotMeta(cwd, slot, v) {
     if (!existsSync(p)) return { ts }
     const data = JSON.parse(readFileSync(p, "utf8"))
     const history = data.history ?? []
-    const meta = extractSlotMeta(history, data.activeProvider, data.updatedAt ?? ts)
+    const meta = extractSlotMeta(history, data.activeProvider, data.updatedAt ?? ts, data.title ?? "")
     return { ts, ...meta }
   } catch {
     return { ts }
@@ -220,6 +221,7 @@ export function listSlots(cwd) {
         activeProvider: meta.activeProvider ?? "",
         updatedAt: meta.updatedAt ?? meta.ts,
         updatedDate: new Date(meta.updatedAt ?? meta.ts).toLocaleString(),
+        title: meta.title ?? "",
       }
     })
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -264,6 +266,7 @@ export function saveSession(agent, display) {
   const data = {
     version: 2,
     cwd: agent.cwd,
+    title: agent.title ?? "",
     activeProvider: agent.activeProvider ?? agent.provider?.name,
     activeModel: agent.activeModel ?? null,
     updatedAt: Date.now(),
@@ -357,6 +360,7 @@ export function applySession(agent, data) {
   const full = Array.isArray(data.history) ? data.history : []
   agent._fullHistory = [...full]
   agent.history = full
+  agent.title = data.title ?? ""
   agent.tasks = data.tasks ?? []
   agent.planMode = data.planMode ?? false
   agent.autoApprove = data.autoApprove ?? false
@@ -410,7 +414,7 @@ export function newSession(cwd) {
   while (m.slots[slot]) slot++
 
   // Write empty session
-  const data = { version: 2, cwd, updatedAt: Date.now(), history: [], tasks: [], display: [], goal: null, autoApprove: false, advisor: null, pendingReminders: [], sessionStart: null }
+  const data = { version: 2, cwd, title: "", updatedAt: Date.now(), history: [], tasks: [], display: [], goal: null, autoApprove: false, advisor: null, pendingReminders: [], sessionStart: null }
   writeSessionFile(slotPath(cwd, slot), data)
   m.slots[slot] = slotDigest(data)
   m.active = slot

@@ -355,6 +355,21 @@ export async function runAgentTurn(ctx, text) {
     if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
       state.tasks = []
     }
+    // Auto-generate session title from the first user message (once per session)
+    if (!agent.title) {
+      try {
+        const { generateTitle } = await import("../generate-title.mjs")
+        const firstUser = (agent._fullHistory ?? agent.history).find(
+          (m) => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[System reminder:"),
+        )
+        if (firstUser) {
+          const title = await generateTitle(firstUser.content, agent.provider)
+          if (title) agent.title = title
+        }
+      } catch {
+        // Title generation failure is non-fatal
+      }
+    }
     // Save session after every turn (survives crashes)
     try {
       saveSessionImpl(agent, state.lines)

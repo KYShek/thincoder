@@ -18,14 +18,14 @@ export async function handleSessionCommand(ctx) {
   const entries = [
     { type: "header", text: `Sessions (● = active, ↑↓ select, Enter switch, Esc cancel)` },
     ...slots.map((s) => {
-      const preview = s.firstMessage ? `"${truncate(s.firstMessage, 40)}"` : "(empty)"
+      const label = s.title || (s.firstMessage ? `"${truncate(s.firstMessage, 40)}"` : "(empty)")
       const turns = s.turnCount > 0 ? `${s.turnCount} turns` : "0 turns"
       const when = shortDate(s.updatedAt)
       const model = s.activeProvider ? ` — ${s.activeProvider}` : ""
       const marker = s.isActive ? " ●" : ""
       return {
         type: "item",
-        text: `Slot ${s.slot} │ ${turns} │ ${when} │ ${preview}${model}${marker}`,
+        text: `Slot ${s.slot} │ ${turns} │ ${when} │ ${label}${model}${marker}`,
         slot: s.slot,
       }
     }),

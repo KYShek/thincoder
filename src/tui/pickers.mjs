@@ -335,7 +335,11 @@ export function createPickers(ctx) {
       if (!baseURL) return
       const model = await askQuestion("Enter model name:")
       if (!model) return
-      agent.providers.push({ name, baseURL, model })
+      const format = (await askQuestion("API format [openai/anthropic/google] (default: openai):")).trim().toLowerCase()
+      const cfg = { name, baseURL, model }
+      if (format === "anthropic" || format === "google") cfg.format = format
+      else if (format && format !== "openai") return // unknown format → abort
+      agent.providers.push(cfg)
       await persistRaw((raw) => { raw.providers = agent.providers })
       const key = await askQuestion(`Enter API key for ${name} (skip if none):`)
       if (key) await setProviderKey(name, key)
@@ -348,6 +352,7 @@ export function createPickers(ctx) {
     if (preset.reasoningEffort) cfg.reasoningEffort = preset.reasoningEffort
     if (preset.maxTokens) cfg.maxTokens = preset.maxTokens
     if (preset.chatPath) cfg.chatPath = preset.chatPath
+    if (preset.format) cfg.format = preset.format
     agent.providers.push(cfg)
     await persistRaw((raw) => { raw.providers = agent.providers })
     const key = await askQuestion(`Enter API key for ${se.name} (skip if none):`)
