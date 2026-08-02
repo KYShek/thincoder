@@ -11,6 +11,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
+import { homedir } from "node:os"
 
 /** Valid skill name pattern (alphanumeric + hyphens/underscores) */
 const NAME_RE = /^[a-zA-Z0-9_-]+$/
@@ -42,13 +43,12 @@ async function tryReadSkill(dir, name, filePath) {
 }
 
 /**
- * Scan .thincoder/skills/ directory, return skill list.
+ * Scan a single skills directory, return skill list.
  * Supports flat .md files and subdirectories with SKILL.md inside.
  * Each skill: { name, path, description } — name derived from filename or directory.
  * Returns empty array if directory is missing or empty.
  */
-export async function loadSkills(cwd) {
-  const dir = join(cwd, ".thincoder", "skills")
+async function loadSkillsFromDir(dir) {
   let entries
   try {
     entries = await readdir(dir, { withFileTypes: true })
@@ -80,6 +80,31 @@ export async function loadSkills(cwd) {
 }
 
 /**
+ * Scan both project-level and user-level skills directories.
+ * Project-level skills (cwd/.thincoder/skills/) take priority over user-level (~/.thincoder/skills/).
+ * Returns merged skill list with project-level skills first.
+ */
+export async function loadSkills(cwd) {
+  const projectDir = join(cwd, ".thincoder", "skills")
+  const userDir = join(homedir(), ".thincoder", "skills")
+  
+  // Load project-level skills first (higher priority)
+  const projectSkills = await loadSkillsFromDir(projectDir)
+  const added = new Set(projectSkills.map(s => s.name))
+  
+  // Load user-level skills, skipping duplicates
+  const userSkills = await loadSkillsFromDir(userDir)
+  for (const skill of userSkills) {
+    if (!added.has(skill.name)) {
+      projectSkills.push(skill)
+      added.add(skill.name)
+    }
+  }
+  
+  return projectSkills
+}
+
+/**
  * Generate skill listing text for system prompt injection.
  * At most 3 (small footprint); overflow marked "... and N more".
  * Prefixed with DISREGARD: when listing refreshes (skills added/removed), old listings are auto-invalidated without needing to delete history (inspired by kimi-code).
@@ -94,23 +119,31 @@ export function formatSkillListing(skills) {
 
 /**
  * Read the full content of a specific skill file.
- * Tries subdirectory format (name/SKILL.md) first, then flat format (name.md).
+ * Tries project-level directory first, then user-level directory.
+ * For each directory, tries subdirectory format (name/SKILL.md) first, then flat format (name.md).
  * Returns text, or null if not found.
  */
 export async function readSkill(cwd, name) {
   if (!NAME_RE.test(name)) return null
 
-  // Try subdirectory format: name/SKILL.md
-  try {
-    const p = join(cwd, ".thincoder", "skills", name, "SKILL.md")
-    return await readFile(p, "utf8")
-  } catch { /* not found, try flat */ }
+  const dirs = [
+    join(cwd, ".thincoder", "skills"),
+    join(homedir(), ".thincoder", "skills")
+  ]
 
-  // Fallback to flat format: name.md
-  try {
-    const p = join(cwd, ".thincoder", "skills", `${name}.md`)
-    return await readFile(p, "utf8")
-  } catch {
-    return null
+  for (const baseDir of dirs) {
+    // Try subdirectory format: name/SKILL.md
+    try {
+      const p = join(baseDir, name, "SKILL.md")
+      return await readFile(p, "utf8")
+    } catch { /* not found, try flat */ }
+
+    // Fallback to flat format: name.md
+    try {
+      const p = join(baseDir, `${name}.md`)
+      return await readFile(p, "utf8")
+    } catch { /* not found, try next directory */ }
   }
+  
+  return null
 }
