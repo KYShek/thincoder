@@ -101,8 +101,25 @@ function splitHistory(history) {
   return { headEnd, tailStart }
 }
 
+/**
+ * pushReal — the single entry point for REAL conversation messages.
+ * A real message (user input, assistant reply, tool result, multimodal image) is appended to BOTH:
+ *   agent.history      — the machine context (compaction shrinks this)
+ *   agent._fullHistory — the NEVER-COMPACTED human-readable record (persistence source)
+ * Machine-only messages ([System reminder:...], compaction notes, task/plan/checkpoint re-injections)
+ * are pushed directly to agent.history WITHOUT going through here, so they never enter _fullHistory.
+ * The two lines are written independently at the source — no after-the-fact delta sync.
+ */
+export function pushReal(agent, msg) {
+  if (!Array.isArray(agent._fullHistory)) agent._fullHistory = []
+  agent._fullHistory.push(msg)
+  agent.history.push(msg)
+}
+
 /** Replace middle with a note, then re-inject task/plan state (shared by LLM summary and truncation fallback) */
 function applyCompression(agent, headEnd, tailStart, note) {
+  // _fullHistory already holds every real message (written at the source via pushReal),
+  // so compaction only shrinks the machine line — nothing to preserve here.
   const head = agent.history.slice(0, headEnd)
   const tail = agent.history.slice(tailStart)
   agent.history = [

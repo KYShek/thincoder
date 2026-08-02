@@ -5,6 +5,7 @@
  * Returns { action: 'continue' | 'done', content?, guardPushbacks, honestReminderInjected, advisorPushbacks }
  */
 import { isDocFile } from "../advisor/repos.mjs"
+import { pushReal } from "../context.mjs"
 
 /** True when this run mutated at least one CODE file. Mirrors agent.mjs:hasCodeMutations. */
 function hasCodeMutations(agent) {
@@ -42,7 +43,7 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
   // Pending tasks: remind the model before it declares itself done
   if (depth === 0 && agent.tasks.some((t) => t.status === "pending")) {
     const pending = agent.tasks.filter((t) => t.status === "pending").map((t) => t.title).join(", ")
-    agent.history.push({ role: "assistant", content: response.content })
+    pushReal(agent, { role: "assistant", content: response.content })
     agent.history.push({
       role: "user",
       content: `[System reminder: you still have pending tasks: ${pending}. Update their status with the task tool before finishing — if they're done, mark them done; if they're not applicable, remove them.]`,
@@ -60,7 +61,7 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
     // Not verified yet → pushback to run verify
     if (agent._mutatedThisRun && !agent._verifiedThisRun && hasCodeMutations(agent) && guardPushbacks < MAX_VERIFY_PUSHBACKS) {
       guardPushbacks++
-      agent.history.push({ role: "assistant", content: response.content })
+      pushReal(agent, { role: "assistant", content: response.content })
       agent.history.push({
         role: "user",
         content: "[System reminder: you modified files in this run but have not verified the changes. Before finishing: call the verify tool to run syntax checks and tests. If verify reports failures, fix them and run verify again. If verification is genuinely impossible here, say so explicitly in your reply.]",
@@ -71,7 +72,7 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
     // Verified but still failing → pushback to fix (up to MAX_VERIFY_RETRIES)
     if (agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries < MAX_VERIFY_RETRIES) {
       agent._verifyRetries++
-      agent.history.push({ role: "assistant", content: response.content })
+      pushReal(agent, { role: "assistant", content: response.content })
       agent.history.push({
         role: "user",
         content: `[System reminder: verify reported test failures (retry ${agent._verifyRetries}/${MAX_VERIFY_RETRIES}). Review the failures, fix the issues, then run verify again. If you cannot fix after ${MAX_VERIFY_RETRIES} attempts, explain honestly what's blocking you.]`,
@@ -82,11 +83,11 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
     // Exhausted retries — inject honesty reminder once
     if (agent._verifiedThisRun && agent._verifyPassed === false && agent._verifyRetries >= MAX_VERIFY_RETRIES) {
       if (honestReminderInjected) {
-        agent.history.push({ role: "assistant", content: response.content })
+        pushReal(agent, { role: "assistant", content: response.content })
         return { action: "done", content: response.content, guardPushbacks, honestReminderInjected, advisorPushbacks }
       }
       honestReminderInjected = true
-      agent.history.push({ role: "assistant", content: response.content })
+      pushReal(agent, { role: "assistant", content: response.content })
       agent.history.push({
         role: "user",
         content: `[System reminder: ${MAX_VERIFY_RETRIES} verify attempts exhausted and tests are still failing. In your response to the user, you MUST state explicitly: (1) what tests are still failing, (2) what you tried, (3) what you believe the root cause is. Do not present this as complete — the user needs to know the work is unfinished.]`,
@@ -104,7 +105,7 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
     if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && hasCodeMutations(agent)
         && advisorPushbacks < MAX_ADVISOR_PUSHBACKS) {
       advisorPushbacks++
-      agent.history.push({ role: "assistant", content: response.content })
+      pushReal(agent, { role: "assistant", content: response.content })
       agent.history.push({
         role: "user",
         content: `[System reminder: you changed code in this run and MUST get an advisor review before finishing (round ${agent._advisorRound + 1}). Call the \`advisor\` tool now. This is required, not optional — do not skip it even if you believe the changes are trivial — the review will be quick either way. After the review, produce a response table for every issue found (see discipline rules for format).]`,
@@ -114,6 +115,6 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
     }
   }
 
-  agent.history.push({ role: "assistant", content: response.content })
+  pushReal(agent, { role: "assistant", content: response.content })
   return { action: "done", content: response.content, guardPushbacks, honestReminderInjected, advisorPushbacks }
 }

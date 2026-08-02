@@ -262,9 +262,16 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 export function estimateTokens(messages)      // 粗略 token 估算
 export async function compressIfNeeded(agent, threshold)  // 超阈值时压缩
 export function compressFallback(agent)       // 压缩失败时确定性截断兜底
+export function pushReal(agent, msg)          // 真实消息双写：同时追加 agent.history 与 agent._fullHistory
 ```
 
-压缩策略（学 kimi-code，简化版）：保留 system + 最早 2 条 + 最近 N 条，中间用 LLM 摘要成一条。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文的实测值。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表。会话持久化分两套数据——**agent 恢复**用 history（压缩过、transient 过滤）；**用户恢复**用 display（TUI 对话区渲染行原样快照）。临时上下文打 `transient` 标记，保存时过滤。原子写（tmp+rename）；每 5 个工具 turn 增量保存。
+压缩策略（学 kimi-code，简化版）：保留 system + 最早 2 条 + 最近 N 条，中间用 LLM 摘要成一条。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文的实测值。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表。原子写（tmp+rename）；每 5 个工具 turn 增量保存。
+
+**机读上下文与人读历史分离（双结构）**：`agent.history` 是机读上下文（压缩照常），`agent._fullHistory` 是**永不压缩**的完整记录（人读）。压缩只作用前者；后者只追加。两线在**源头各自独立写入**：真实消息（用户输入、assistant 回复、tool 结果、多模态图像）统一走 `pushReal`——同时追加进 `agent.history` 与 `agent._fullHistory`（后者懒初始化）；机读消息（`[System reminder:`、`[User interrupt:`、压缩 note、task/plan/checkpoint 回注等 transient 注入）直接 push 进 `agent.history`，**不经过** `pushReal`，因此永远不进人读线。这一版取代了旧的事后差量同步（`syncFullHistory`/`_syncedLen` 基线）：差量基线需要在 reminder/checkpoint splice 时手工补偿，太脆、易错；源头双写语义直白——两条线各写各的，无需事后对账。checkpoint 引用、压缩 note、task/plan reminder 等机读消息**有意不进** `_fullHistory`。
+
+**会话文件双写**（session.mjs）：`history` 字段存完整 `_fullHistory`（人读，VS Code 历史面板与 CLI resume 渲染读它）；`contextHistory` 字段存压缩后机读 `agent.history`。恢复（`applySession`）采**正确性优先**：机读上下文与人读线都从完整 `history` 重建（`_fullHistory = [...history]`、`agent.history = history`，无 `_syncedLen` 基线），`contextHistory` 仅供诊断不参与恢复——因为它可能陈旧（VS Code 扩展透传旧值后又追加了新 turn），且无可靠尾部特征区分「正常压缩后状态」与「被外部追加过的陈旧状态」， resume 用完整历史永远安全、超长则由下一轮压缩自然兜底。临时上下文打 `transient` 标记，保存时过滤。
+
+**VS Code 端契约**（thincoder-vscode）：同一双结构语义，但两线由调用方（chat-panel）持有并经 `opts.history`（机读）/`opts.fullHistory`（人读）传入 `runAgent`，就地更新、跨调用存活。`session-io` 的 `saveMessages(msgDir, name, messages, contextHistory)` 把两条线写成 `{ messages, contextHistory }` 双字段；`loadSessionLines` 读回两线、`loadMessages` 只返回人读线供 UI。旧格式（裸数组或无 `contextHistory` 的对象）→ `contextHistory: null`，调用方回退从人读线播种机读线。
 
 ### memory/ — 记忆系统
 

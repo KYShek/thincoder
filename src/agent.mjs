@@ -3,7 +3,7 @@
  * LLM ↔ tool-call loop, until the task is done.
  */
 import { chat } from "./provider/index.mjs"
-import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT } from "./context.mjs"
+import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT, pushReal } from "./context.mjs"
 import { specForModel } from "./config.mjs"
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
@@ -236,7 +236,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     // inject rule's message as a reminder, and retry from the same context.
     if (response.ruleTriggered) {
       if (response.content) {
-        agent.history.push({ role: "assistant", content: response.content })
+        pushReal(agent, { role: "assistant", content: response.content })
       }
       const label = response.ruleName ? ` — stream rule "${response.ruleName}"` : ""
       agent.history.push({
@@ -262,7 +262,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     // the outer loop to recreate the controller and resume.
     if (response.interrupted) {
       if (response.content) {
-        agent.history.push({ role: "assistant", content: response.content })
+        pushReal(agent, { role: "assistant", content: response.content })
       }
       agent.history.push({
         role: "user",
@@ -306,7 +306,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     // abort after chat completes, before committing history: don't commit a half-finished turn
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
 
-    agent.history.push({
+    pushReal(agent, {
       role: "assistant",
       content: response.content || null,
       tool_calls: response.toolCalls.map((tc) => ({
@@ -343,10 +343,10 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           const parsed = JSON.parse(result)
           if (parsed.images?.length) {
             // tool message first — closes the tool_call pairing (OpenAI API requires tool result immediately after assistant with tool_calls)
-            agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: parsed.text })
+            pushReal(agent, { role: "tool", tool_call_id: toolCall.id, content: parsed.text })
             if (specForModel(agent.provider.model).multimodal) {
               // then inject multimodal user message with base64 images for the model to actually "see" them on the next turn
-              agent.history.push({
+              pushReal(agent, {
                 role: "user",
                 content: [{ type: "text", text: parsed.text }, ...parsed.images],
               })
@@ -362,7 +362,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           }
         } catch { /* Parse failure doesn't affect normal tool messages */ }
       }
-      agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: result })
+      pushReal(agent, { role: "tool", tool_call_id: toolCall.id, content: result })
       if (tool && ok) {
         if (FILE_MUTATORS.has(toolCall.name)) {
           // Direct file edit — code was changed.

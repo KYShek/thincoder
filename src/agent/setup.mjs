@@ -2,6 +2,7 @@
  * agent/setup.mjs — runAgent pre-flight setup: context injection, system prompt construction, tool injection
  */
 import { search as memorySearch, docSearch } from "../memory.mjs"
+import { pushReal } from "../context.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
 import { loadSkills, formatSkillListing } from "../skills.mjs"
 import {
@@ -137,7 +138,7 @@ export async function prepareRun(agent, input, callbacks, {
         }
       } catch { /* checklist not available — suppress error */ }
     }
-    agent.history.push({ role: "user", content: input })
+    pushReal(agent, { role: "user", content: input })
   }
 
   if (agent._pendingReminders.length > 0) {

@@ -1,10 +1,10 @@
 /**
  * session.mjs — session persistence (slot-based model)
- * Each project (keyed by cwd hash) keeps up to 5 session slots.
+ * Each project (keyed by cwd hash) keeps unlimited session slots.
  * Every session lives in a numbered slot; the manifest tracks which slot is active.
  * There is no separate "current" file — the active slot IS the current session.
  *
- * File layout: {hash}.json.1~5 (slots), {hash}.json.manifest (slot metadata + active pointer).
+ * File layout: {hash}.json.N (slots), {hash}.json.manifest (slot metadata + active pointer).
  * Legacy {hash}.json is migrated to a slot on first access.
  */
 
@@ -14,7 +14,6 @@ import { join, dirname } from "node:path"
 import { execSync } from "node:child_process"
 import { configDir } from "./config.mjs"
 
-const MAX_SLOTS = 5
 const CWD_HASH_LEN = 12
 
 let currentSessionId = null
@@ -150,18 +149,10 @@ function ensureActive(cwd, m) {
     }
   }
   
-  // All slots busy - create new slot if under limit, otherwise use oldest
-  if (allSlots.length < MAX_SLOTS) {
-    const newSlot = allSlots.length > 0 ? Math.max(...allSlots) + 1 : 1
-    m.active = newSlot
-    m.slotSessions[newSlot] = mySessionId
-    saveManifest(cwd, m)
-    return
-  }
-  
-  // All slots busy and at limit - use oldest slot (smallest number)
-  m.active = allSlots[0]
-  m.slotSessions[m.active] = mySessionId
+  // All slots busy - create new slot (no limit)
+  const newSlot = allSlots.length > 0 ? Math.max(...allSlots) + 1 : 1
+  m.active = newSlot
+  m.slotSessions[newSlot] = mySessionId
   saveManifest(cwd, m)
 }
 
@@ -265,7 +256,11 @@ function isLegacyTransient(m) {
 
 /** Save agent state and display lines to the active slot file (atomic write) */
 export function saveSession(agent, display) {
-  const history = agent.history.filter((m) => !m.transient && !isLegacyTransient(m))
+  // _fullHistory is written at the source via pushReal — no flush needed here.
+  // history        = FULL, never-compacted (human-readable; VS Code panel & CLI resume read this)
+  // contextHistory = machine context (possibly compacted) so CLI resume keeps the token savings
+  const history = (agent._fullHistory ?? agent.history).filter((m) => !m.transient && !isLegacyTransient(m))
+  const contextHistory = agent.history.filter((m) => !m.transient && !isLegacyTransient(m))
   const data = {
     version: 2,
     cwd: agent.cwd,
@@ -273,6 +268,7 @@ export function saveSession(agent, display) {
     activeModel: agent.activeModel ?? null,
     updatedAt: Date.now(),
     history,
+    contextHistory,
     display: display ?? [],
     tasks: agent.tasks ?? [],
     planMode: agent.planMode ?? false,
@@ -350,7 +346,17 @@ export function loadSession(cwd) {
 
 /** Apply loaded session data onto an agent object; returns true if provider was switched */
 export function applySession(agent, data) {
-  agent.history = data.history
+  // data.history is the FULL never-compacted record; data.contextHistory is the (possibly
+  // compacted) machine context. Seed _fullHistory from the full record (real messages only,
+  // written via pushReal). Correctness over token savings on resume: also seed the machine
+  // context from the FULL history. data.contextHistory may be stale — another writer (e.g.
+  // the VS Code extension) can append turns after our last compaction while passing our
+  // contextHistory through unchanged, and there's no reliable tail to distinguish that from a
+  // normal post-compaction state. Resuming from full history is always safe; contextHistory is
+  // persisted for diagnostics only.
+  const full = Array.isArray(data.history) ? data.history : []
+  agent._fullHistory = [...full]
+  agent.history = full
   agent.tasks = data.tasks ?? []
   agent.planMode = data.planMode ?? false
   agent.autoApprove = data.autoApprove ?? false
@@ -392,31 +398,16 @@ export function applySession(agent, data) {
 /**
  * Create a new session slot: allocate a free slot number,
  * write an empty session, and mark it as the active slot.
- * Evicts the oldest slot if MAX_SLOTS is reached.
+ * No limit on the number of sessions.
  */
 export function newSession(cwd) {
   const m = loadManifest(cwd)
   // Ensure active is set (migrate if needed)
   if (!m.active) ensureActive(cwd, m)
 
-  let slot
-  const entries = Object.entries(m.slots).filter(([n]) => /^\d+$/.test(n))
-  if (entries.length < MAX_SLOTS) {
-    slot = 1
-    while (m.slots[slot]) slot++
-  } else {
-    // Full — evict oldest (but never evict the currently active slot)
-    const candidates = entries.filter(([n]) => Number(n) !== m.active)
-    if (candidates.length === 0) {
-      // Should not happen with MAX_SLOTS >= 2 — manifest corruption or all slots are active
-      console.error(`[session] newSession: all ${entries.length} slots are active, cannot evict. Overwriting oldest non-active slot skipped; reusing slot 1.`)
-      slot = 1
-    } else {
-      slot = Number(candidates.sort(slotCmp)[0][0])
-    }
-    // Delete the evicted slot file
-    try { unlinkSync(slotPath(cwd, slot)) } catch {}
-  }
+  // Find next available slot number
+  let slot = 1
+  while (m.slots[slot]) slot++
 
   // Write empty session
   const data = { version: 2, cwd, updatedAt: Date.now(), history: [], tasks: [], display: [], goal: null, autoApprove: false, advisor: null, pendingReminders: [], sessionStart: null }
