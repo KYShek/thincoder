@@ -205,6 +205,9 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.3 (2026-08)
+- **Fix: user-level skills loading** — skills in `~/.thincoder/skills/` are now properly discovered and loaded alongside project-level skills. Project-level skills with the same name take priority. Both `skill list` and `skill load` support both directories.
+
 ### 0.12.2 (2026-08)
 - **Session isolation for multiple processes** — each process gets a unique session ID (`pid-timestamp-random`), manifest tracks slot ownership via `slotSessions` mapping. Concurrent sessions in the same directory automatically get separate slots. Dead process slots are intelligently reclaimed via `isProcessAlive()` check
 - **Two-level model picker** — `/model` now shows providers first, then models for selected provider. Reduces visual clutter when many providers are configured. Direct switching still works: `/model qwen:qwen-max`
