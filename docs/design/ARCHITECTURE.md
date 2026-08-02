@@ -294,6 +294,8 @@ export function pushReal(agent, msg)          // 真实消息双写：同时追�
 - **标题**：`title` 字段两端都认。CLI 在**第一条用户消息后自动生成**（复用 VS Code 的 generate-title 逻辑）；VS Code 保留现有自动标题 + 下拉 UI。标题写入 manifest 与槽位文件，不再 rename 文件。
 - **VS Code 迁移**：废弃 `messages/` 目录 + base64 文件名 + Memento 索引，改用上述共享格式。旧 `messages/` 会话**不迁移**，直接丢弃（从空开始）。
 - **排序**：列表按 `updatedAt` 倒序（最新在前），两端一致。
+- **字段往返完整（关键）**：槽位文件是全量覆盖写，不是增量合并——任何一端存盘时若漏掉某字段，该字段就**永久丢失**。因此两端重写 data 对象时**必须透传自己不认识的字段**（先 `loadSlot` 再展开 `...existing` 覆盖已知键），不得逐字段重建一份"自己认识的子集"。**已知缺口（待补）**：VS Code `chat-panel._saveLines` 逐字段重建 data，漏掉了 CLI 写入的 `activeModel` 与 `engineering`——同一会话经 CLI 设置模型后，再到 VS Code 发一条消息，这两个字段即被抹掉，CLI resume 丢失模型覆盖。修法：`_saveLines` 改为 `...existing` 展开式透传（或显式补上 `activeModel` / `engineering`）。
+
 
 ### 配置共享（CLI ↔ VS Code）
 
