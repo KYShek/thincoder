@@ -284,8 +284,12 @@ export function pushReal(agent, msg)          // 真实消息双写：同时追�
   <sha1(cwd)>.json.2          # 槽位2
 ```
 
+`sha1(cwd)` 为**完整 40 位十六进制，不截断**。
+
 **设计要点**：
 - **槽位模型**：数字键 `1..N`（无上限），文件名 `session.json.N`；manifest 存元数据 + active 指针 + sessionId（PID 防多开）。
+- **cwd 归一化（关键）**：`sha1(cwd)` 的输入必须先归一化，否则两端因路径大小写/分隔符差异算出不同 hash，会话互不可见。规则：**Windows 盘符转大写**（`d:\…` → `D:\…`），路径分隔符保持反斜杠；非 Windows 平台原样。VS Code 的 `uri.fsPath` 会把盘符小写化，CLI 的 `process.cwd()` 保留用户输入大小写——归一化后两端收敛到同一 hash。
+- **hash 不截断**：文件名用完整 40 位 sha1。早期曾截断（CLI 12 位 / VS Code 16 位），既无设计依据又导致两端不一致的 bug——不截断从根上消除"该截几位"的争议，且零碰撞风险。12/16 位旧文件由 CLI 首次访问时自动改名为 40 位。
 - **标题**：`title` 字段两端都认。CLI 在**第一条用户消息后自动生成**（复用 VS Code 的 generate-title 逻辑）；VS Code 保留现有自动标题 + 下拉 UI。标题写入 manifest 与槽位文件，不再 rename 文件。
 - **VS Code 迁移**：废弃 `messages/` 目录 + base64 文件名 + Memento 索引，改用上述共享格式。旧 `messages/` 会话**不迁移**，直接丢弃（从空开始）。
 - **排序**：列表按 `updatedAt` 倒序（最新在前），两端一致。

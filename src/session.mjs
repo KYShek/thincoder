@@ -14,8 +14,6 @@ import { join, dirname } from "node:path"
 import { execSync } from "node:child_process"
 import { configDir } from "./config.mjs"
 
-const CWD_HASH_LEN = 12
-
 let currentSessionId = null
 
 /** Generate unique session ID for this process */
@@ -26,9 +24,36 @@ export function getSessionId() {
   return currentSessionId
 }
 
-/** Derive base session path from cwd hash (legacy, kept for migration and tests) */
+/** Normalize cwd for hashing: uppercase Windows drive letter so both ends
+ *  (CLI's process.cwd() vs VS Code's uri.fsPath, which lowercases it) agree. */
+export function normalizeCwd(cwd) {
+  return cwd.replace(/^([a-z]):/, (_, d) => d.toUpperCase() + ":")
+}
+
+/** Full sha1 hex (40 chars), not truncated. Shared contract with the VS Code extension. */
+function cwdHash(cwd) {
+  return createHash("sha1").update(normalizeCwd(cwd)).digest("hex")
+}
+
+/** One-time migration: rename legacy 12-char-hash session files to the full 40-char hash.
+ *  Idempotent; runs on first access per cwd. */
+function migrateHashLength(cwd, fullHash) {
+  const dir = join(configDir, "sessions")
+  const legacyBase = join(dir, `${fullHash.slice(0, 12)}.json`)
+  if (!existsSync(legacyBase) && !existsSync(`${legacyBase}.manifest`) && !existsSync(`${legacyBase}.1`)) return
+  const newBase = join(dir, `${fullHash}.json`)
+  try {
+    for (const suffix of ["", ".manifest", ...Array.from({ length: 64 }, (_, i) => `.${i + 1}`)]) {
+      const from = legacyBase + suffix
+      if (existsSync(from) && !existsSync(newBase + suffix)) renameSync(from, newBase + suffix)
+    }
+  } catch { /* best-effort; leave files in place on failure */ }
+}
+
+/** Derive base session path from cwd hash. Migrates legacy short-hash files on first access. */
 export function sessionPath(cwd) {
-  const hash = createHash("sha1").update(cwd).digest("hex").slice(0, CWD_HASH_LEN)
+  const hash = cwdHash(cwd)
+  migrateHashLength(cwd, hash)
   return join(configDir, "sessions", `${hash}.json`)
 }
 
