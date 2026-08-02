@@ -2,14 +2,59 @@ import { ansi, C } from "./ansi.mjs"
 import { readClipboardText, insertPastedText } from "./clipboard.mjs"
 import { computeLayout } from "./layout.mjs"
 
+/** Perform search on state.lines, update state.search.matches and clamp index */
+function performSearch(state) {
+  if (!state.search) return
+  const query = state.search.query.toLowerCase()
+  state.search.matches = []
+  // Clear old highlights
+  state.lines.forEach(l => delete l._searchMatches)
+
+  if (!query) { state.search.index = 0; return }
+
+  state.lines.forEach((line, lineIndex) => {
+    const text = (line.text || "").toLowerCase()
+    let charIndex = text.indexOf(query)
+    if (charIndex !== -1) {
+      line._searchMatches = []
+    }
+    while (charIndex !== -1) {
+      state.search.matches.push({ lineIndex, charIndex })
+      line._searchMatches.push(charIndex)
+      charIndex = text.indexOf(query, charIndex + 1)
+    }
+  })
+
+  if (state.search.matches.length === 0) {
+    state.search.index = 0
+  } else {
+    state.search.index = Math.min(state.search.index, state.search.matches.length - 1)
+  }
+}
+
+/** Estimate scroll position to make a line visible (simplified) */
+function scrollToMatch(state, lineIndex) {
+  if (lineIndex == null) return
+  // Rough estimate: each state.line takes 1-2 rendered lines
+  let estimatedLine = 0
+  for (let i = 0; i < lineIndex && i < state.lines.length; i++) {
+    estimatedLine += Math.max(1, Math.ceil((state.lines[i].text?.length || 0) / 80))
+  }
+  const rows = process.stdout.rows || 24
+  const visibleH = Math.max(5, rows - 10) // reserve space for header, input, status, etc.
+  // scroll is number of lines hidden above viewport
+  // We want estimatedLine to be near the bottom of the viewport
+  state.scroll = Math.max(0, state.lines.length - estimatedLine - visibleH + 3)
+}
+
 /** Keyboard event dispatch: permission confirm / question / picker / wizard / edit / scroll / history / paste.
  *  Extracted from index.mjs.
  *  ctx: { agent, state, render, renderPickerLines, popPicker,
  *         handleSlash, handleTab, submit, pasteClipboardImage,
  *         wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
- *         renderWizard, pushLine, cleanup } */
+ *         renderWizard, pushLine, cleanup, showPicker } */
 export function createKeyHandler(ctx) {
-  const { agent, state, render, popPicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup } = ctx
+  const { agent, state, render, popPicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup, showPicker } = ctx
 
   return function onKeypress(str, key = {}) {
     // permission confirm state: y approve / n deny / a approve + turn ON AUTO (no further prompts)
@@ -102,7 +147,66 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    if (key.ctrl && key.name === "c") {
+    // Search mode: Ctrl+F to enter, Esc/n/N to navigate/exit
+  if (key.ctrl && key.name === "f" && !state.permission && !state.question) {
+    if (!state.search) {
+      state.search = { query: "", matches: [], index: 0 }
+    }
+    render()
+    return
+  }
+
+  if (state.search) {
+    if (key.name === "escape") {
+      state.search = null
+      render()
+      return
+    }
+    if (key.name === "n" || (key.ctrl && key.name === "g")) {
+      // Next match
+      if (state.search.matches.length > 0) {
+        state.search.index = (state.search.index + 1) % state.search.matches.length
+        scrollToMatch(state, state.search.matches[state.search.index].lineIndex)
+      }
+      render()
+      return
+    }
+    if (key.name === "p" || (key.ctrl && key.name === "r")) {
+      // Previous match
+      if (state.search.matches.length > 0) {
+        state.search.index = (state.search.index - 1 + state.search.matches.length) % state.search.matches.length
+        scrollToMatch(state, state.search.matches[state.search.index].lineIndex)
+      }
+      render()
+      return
+    }
+    if (key.name === "return") {
+      // Exit search mode but keep highlighting until next Ctrl+F
+      state.search = null
+      render()
+      return
+    }
+    if (key.name === "backspace") {
+      if (state.search.query.length > 0) {
+        state.search.query = state.search.query.slice(0, -1)
+        performSearch(state)
+        render()
+      }
+      return
+    }
+    // Regular character input
+    if (str && str.length === 1 && !key.ctrl && !key.alt && !key.meta) {
+      state.search.query += str
+      performSearch(state)
+      if (state.search.matches.length > 0) {
+        scrollToMatch(state, state.search.matches[state.search.index].lineIndex)
+      }
+      render()
+      return
+    }
+  }
+
+  if (key.ctrl && key.name === "c") {
       // picker 打开时 Ctrl+C = 取消当前 picker（等同 Esc），不杀进程
       if (state.picker) {
         popPicker(null)
@@ -118,6 +222,23 @@ export function createKeyHandler(ctx) {
       // 延迟退出可注入（测试传大值并清理定时器，避免定时器在 mock 恢复后调到真 process.exit）
       ctx.exitTimer = setTimeout(() => process.exit(0), ctx.exitDelay ?? 100)
       ctx.exitTimer.unref?.()
+    }
+
+    // F1: 显示快捷键帮助
+    if (key.name === "f1" && !state.picker && !state.permission && !state.question) {
+      showPicker("Keyboard Shortcuts", [
+        { type: "item", text: "Ctrl+C — Cancel/Abort current operation" },
+        { type: "item", text: "Ctrl+I — Interrupt and inject message" },
+        { type: "item", text: "Ctrl+F — Search conversation history" },
+        { type: "item", text: "Ctrl+L — Clear screen" },
+        { type: "item", text: "Ctrl+U — Clear input line" },
+        { type: "item", text: "Esc — Cancel current input/picker" },
+        { type: "item", text: "↑/↓ — Navigate input history" },
+        { type: "item", text: "PgUp/PgDn — Scroll conversation" },
+        { type: "item", text: "Enter — Send message or confirm selection" },
+        { type: "item", text: "F1 — Show this help" },
+      ])
+      return
     }
 
     // Ctrl+I (or Tab during processing): interrupt and inject a message

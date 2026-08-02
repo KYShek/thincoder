@@ -6,6 +6,19 @@ import { ansi, C } from "./ansi.mjs"
 /** Tool execution start timestamps (performance.now ms), keyed by tool name. */
 const _toolTicks = Object.create(null)
 
+/** Per-tool streaming preview line limits — tools with verbose output get more lines */
+const LIVE_LINE_LIMITS = {
+  bash: 10,
+  advisor: 15,
+  read: 3,
+  grep: 8,
+  glob: 8,
+  search: 8,
+  websearch: 8,
+  code_search: 8,
+  doc_search: 8,
+}
+
 /** Execute one agent conversation turn (triggered by submit or queue).
  *  Extracted from index.mjs: agent loop + callback construction + error handling + queue processing.
  *  ctx: { agent, state, pushLine, pushLabel, render, scheduleRender,
@@ -33,6 +46,7 @@ export async function runAgentTurn(ctx, text) {
   state.streaming = ""
   state.reasoning = ""
   state.advisorStreaming = ""
+  state._advisorThink = ""
   state.subTasks = {}
   state.currentTool = null
   state.processingStarted = Date.now()
@@ -54,6 +68,7 @@ export async function runAgentTurn(ctx, text) {
       state.streaming = ""
     }
     state.advisorStreaming = ""
+    state._advisorThink = ""
   }
 
   const callbacks = {
@@ -107,10 +122,27 @@ export async function runAgentTurn(ctx, text) {
         scheduleRender()
         return
       }
-      if (name === "advisor") state.advisorStreaming = ""
+      if (name === "advisor") { state.advisorStreaming = ""; state._advisorThink = "" }
       flushStream()
       ensureAssistantLabel()
       state.currentTool = name
+      // Update status bar with current tool and key arguments for user visibility
+      if (name === "bash" && args.command) {
+        const cmd = args.command.replace(/\s+/g, " ").trim()
+        state.status = `Running: ${cmd.length > 50 ? cmd.slice(0, 50) + "…" : cmd}`
+      } else if ((name === "read" || name === "write" || name === "edit" || name === "grep" || name === "glob") && args.path) {
+        state.status = `${name}: ${args.path}`
+      } else if (name === "grep" && args.pattern) {
+        state.status = `grep: ${args.pattern}`
+      } else if (name === "glob" && args.pattern) {
+        state.status = `glob: ${args.pattern}`
+      } else if (name === "websearch" && args.query) {
+        state.status = `search: ${args.query.length > 40 ? args.query.slice(0, 40) + "…" : args.query}`
+      } else if (name === "advisor") {
+        state.status = `advisor review (round ${(agent._advisorRound || 0) + 1})`
+      } else {
+        state.status = `tool: ${name}`
+      }
       // Advisor: tag the round in the tool title — the model's own "第N轮" narration
       // is unreliable (it glues onto the previous line), so the round belongs here.
       const roundTag = name === "advisor" ? ` (round ${(agent._advisorRound || 0) + 1})` : ""
@@ -155,7 +187,7 @@ export async function runAgentTurn(ctx, text) {
         const summary = formatToolSummary(name, result)
         if (summary) pushLine(`  ${summary}`, C.dim)
       }
-      if (name === "advisor") state.advisorStreaming = ""
+      if (name === "advisor") { state.advisorStreaming = ""; state._advisorThink = "" }
       // Done line for ALL tools (panel area abolished — inline only).
       if (!isSubagent) {
         const elapsed = _toolTicks[name] ? ` (${Math.round(performance.now() - _toolTicks[name])}ms)` : ""
@@ -174,8 +206,14 @@ export async function runAgentTurn(ctx, text) {
       if (!part.text) return
       if (name === "advisor") {
         // Accumulate to buffer — formatTables + wrapText in render-conversation
-        // handles markdown formatting and line wrapping, same as main agent response.
-        state.advisorStreaming += typeof chunk === "string" ? chunk : String(chunk?.text ?? "")
+        // handles markdown formatting, same as main agent response.
+        const raw = typeof chunk === "string" ? chunk : String(chunk?.text ?? "")
+        const kind = typeof chunk === "string" ? "text" : (chunk?.kind ?? "text")
+        if (kind === "think") {
+          state._advisorThink = (state._advisorThink || "") + raw
+        } else {
+          state.advisorStreaming += raw
+        }
         scheduleRender()
         return
       }
@@ -187,15 +225,18 @@ export async function runAgentTurn(ctx, text) {
         if (!trimmed) continue
         state.lines.push({ text: `│ ${trimmed}`, color, _live: name })
       }
-      // Prune: keep at most 5 lines + "│ …" fold marker per tool
+      // Prune: keep at most N lines + "│ …" fold marker per tool (configurable, tool-specific)
+      const configLimit = agent.config?.agent?.streamPreviewLines
+      const toolLimit = LIVE_LINE_LIMITS[name]
+      const previewLines = configLimit ?? toolLimit ?? 5
       let count = 0
       let hasFold = false
       for (let i = state.lines.length - 1; i >= 0; i--) {
         if (state.lines[i]._live === name) {
-          if (++count > 5) {
+          if (++count > previewLines) {
             if (!hasFold) {
               state.lines[i] = { text: "│ …", color: C.dim, _live: name }
-              hasFold = true; count = 5
+              hasFold = true; count = previewLines
             } else {
               state.lines.splice(i, 1)
             }
@@ -307,6 +348,7 @@ export async function runAgentTurn(ctx, text) {
     state.processing = false
     state.subTasks = {}
     state.advisorStreaming = ""
+    state._advisorThink = ""
     state.controller = null
     state.status = "Ready"
     // Auto-collapse todo panel when all tasks done (matching kimi-code TUI; agent.tasks are preserved)
@@ -342,9 +384,48 @@ function formatToolSummary(name, result) {
   if (name === "verify") return _verifySummary(result)
   if (name === "bash") return _bashSummary(result)
   if (name === "advisor") return _advisorSummary(result)
+  if (name === "read" || name === "read_file") return _readSummary(result)
+  if (name === "write" || name === "write_file") return _writeSummary(result)
+  if (name === "grep" || name === "search") return _grepSummary(result)
+  if (name === "glob") return _globSummary(result)
   // Default: first non-empty line
   const first = result.split("\n").find((l) => l.trim())
   return first ? `${name}: ${first.slice(0, 100)}` : null
+}
+
+function _readSummary(result) {
+  const lines = result.split("\n")
+  // Look for line count in result
+  const countMatch = result.match(/(\d+) lines?/)
+  if (countMatch) return `${countMatch[1]} lines`
+  // Fallback: count actual lines
+  return `${lines.length} lines`
+}
+
+function _writeSummary(result) {
+  // Extract file size or confirmation
+  if (result.includes("wrote") || result.includes("created")) {
+    const sizeMatch = result.match(/(\d+)(?:\s*(?:bytes?|chars?))/i)
+    return sizeMatch ? `wrote ${sizeMatch[1]} bytes` : "wrote file"
+  }
+  const first = result.split("\n").find((l) => l.trim())
+  return first ? first.slice(0, 80) : "wrote"
+}
+
+function _grepSummary(result) {
+  const lines = result.split("\n").filter((l) => l.trim())
+  const count = lines.length
+  if (count === 0) return "no matches"
+  if (count === 1) return "1 match"
+  return `${count} matches`
+}
+
+function _globSummary(result) {
+  const lines = result.split("\n").filter((l) => l.trim())
+  const count = lines.length
+  if (count === 0) return "no files"
+  if (count === 1) return "1 file"
+  return `${count} files`
 }
 
 /**

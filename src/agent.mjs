@@ -47,8 +47,8 @@ export {
 let _reindexFile = null
 const AUTO_REMINDER = "[System reminder: AUTO mode is active — all tool calls are automatically approved without asking.]"
 
-
-const ENG_ON_REMINDER =
+// Engineering mode reminder — shared with eng.mjs tool
+export const ENG_ON_REMINDER =
   "[System reminder: engineering mode is ON — design-before-code enforced. " +
   "Workflow: Requirements doc → Design doc → advisor(type='design') → " +
   "user approval → eng-coder implementation. Code changes go through eng-coder " +
@@ -99,13 +99,14 @@ export function createAgent({
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined, _calledAdvisorThisRun: false,
     _engDesignReviewed: false, // eng-coder: design review gate passed (hard gate in dispatch.mjs)
     _engDesignToken: null, // issued by advisor(type="design"); required to spawn eng-coder
-    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null, _advisorLastSnapshot: null,
+    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null, _advisorLastSnapshotHash: null,
     _lastEngState: false,
     _pendingReminders: [],
     _pendingTimers: [],
     _sessionStart: sessionStart,
     _lastPromptTokens: null, _usageAtLen: null,
     _compressFailures: 0,
+    _currentTurn: 0, _maxTurns: 100, // turn counter for status bar display
   }
 }
 
@@ -129,7 +130,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     agent._verifyRetries = 0
     agent._advisorRound = 0
     agent._advisorSession = null // advisor session is per-run: discard when the task ends, next task starts fresh
-    agent._advisorLastSnapshot = null // dedup baseline is per-run too — stale snapshot could wrongly suppress a diff refresh
+    agent._advisorLastSnapshotHash = null // dedup baseline is per-run too — stale snapshot could wrongly suppress a diff refresh
   }
   // eng-coder authorization is set by subagent.mjs AFTER token validation but BEFORE runAgent —
   // only reset for the top-level agent (depth 0); child runs must keep their granted authorization
@@ -145,6 +146,9 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   const streamRuleFired = new Set()
 
   for (let turn = 0; turn < maxTurns; turn++) {
+    // Update turn counter for status bar display
+    agent._currentTurn = turn + 1
+    agent._maxTurns = maxTurns
 
     const lastRole = agent.history.at(-1)?.role
     if (lastRole === "user" || lastRole === "tool") {
@@ -360,9 +364,13 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       }
       agent.history.push({ role: "tool", tool_call_id: toolCall.id, content: result })
       if (tool && ok) {
-        if (!tool.readonly && !tool.sideEffectExempt) {
+        if (FILE_MUTATORS.has(toolCall.name)) {
+          // Direct file edit — code was changed.
           agent._mutatedThisRun = true
-          // Any mutation after advisor or verify invalidates the prior review/verification
+        }
+        if (!tool.readonly && !tool.sideEffectExempt) {
+          // Any side-effect tool (bash, git, etc.) invalidates prior review/verify.
+          // Code may not have changed, but the environment did.
           if (agent._calledAdvisorThisRun) agent._calledAdvisorThisRun = false
           if (agent._verifiedThisRun) {
             agent._verifiedThisRun = false

@@ -1,5 +1,6 @@
 import { sliceByWidth } from "./render.mjs"
 import { PROVIDER_PRESETS as PRESETS } from "../config.mjs"
+import { computeLayout } from "./layout.mjs"
 
 /** Generic list picker + model/provider management.
  *  单一 Promise API：showPicker(title, entries, { defaultIndex }) → Promise<entry|null>。
@@ -69,12 +70,48 @@ export function createPickers(ctx) {
     if (p.filter && items.length === 0) lines.push({ text: "   (no match)", color: C.dim })
     p.lines = lines
     p.selectedLine = selLine
+
+    // Auto-scroll: keep selectedLine within the visible window.
+    // Fallback to a reasonable default when computeLayout can't run (e.g. test mocks without full state)
+    let winH
+    try {
+      winH = Math.max(1, (computeLayout(state, { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 }).panels.picker?.h ?? lines.length + 1) - 1)
+    } catch {
+      winH = 8 // safe fallback for test mocks
+    }
+    if (p.selectedLine < p.scroll) p.scroll = p.selectedLine
+    if (p.selectedLine >= p.scroll + winH) p.scroll = p.selectedLine - winH + 1
+    p.scroll = Math.max(0, Math.min(p.scroll, Math.max(0, lines.length - winH)))
+
     render()
   }
 
   function renderPickerLines() { rebuildLines() }
 
   // === model picker ===
+
+  /** Strip known version/date suffixes to get the "series" name of a model.
+   *  e.g. "qwen-max-latest" → "qwen-max", "qwen-max-2024-09-19" → "qwen-max" */
+  function modelSeries(name) {
+    return name
+      .replace(/-latest$/, "")
+      .replace(/-\d{4}-\d{2}-\d{2}$/, "") // date suffix like -2024-09-19
+      .replace(/-\d{8}$/, "")              // date suffix like -20240919
+  }
+
+  /** Dedupe model list: group by series, keep shortest name per group.
+   *  Reduces "qwen-max, qwen-max-latest, qwen-max-2024-09-19" to just "qwen-max". */
+  function dedupeModels(models) {
+    const groups = new Map()
+    for (const m of models) {
+      const series = modelSeries(m)
+      const existing = groups.get(series)
+      if (!existing || m.length < existing.length) {
+        groups.set(series, m)
+      }
+    }
+    return [...groups.values()].sort()
+  }
 
   /** entry 唯一标识：异步更新 entries 后按它恢复选中项 */
   function entryKey(e) {
@@ -117,10 +154,18 @@ export function createPickers(ctx) {
         const models = await listModels({ baseURL: p.baseURL, apiKey: apiKey ?? "" }, { signal: AbortSignal.timeout(10000) })
         if (state.picker?.entries !== entries) return // picker 已关或已换，不再更新
         selKey = entryKey(pickerItems(state.picker)[state.picker.index])
+        
+        // 智能去重：同系列模型（如 qwen-max, qwen-max-latest, qwen-max-2024-09-19）
+        // 只显示最短的名字作为代表，避免小终端被几十个变体淹没
+        const deduped = dedupeModels(models)
+        
         const at = entries.findLastIndex((e) => e.type === "item" && e.action === "switch" && e.provider === p.name)
-        if (at >= 0) entries.splice(at + 1, 0, ...models.filter((m) => m !== p.model).map((m) => ({ type: "item", text: m, action: "switch", provider: p.name, model: m })))
+        if (at >= 0) entries.splice(at + 1, 0, ...deduped.filter((m) => m !== p.model).map((m) => ({ type: "item", text: m, action: "switch", provider: p.name, model: m })))
         const header = entries.find((e) => e.type === "header" && e.text === p.name)
-        if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}`
+        if (header) {
+          const hint = deduped.length < models.length ? `  (${models.length} models, ${deduped.length} shown — type to filter or use /model ${p.name}:<name>)` : ""
+          header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}${hint}`
+        }
       } catch (error) {
         if (state.picker?.entries !== entries) return
         const header = entries.find((e) => e.type === "header" && e.text === p.name)

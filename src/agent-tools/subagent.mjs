@@ -4,6 +4,7 @@ import {
   EXPLORE_OVERLAY, CODER_OVERLAY, PLAN_OVERLAY, ENG_CODER_OVERLAY,
   MIN_REPORT_CHARS, REPORT_CONTINUATION, DEFAULT_SUBAGENT_TURNS,
 } from "../agent.mjs"
+import { validateDesignToken } from "./advisor.mjs"
 
 /**
  * subagent tool: spawn a child agent to handle an independent subtask (isolated context, only the report is returned).
@@ -52,7 +53,7 @@ export const subagentTool = {
     // present the exact token advisor issued — otherwise the child is not authorized to code.
     if (role === "eng-coder") {
       const issued = parent._engDesignToken
-      if (!issued || args.designToken !== issued) {
+      if (!issued || args.designToken !== issued || !validateDesignToken(args.designToken)) {
         throw new Error("Invalid or missing design token — run advisor with type='design' first and pass the returned token as designToken.")
       }
     }
@@ -146,7 +147,11 @@ export const subagentTool = {
     // bypass the parent's advisor/verify guards. Merge the child's mutations
     // into the parent so "advisor mandatory at both gates" is enforced, not just
     // promised in the engineering prompt.
-    if (role === "eng-coder") mergeChildMutations(parent, child)
+    // CRITICAL: Only merge if child actually mutated files (defense-in-depth against
+    // runAgent throwing before any writes occurred).
+    if (role === "eng-coder" && child._mutatedThisRun) {
+      mergeChildMutations(parent, child)
+    }
 
     return report
   },
@@ -177,9 +182,9 @@ export function mergeChildMutations(parent, child) {
   }
   // Fresh code → fresh convergence budget + stale session/diff cleanup.
   // _advisorRound reset ensures new code gets a full round-1 review;
-  // _advisorSession + _advisorLastSnapshot prevent cross-contamination.
+  // _advisorSession + _advisorLastSnapshotHash prevent cross-contamination.
   parent._advisorRound = 0
   parent._advisorSession = null
-  parent._advisorLastSnapshot = null
+  parent._advisorLastSnapshotHash = null
   return true
 }

@@ -3,12 +3,7 @@
  * In engineering mode the agent follows design-before-code methodology.
  * Toggled here at session level; persisted by /eng.
  */
-const ENG_ON_REMINDER =
-  "[System reminder: engineering mode is ON — design-before-code enforced. " +
-  "Workflow: Requirements doc → Design doc → advisor(type='design') → " +
-  "user approval → eng-coder implementation. Code changes go through eng-coder " +
-  "subagents only. Advisor calls are NOT per-turn-mandatory — call only at " +
-  "flow nodes or when the user asks.]"
+import { ENG_ON_REMINDER } from "../agent.mjs"
 
 export const engTool = {
   name: "eng",
@@ -27,10 +22,23 @@ export const engTool = {
     if (args.action === "exit") {
       ctx.agent.config.agent.engineering = false
       ctx.agent._engDesignToken = null   // stale token from prior design review invalidated
+      ctx.agent._engDesignReviewed = false // reset gate state
+      ctx.agent._advisorRound = 0          // reset convergence budget
+      ctx.agent._touchedFiles = []         // clear mutation tracking
       ctx.agent._lastEngState = false
       ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
       ctx.agent._pendingReminders.push(
         "[System reminder: engineering mode is now OFF — standard discipline applies. Changes go through the normal workflow.]")
+      // 持久化工程模式状态到会话
+      if (ctx.persistState) {
+        await ctx.persistState({
+          engineering: false,
+          engDesignToken: null,
+          engDesignReviewed: false,
+          advisorRound: 0,
+          touchedFiles: []
+        })
+      }
       return "Engineering mode exited. Standard discipline now applies. You may edit files directly."
     }
     if (args.action === "enter") {
@@ -39,6 +47,16 @@ export const engTool = {
       ctx.agent._lastEngState = true
       ctx.agent._pendingReminders = ctx.agent._pendingReminders ?? []
       ctx.agent._pendingReminders.push(ENG_ON_REMINDER)
+      // 持久化工程模式状态到会话
+      if (ctx.persistState) {
+        await ctx.persistState({
+          engineering: true,
+          engDesignToken: null,
+          engDesignReviewed: false,
+          advisorRound: 0,
+          touchedFiles: []
+        })
+      }
       return "Engineering mode activated. Design-before-code enforced: write a design document in docs/, run advisor with type='design', get user approval, then implement via eng-coder subagents."
     }
     return "Invalid action: expected 'enter' or 'exit'"

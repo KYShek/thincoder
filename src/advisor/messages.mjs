@@ -4,9 +4,8 @@
  * (.thincoder/advisor.md). System prompts live in advisor.mjs / prompts/.
  */
 import { readFileSync } from "node:fs"
-import { execFileSync } from "node:child_process"
 import { resolve } from "node:path"
-import { findReviewRepos, collectRepoSnapshots, collectChangedFiles, MAX_EMBEDDED_DIFF } from "./repos.mjs"
+import { findReviewRepos, collectRepoSnapshots, collectChangedFiles } from "./repos.mjs"
 import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable, extractPriorIssueTable } from "./history.mjs"
 
 /**
@@ -126,30 +125,12 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     if (reviewType === "design") {
       parts.push("The documents below are the review scope. Review ONLY these files — do NOT scan git diff or read any other files.")
     } else {
-      parts.push("The documents below define acceptance criteria and review context. Read them for context, then use git diff and read to inspect the actual code changes. Judge the implementation against these documents.")
+      parts.push("The documents below define acceptance criteria and review context. Read them for context, then read the code files specified in the review scope. Judge the implementation against these documents.")
     }
     parts.push("")
     parts.push("## Documents to Review")
     parts.push(docList.map((d) => `- ${d} — Read this file in full`).join("\n"))
     parts.push("")
-    parts.push("")
-  }
-  // Git diff as optional background — helps the advisor see what changed,
-  // but scope is defined by paths/documents, not by git.
-  if (reviewType !== "design") {
-    try {
-      const diff = execFileSync("git", ["diff", "HEAD"], {
-        cwd: agent.cwd, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: 8 * 1024 * 1024,
-      })
-      if (diff.trim()) {
-        const truncated = diff.length > MAX_EMBEDDED_DIFF
-        parts.push("## Current Changes (git diff HEAD — for context)")
-        parts.push("```diff", truncated ? diff.slice(0, MAX_EMBEDDED_DIFF) : diff.trimEnd(), "```")
-        if (truncated) parts.push(`(diff truncated at ${MAX_EMBEDDED_DIFF} chars)`)
-        parts.push("")
-      }
-    } catch { /* git not available — fine, advisor uses read */ }
   }
 
   // Conversation background — recent user↔assistant exchanges for intent context

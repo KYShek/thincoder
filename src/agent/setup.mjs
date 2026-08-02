@@ -24,19 +24,23 @@ async function buildEngineeringPrompt(cwd, role) {
   const engFile = role === "eng-coder" ? "engineering-sub.md" : "engineering.md"
   const engTemplatePath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "prompts", engFile)
   let engTemplate = ""
+  let templateMissing = false
   try { engTemplate = readFileSync(engTemplatePath, "utf8") } catch {
+    templateMissing = true
     if (role === "eng-coder") console.warn(`[setup] engineering-sub.md missing — eng-coder will run with degraded engineering constraints. Path: ${engTemplatePath}`)
+    else console.warn(`[setup] engineering.md missing — engineering mode will use template-only constraints. Path: ${engTemplatePath}`)
   }
   const methodologyPath = resolve(cwd, "METHODOLOGY.md")
   if (!existsSync(methodologyPath)) {
     // Template-only — engineering constraints stay active, minus project rules.
     // The caller injects a warning into the history.
-    return engTemplate || null
+    return { prompt: engTemplate || null, templateMissing, methodologyMissing: true }
   }
   const methodology = readFileSync(methodologyPath, "utf8")
-  return engTemplate
+  const prompt = engTemplate
     ? `${engTemplate}\n\n---\n\n## Project METHODOLOGY.md\n\n${methodology}`
     : `[ENGINEERING MODE]\n\nFollow this methodology strictly:\n\n${methodology}`
+  return { prompt, templateMissing, methodologyMissing: false }
 }
 
 /**
@@ -68,11 +72,15 @@ export async function prepareRun(agent, input, callbacks, {
     if (depth === 0) {
       const tree = listWorkDir(agent.cwd)
       const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] ?? process.platform
+      const wasRestored = agent._sessionStart != null
       agent._sessionStart ??= new Date().toISOString()
       if (tree) {
         agent.history.push({ role: "user", content: `[System reminder: OS: ${platform}. Working directory: ${agent.cwd}. Session start: ${agent._sessionStart}. Working directory snapshot:\n<untrusted_cwd_listing>\n${escapeXml(tree)}\n</untrusted_cwd_listing>]`, transient: true })
       } else {
         agent.history.push({ role: "user", content: `[System reminder: OS: ${platform}. Working directory: ${agent.cwd}. Session start: ${agent._sessionStart}.]`, transient: true })
+      }
+      if (wasRestored) {
+        agent.history.push({ role: "user", content: `[System reminder: process restarted at ${new Date().toISOString()}.]`, transient: true })
       }
       if (agent.memory && !agent.history.some((m) => typeof m.content === "string" && m.content.startsWith(OUTLINE_INJECT_PREFIX))) {
         try {
@@ -180,19 +188,28 @@ export async function prepareRun(agent, input, callbacks, {
     // Engineering mode: strict methodology, NO standard discipline injection.
     // Falling back to standard discipline on METHODOLOGY.md absence would leak
     // advisor enforcement into engineering mode — the two prompt sets stay separate.
-    const engRules = await buildEngineeringPrompt(agent.cwd, agent._role)
-    if (engRules) {
-      base = `${corePrompt}\n\n${engRules}`
+    const engResult = await buildEngineeringPrompt(agent.cwd, agent._role)
+    if (engResult.prompt) {
+      base = `${corePrompt}\n\n${engResult.prompt}`
     } else {
       // Template unreadable — last resort: core prompt only, no methodology.
       base = corePrompt
     }
-    // Warn when METHODOLOGY.md is missing (template-only engineering constraints).
-    if (depth === 0 && !existsSync(resolve(agent.cwd, "METHODOLOGY.md"))) {
-      agent.history.push({
-        role: "user",
-        content: "[System reminder: ENGINEERING MODE is active but METHODOLOGY.md was not found. Engineering constraints are template-only — the project-specific rules are absent. Create METHODOLOGY.md for full enforcement or disable engineering mode (/eng).]",
-      })
+    // Warn when templates or METHODOLOGY.md are missing (degraded engineering constraints).
+    if (depth === 0) {
+      const warnings = []
+      if (engResult.templateMissing) {
+        warnings.push(`Engineering template (${agent._role === "eng-coder" ? "engineering-sub.md" : "engineering.md"}) not found — using degraded constraints.`)
+      }
+      if (engResult.methodologyMissing) {
+        warnings.push("METHODOLOGY.md not found — project-specific rules are absent.")
+      }
+      if (warnings.length > 0) {
+        agent.history.push({
+          role: "user",
+          content: `[System reminder: ENGINEERING MODE is active but ${warnings.join(" ")} Create METHODOLOGY.md and ensure prompt templates exist for full enforcement, or disable engineering mode (/eng).]`,
+        })
+      }
     }
   } else {
     base = needsDiscipline ? `${corePrompt}\n\n${disciplineRules}` : corePrompt

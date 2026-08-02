@@ -6,13 +6,50 @@ import { chat } from "../provider/core.mjs"
 import { findProvider } from "../config.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
 import { prepareAdvisorMessages } from "../advisor.mjs"
+import { extractPriorIssueTable } from "../advisor/history.mjs"
 
-export const MAX_ADVISOR_TURNS = 30
+export const MAX_ADVISOR_TURNS = 100
 // Mechanical convergence cap: the protocol assumes up to 5 rounds suffice
 // (full review, verify+fix cycles, strict verification). A 6th call means the
 // model is looping — refuse it instead of burning tokens on a review that cannot
 // converge. Design reviews are exempt (each call resets the round).
 export const MAX_ADVISOR_ROUNDS = 5
+
+// Context window limits
+const MAX_CONTEXT_TOKENS = 120_000 // 预留 headroom，避免 OOM
+const TOOL_TIMEOUT_MS = 30_000 // 单个工具 30 秒
+const REVIEW_TIMEOUT_MS = 300_000 // 整个审查 5 分钟
+
+/** Estimate token count from messages (rough: 1 token ≈ 4 chars) */
+function estimateTokens(messages) {
+  return messages.reduce((sum, msg) => {
+    const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || "")
+    const toolCalls = msg.tool_calls ? JSON.stringify(msg.tool_calls) : ""
+    return sum + Math.ceil((content.length + toolCalls.length) / 4)
+  }, 0)
+}
+
+/** Compact early messages when context grows too large */
+async function compactMessages(messages, provider) {
+  // Keep: system prompt, last 10 assistant+tool pairs, user message
+  if (messages.length <= 20) return messages
+  
+  const system = messages[0]
+  const recent = messages.slice(-20)
+  const old = messages.slice(1, -20)
+  
+  // Summarize old messages
+  const summary = `Earlier exploration: ${old.length} tool calls completed. Key files examined: ${
+    old
+      .filter((m) => m.role === "tool")
+      .map((m) => m.content?.split("\n")[0]?.slice(0, 50))
+      .filter(Boolean)
+      .slice(0, 5)
+      .join(", ")
+  }`
+  
+  return [system, { role: "user", content: `[Context compacted] ${summary}` }, ...recent]
+}
 
 const { gitTool, readTool, globTool, grepTool, lsTool } = await import("../tools/index.mjs")
 const { lspTool } = await import("../tools/lsp.mjs")
@@ -61,12 +98,31 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
   const onThink = emit("think")
   const onText = emit("text")
   let turns = 0
+  const startTime = Date.now()
+  
   while (true) {
     // Interrupted (Ctrl+I) — stop immediately instead of spinning a fresh uncancellable signal
     if (signal?.aborted) return "Advisor: interrupted."
+    
+    // Check review timeout (5 minutes)
+    if (Date.now() - startTime > REVIEW_TIMEOUT_MS) {
+      return `Advisor: review timeout after ${Math.round(REVIEW_TIMEOUT_MS / 1000)}s. Partial results may be available. Try again with a narrower scope.`
+    }
+    
     if (++turns > MAX_ADVISOR_TURNS) {
       return "Advisor: stopped after " + MAX_ADVISOR_TURNS + " tool rounds — the review appears to be looping. You may retry with a narrower scope."
     }
+    
+    // Check context window and compact if needed
+    const currentTokens = estimateTokens(messages)
+    if (currentTokens > MAX_CONTEXT_TOKENS * 0.8) {
+      onOutput?.({ kind: "text", text: `\n[Context compacted: ${currentTokens} tokens → reducing to fit window]\n` })
+      messages = await compactMessages(messages, provider)
+      if (estimateTokens(messages) > MAX_CONTEXT_TOKENS) {
+        return `Advisor: context window limit reached (${currentTokens} tokens). Review incomplete — too many tool calls. Try a narrower scope.`
+      }
+    }
+    
     const response = await chat(provider, {
       messages,
       tools: ADVISOR_TOOL_SCHEMAS,
@@ -95,26 +151,71 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     for (const tc of response.toolCalls) {
       const tool = ADVISOR_TOOL_BY_NAME.get(tc.name)
       let args = {}
-      try { args = JSON.parse(tc.arguments || "{}") } catch { /* summarized as raw JSON below */ }
+      let parseError = null
+      try {
+        args = JSON.parse(tc.arguments || "{}")
+      } catch (e) {
+        parseError = `Error: invalid JSON in tool arguments: ${e.message}\nRaw arguments: ${(tc.arguments || "").slice(0, 200)}`
+      }
+      
+      // If parse failed, return error to model immediately
+      if (parseError) {
+        messages.push({ role: "tool", tool_call_id: tc.id, content: parseError })
+        continue
+      }
+      
       onOutput?.({ kind: "tool", text: `\n→ ${tc.name} ${summarizeToolArgs(args)}\n` })
       let result
       if (!tool) {
         result = `Error: unknown tool "${tc.name}". Available: ${[...ADVISOR_TOOL_BY_NAME.keys()].join(", ")}`
       } else {
+        // Execute with timeout
         try {
-          result = await tool.execute(args, {
+          const toolPromise = tool.execute(args, {
             cwd,
             agent,
             onOutput,
             signal,
           })
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`tool timeout after ${TOOL_TIMEOUT_MS}ms`)), TOOL_TIMEOUT_MS)
+          )
+          result = await Promise.race([toolPromise, timeoutPromise])
         } catch (e) {
-          result = `Error: ${e.message}`
+          const errorType = e.message.includes("timeout") ? "timeout"
+            : e.message.includes("ENOENT") ? "file_not_found"
+            : e.message.includes("permission") ? "permission_denied"
+            : "execution_error"
+          result = `Error (${errorType}): ${e.message}`
         }
       }
       if (typeof result !== "string") result = JSON.stringify(result)
-      const limited = result.length > 12_000 ? result.slice(0, 12_000) + "\n… (truncated)" : result
-      messages.push({ role: "tool", tool_call_id: tc.id, content: limited })
+      
+      // Line-aware truncation: preserve line integrity
+      const MAX_RESULT_CHARS = 12_000
+      if (result.length > MAX_RESULT_CHARS) {
+        const lines = result.split("\n")
+        let truncated = ""
+        let charCount = 0
+        let keptLines = 0
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]
+          if (charCount + line.length + 1 > MAX_RESULT_CHARS) break
+          truncated += line + "\n"
+          charCount += line.length + 1
+          keptLines++
+        }
+        
+        const remainingLines = lines.length - keptLines
+        result = (
+          truncated +
+          `\n… (truncated: ${remainingLines} more lines, ${result.length} chars total)\n` +
+          `To see more content, use: read(path, offset=${keptLines}, limit=200)`
+        )
+      }
+      
+      messages.push({ role: "tool", tool_call_id: tc.id, content: result })
     }
   }
 }
@@ -144,6 +245,20 @@ export function resolveAdvisorProvider(agent) {
 }
 
 /**
+ * Extract unfixed issues from prior review text
+ */
+function extractUnfixedIssues(priorText) {
+  if (!priorText) return []
+  const lines = priorText.split("\n")
+  return lines
+    .filter((line) => /\|\s*\d+\s*\|/.test(line)) // 匹配表格行
+    .filter((line) => !/fixed|resolved|done|✓|✔/i.test(line))
+    .map((line) => line.replace(/\|/g, "").trim())
+    .filter(Boolean)
+    .slice(0, 10) // 最多显示 10 个
+}
+
+/**
  * Run an advisor review. reviewType: "code" (default) or "design". Returns review text or null when skipped.
  * @param {string|null} [designToken] — injected into the design-review prompt; the advisor echoes it only on approval.
  * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review; passed through to the message builder.
@@ -152,14 +267,30 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
   const onOutput = callbacks?.onOutput
   const signal = callbacks?.signal
   const cfg = agent.config?.advisor
+  const startTime = Date.now()
+  
   // Engineering mode overrides advisor toggle — reviews are mandatory regardless
-  if (!cfg?.enabled && !agent.config?.agent?.engineering) return "Advisor: not enabled (set advisor.enabled in config.json)."
+  if (!cfg?.enabled && !agent.config?.agent?.engineering) {
+    return "Advisor: not enabled (set advisor.enabled in config.json)."
+  }
 
   // Mechanical convergence cap — refuse further reviews once the protocol has run
   // its rounds. _advisorRound counts completed advisor calls (incremented by the
   // agent after each one), so >= MAX_ADVISOR_ROUNDS blocks the next call.
   if (reviewType !== "design" && (agent._advisorRound || 0) >= MAX_ADVISOR_ROUNDS) {
-    return `Advisor: convergence cap reached after ${MAX_ADVISOR_ROUNDS} rounds — the protocol assumes convergence by round ${MAX_ADVISOR_ROUNDS}. Accept the current state or manually re-review; do not call advisor again.`
+    // 提取未解决的问题，给出更具体的指导
+    const prior = extractPriorIssueTable(agent.history)
+    const unfixed = prior ? extractUnfixedIssues(prior.text) : []
+    
+    let message = `Advisor: convergence cap reached after ${MAX_ADVISOR_ROUNDS} rounds.\n`
+    if (unfixed.length > 0) {
+      message += `\nUnresolved issues from prior rounds:\n${unfixed.map((i) => `- ${i}`).join("\n")}\n`
+    } else {
+      message += "\nAll prior issues appear resolved.\n"
+    }
+    message += "\nOptions:\n1. Accept current state and proceed\n2. Manually review specific concerns with read/grep\n3. Start a new session (/new) to reset the advisor"
+    
+    return message
   }
 
   const provider = resolveAdvisorProvider(agent)
@@ -170,6 +301,16 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
 
   try {
     const result = await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)
+    
+    // Log review statistics for observability
+    const elapsed = Math.round((Date.now() - startTime) / 1000)
+    const toolCallCount = messages.filter((m) => m.role === "tool").length
+    const tokensUsed = estimateTokens(messages)
+    onOutput?.({
+      kind: "text",
+      text: `\n[advisor] Review completed: ${elapsed}s, ${toolCallCount} tool calls, ~${Math.round(tokensUsed / 1000)}k tokens\n`,
+    })
+    
     // Only persist the session on success — timeout/interrupt/empty results
     // would poison the next review call (the conversation is truncated mid-review,
     // and the model picks up from a broken state, burning more rounds).
@@ -183,7 +324,23 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
     return result
   } catch (e) {
     if (e.name === "AbortError" && signal?.reason?.interrupt) throw e
+    
+    // 细化错误类型
+    const errorType = e.message.includes("rate limit") || e.message.includes("429") ? "rate limit"
+      : e.message.includes("timeout") ? "timeout"
+      : e.message.includes("network") || e.message.includes("ECONNREFUSED") ? "network"
+      : e.message.includes("context length") ? "context_too_long"
+      : "unknown"
+    
+    const retryAdvice = errorType === "rate limit"
+      ? "Wait a moment and retry. Consider using a cheaper model for advisor."
+      : errorType === "timeout"
+        ? "The model took too long. Try with a narrower scope."
+        : errorType === "context_too_long"
+          ? "Reduce the scope (fewer files/paths) or use a model with larger context window."
+          : "You may retry or proceed to verify manually."
+    
     agent._advisorSession = null // failed review: don't keep a half-built conversation
-    return `Advisor: review failed — ${e.message || "unknown error"}. You may retry or proceed to verify.`
+    return `Advisor: review failed (${errorType}) — ${e.message || "unknown error"}. ${retryAdvice}`
   }
 }

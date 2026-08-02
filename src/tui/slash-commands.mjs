@@ -37,23 +37,23 @@ export const SLASH_COMMANDS = [
   { name: "/plan", group: "Agent", desc: "toggle plan mode (design first, then implement)" },
   { name: "/auto", group: "Agent", desc: "toggle auto-approve" },
   { name: "/eng", group: "Agent", desc: "toggle engineering mode — strict methodology enforcement" },
-  { name: "/advisor", group: "Agent", desc: "toggle advisor review & select model" },
+  { name: "/advisor", group: "Agent", desc: "advisor settings (toggle, model, thinking, guard)" },
   { name: "/model", group: "Agent", desc: "select model & manage providers" },
   { name: "/goal", group: "Agent", desc: "set/view/cancel long-term goal" },
   { name: "/think", group: "Agent", desc: "thinking mode & reasoning effort" },
-  { name: "/config", group: "Agent", desc: "config management (embedding / agent)" },
   { name: "/upgrade", group: "System", desc: "check for updates & upgrade" },
-  { name: "/fold", group: "System", desc: "toggle result folding on/off" },
+  { name: "/config", group: "System", desc: "agent config (embedding, proxy, turns, thresholds)" },
   { name: "/new", group: "Session", desc: "new session (old one archived to slot)" },
   { name: "/session", group: "Session", desc: "list/switch archived sessions" },
   { name: "/clear", group: "Session", desc: "clear screen" },
-  { name: "/extract", group: "Session", desc: "extract knowledge from session" },
+  { name: "/fold", group: "Session", desc: "toggle result folding on/off" },
+  { name: "/undo", group: "Session", desc: "undo recent file modifications" },
   { name: "/init", group: "Project", desc: "generate project AGENTS.md skeleton" },
   { name: "/skills", group: "Project", desc: "list project skills" },
-  { name: "/mcp", group: "Project", desc: "manage MCP servers" },
+  { name: "/mcp", group: "Project", desc: "MCP servers (add, remove, connect, list)" },
   { name: "/reindex", group: "Project", desc: "rebuild memory index" },
-  { name: "/restore", group: "Project", desc: "restore checkpoint" },
-  { name: "/undo", group: "Project", desc: "undo recent file modifications" },
+  { name: "/extract", group: "Project", desc: "extract knowledge from session" },
+  { name: "/restore", group: "System", desc: "restore checkpoint" },
   { name: "/exit", group: "System", desc: "exit" },
   { name: "/help", group: "System", desc: "this list" },
 ]
@@ -135,6 +135,7 @@ export function createSlashCommands(ctx) {
     }
     if (cmd === "/config" && argIndex === 0) return match(["embedkey"])
     if (cmd === "/goal" && argIndex === 0) return match(["set", "cancel"])
+    if (cmd === "/fold" && argIndex === 0) return match(["on", "off"])
     if (cmd === "/mcp") {
       if (argIndex === 0) return match(["add", "http", "ws", "stdio", "ai", "remove", "connect", "list"])
       if (argIndex === 1 && (parts[1]?.toLowerCase() === "remove" || parts[1]?.toLowerCase() === "connect")) return match((agent.config?.mcp?.servers ?? []).map((s) => s.name))

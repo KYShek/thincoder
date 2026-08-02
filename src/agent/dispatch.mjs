@@ -173,7 +173,13 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       // Persist to ~/.thincoder/tool-errors/ for post-mortem; only pass message to the model (stack traces confuse LLMs and may leak paths)
       logToolError(item.toolCall.name, item.args, error)
       runHooks("PostToolUseFailure", { agent, toolName: item.toolCall.name, toolArgs: item.args, error }).catch(() => {})
-      return { ...item, result: `Error: ${error.message}`, ok: false }
+      // Build contextual error: tool name + key args so the model can reason about what went wrong
+      const ctxParts = []
+      if (item.args.path) ctxParts.push(`path=${item.args.path}`)
+      if (item.args.pattern) ctxParts.push(`pattern=${item.args.pattern}`)
+      if (item.args.command) ctxParts.push(`cmd=${item.args.command.slice(0, 80)}`)
+      const ctx = ctxParts.length > 0 ? ` [${ctxParts.join(", ")}]` : ""
+      return { ...item, result: `Error: ${error.message}${ctx}`, ok: false }
     }
   }
 

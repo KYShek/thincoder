@@ -234,6 +234,7 @@ export function saveSession(agent, display) {
     planMode: agent.planMode ?? false,
     autoApprove: agent.autoApprove ?? false,
     engineering: agent.config?.agent?.engineering ?? false,
+    engDesignToken: agent._engDesignToken ?? null,
     goal: agent.goal ?? null,
     advisor: agent.config?.advisor ?? null,
     pendingReminders: agent._pendingReminders ?? [],
@@ -312,6 +313,7 @@ export function applySession(agent, data) {
   agent.goal = data.goal ?? null
   agent._pendingReminders = data.pendingReminders ?? []
   agent._sessionStart = data.sessionStart ?? null
+  agent._engDesignToken = data.engDesignToken ?? null
   if (data.advisor) {
     agent.config.advisor = { ...data.advisor }
   }

@@ -9,7 +9,30 @@ let _convCache = { key: "", cols: 0, lines: [] }
 
 export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
-  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}`
+  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state._advisorThink?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}`
+}
+
+function highlightSearchMatches(text, query, matchesInLine, globalCurrentIndex, allMatches, lineIndex) {
+  if (!matchesInLine || matchesInLine.length === 0 || !query) return text
+  let result = ""
+  let lastEnd = 0
+  for (const startIdx of matchesInLine) {
+    result += text.substring(lastEnd, startIdx)
+    const endIdx = startIdx + query.length
+    const matchedText = text.substring(startIdx, endIdx)
+
+    // Find global index of this match
+    const gIdx = allMatches.findIndex(m => m.lineIndex === lineIndex && m.charIndex === startIdx)
+
+    if (gIdx === globalCurrentIndex) {
+      result += `\x1b[7m${matchedText}\x1b[27m` // Reverse video for current
+    } else {
+      result += `\x1b[33m\x1b[4m${matchedText}\x1b[24m\x1b[39m` // Yellow underline for others
+    }
+    lastEnd = endIdx
+  }
+  result += text.substring(lastEnd)
+  return result
 }
 
 function buildConvLines(state, cols) {
@@ -17,8 +40,16 @@ function buildConvLines(state, cols) {
   if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
 
   const convLines = []
-  for (const l of state.lines) {
-    for (const line of formatTables(sanitizeDisplay(l.text), cols - 1)) {
+  for (let i = 0; i < state.lines.length; i++) {
+    const l = state.lines[i]
+    let text = l.text
+
+    // Apply search highlighting
+    if (state.search && state.search.query && l._searchMatches) {
+      text = highlightSearchMatches(text, state.search.query, l._searchMatches, state.search.index, state.search.matches, i)
+    }
+
+    for (const line of formatTables(sanitizeDisplay(text), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
         convLines.push({ text: wrapped, color: l.color, _foldId: l._foldId })
       }
@@ -29,14 +60,18 @@ function buildConvLines(state, cols) {
       convLines.push({ text: wrapped, color: C.reason })
     }
   }
-  if (state.advisorStreaming) {
-    const formatted = formatTables(sanitizeDisplay(state.advisorStreaming), cols - 3)
-    const truncated = formatted.length > 5
+  if (state._advisorThink || state.advisorStreaming) {
+    const thinkLines = state._advisorThink ? sanitizeDisplay(state._advisorThink).split("\n") : []
+    const mainLines = state.advisorStreaming
+      ? formatTables(sanitizeDisplay(state.advisorStreaming), cols - 3)
+      : []
+    const allLines = [...thinkLines.map(l => ({ text: l, color: C.reason })), ...mainLines.map(l => ({ text: l, color: C.text }))]
+    const truncated = allLines.length > 5
     if (truncated) convLines.push({ text: "│ …", color: C.dim })
-    const shown = truncated ? formatted.slice(-5) : formatted
-    for (const line of shown) {
-      for (const wrapped of wrapText(line, cols - 3)) {
-        convLines.push({ text: `│ ${wrapped}`, color: C.text })
+    const shown = truncated ? allLines.slice(-5) : allLines
+    for (const { text, color } of shown) {
+      for (const wrapped of wrapText(text, cols - 3)) {
+        convLines.push({ text: `│ ${wrapped}`, color })
       }
     }
   }

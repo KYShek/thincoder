@@ -85,6 +85,7 @@ export async function startTUI(agent, opts = {}) {
     status: "Ready",
     queue: [], // queued messages while processing: [{ text }], auto-dequeued when current turn finishes
     interruptPrompt: null, // Ctrl+I interrupt message input: { text: "" } or null
+    search: null, // Ctrl+F search mode: { query: "", matches: [{lineIndex, charIndex}], index: 0 } or null
     expandedBlocks: new Set(), // block hashes that are expanded (Enter toggles)
     foldEnabled: true, // global fold toggle — /fold on|off
   }
@@ -353,7 +354,7 @@ export async function startTUI(agent, opts = {}) {
     agent, state, render, popPicker, renderPickerLines,
     handleSlash, handleTab, submit, pasteClipboardImage,
     wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
-    renderWizard, pushLine, cleanup,
+    renderWizard, pushLine, cleanup, showPicker,
   })
   keyStream.on("keypress", (str, key) => {
     try {

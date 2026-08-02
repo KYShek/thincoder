@@ -175,6 +175,7 @@ export const deleteTool = {
     required: ["path"],
   },
   readonly: false,
+  touchedPaths(args) { return args.path ? [args.path] : [] },
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     let s

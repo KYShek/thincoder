@@ -155,10 +155,12 @@ export function renderPicker(state, cols, panel, overlay) {
   const total = overlay.lines.length
   const start = Math.max(0, Math.min(overlay.scroll, Math.max(0, total - winH)))
   const shown = overlay.lines.slice(start, start + winH)
-  // 标题行：左侧标题 + filter（截断防撑破帧），右侧位置指示（按键提示在状态栏，不重复）
+  // 标题行：左侧标题 + 过滤输入提示/内容（截断防撑破帧），右侧位置指示
   const p = state.picker
   const right = p && p.filteredItems?.length ? `${p.index + 1}/${p.filteredItems.length} ` : ""
-  const rawLeft = p ? ` ❯ ${p.title}${p.filter ? `  filter: ${p.filter}` : ""} ` : " ❯ Setup "
+  // 过滤提示：无filter时显示 "type to filter"，有filter时显示输入内容
+  const filterHint = p ? (p.filter ? `│ ${p.filter}` : "│ type to filter") : ""
+  const rawLeft = p ? ` ❯ ${p.title} ${filterHint} ` : " ❯ Setup "
   const left = sliceByWidth(rawLeft, Math.max(1, cols - 2 - stringWidth(right)))
   const titlePad = " ".repeat(Math.max(1, cols - 1 - stringWidth(left) - stringWidth(right)))
   out.push(`${ansi.bold}${C.tool}${left}${ansi.reset}${ansi.dim}${titlePad}${right}${ansi.reset}`)
@@ -208,8 +210,21 @@ export function renderInputBox(state, W, boxLines, cols, inputLayout, inputOffse
   const curLine = (!hasOverlay && inputLayout) ? inputLayout.cursorLine - (inputOffset ?? 0) : -1
   const curCol = (!hasOverlay && inputLayout) ? inputLayout.cursorCol : -1
 
+  // Interrupt prompt 空文本占位符：灰色提示用户该做什么
+  const isInterruptEmpty = state.interruptPrompt && !state.interruptPrompt.text
+  const interruptPlaceholder = "Type message to inject (Enter send, Esc cancel)"
+
   for (let li = 0; li < boxLines.length; li++) {
     const l = boxLines[li]
+    // 第一行且 interrupt prompt 为空时，用灰色占位符替代 prompt
+    if (li === 0 && isInterruptEmpty) {
+      const prompt = "▸ "
+      const ph = `${prompt}${interruptPlaceholder}`
+      const phWidth = stringWidth(ph)
+      const fill = " ".repeat(Math.max(0, W - 4 - phWidth))
+      out.push(`${borderColor}│${ansi.reset} ${ansi.dim}${ph}${ansi.reset}${fill} ${borderColor}│${ansi.reset}`)
+      continue
+    }
     const original = sliceByWidth(l, W - 4)
     let content = original
     const contentWidth = stringWidth(original)
@@ -322,7 +337,9 @@ export function renderFrame(state, agent, opts) {
 function inputBoxStyle(state) {
   let borderColor = C.tool
   let title
-  if (state.interruptPrompt) {
+  if (state.search) {
+    borderColor = C.tool; title = ` Search ${state.search.matches.length > 0 ? `(${state.search.index + 1}/${state.search.matches.length})` : state.search.query ? "(no match)" : ""} `
+  } else if (state.interruptPrompt) {
     borderColor = C.warn; title = " Inject Message "
   } else if (state.question) {
     borderColor = C.tool; title = " Question "
@@ -376,6 +393,8 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
 
   const taskHint = state.tasks.length > 0
     ? ` │ ✓${state.tasks.filter((t) => t.status === "done").length}/${state.tasks.length}` : ""
+  const turnHint = agent._currentTurn > 0 && agent._maxTurns > 0
+    ? ` │ turn ${agent._currentTurn}/${agent._maxTurns}` : ""
   const tk = state.tokens
   const fmtK = (n) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
   const cacheTotal = tk.cacheHit + tk.cacheMiss
@@ -390,5 +409,5 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
   const ctxHint = ctxPct > 0
     ? ctxPct >= 80 ? ` │ ${ansi.reset}${C.warn}context ${ctxPct}%${ctxTokensHint}${ansi.reset}${ansi.dim}` : ` │ context ${ctxPct}%${ctxTokensHint}` : ""
   const queueHint = state.queue.length > 0 ? ` │ queue: ${state.queue.length}` : ""
-  return ` ${statusText}${taskHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+I: inject │ Ctrl+C: exit`
+  return ` ${statusText}${taskHint}${turnHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+I: inject │ Ctrl+C: exit`
 }

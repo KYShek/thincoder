@@ -37,6 +37,7 @@
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
+import { createHash } from "node:crypto"
 import { findReviewRepos, collectRepoSnapshots } from "./advisor/repos.mjs"
 import { extractPriorIssueTable, extractAgentResponseTable } from "./advisor/history.mjs"
 import { buildAdvisorUserMessage } from "./advisor/messages.mjs"
@@ -121,17 +122,20 @@ export function buildAdvisorFollowUp(agent, _prior) {
   ]
   const snapshots = collectRepoSnapshots(findReviewRepos(agent), agent.cwd)
   const snapshotText = snapshots.join("\n")
+  const snapshotHash = snapshotText ? createHash("sha1").update(snapshotText).digest("hex") : null
   // Skip re-pushing an identical diff (e.g. advisor re-run without any file changes) —
   // the previous snapshot is already in the conversation, duplicating it wastes tokens.
   if (snapshots.length === 0) {
     parts.push("## Current Changes", "(No git repository or no changes detected.)")
-  } else if (snapshotText && snapshotText === agent._advisorLastSnapshot) {
-    // Diff unchanged → the snapshot from the previous round is still current.
+  } else if (snapshotHash && snapshotHash === agent._advisorLastSnapshotHash) {
+    // Hash match → the snapshot from the previous round is still current.
+    // Using hash instead of full-text comparison avoids keeping the entire diff
+    // string in memory and handles edge cases (e.g. file changed then reverted).
     parts.push("## Current Changes", "(No changes since your previous review — the diff snapshot is identical, so the one from your last round remains valid for this round.)")
   } else {
     parts.push("## Current Changes (git status + git diff HEAD, refreshed)", ...snapshots)
   }
-  agent._advisorLastSnapshot = snapshotText
+  agent._advisorLastSnapshotHash = snapshotHash
   return parts.join("\n")
 }
 
@@ -161,7 +165,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     // a follow-up "Verify Prior Table" would be meaningless; start a fresh full review
     if (!prior) {
       agent._advisorSession = null
-      agent._advisorLastSnapshot = null
+      agent._advisorLastSnapshotHash = null
       session = null
       // Only reset the round counter on a truly fresh start (no prior reviews at all).
       // If _advisorRound > 0, there WAS a prior review — it just passed (all-clear).

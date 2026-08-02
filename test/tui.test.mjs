@@ -881,7 +881,7 @@ test("renderPicker: 位置指示 / filter 标题 / ↑ more / ↓ more", () => {
   const state = tuiState({ picker })
   const out = renderPicker(state, 60, { y: 0, h: 6 }, picker).map(stripAnsi)
   assert.ok(out[0].includes("❯ Demo"), "标题行含 picker 标题")
-  assert.ok(out[0].includes("filter: ab"), "标题行含 filter")
+  assert.ok(out[0].includes("│ ab"), "标题行含 filter 输入")
   assert.ok(out[0].includes("3/20"), "标题行右侧含位置指示")
   assert.ok(out[1].includes("↑ more"), "窗口上方有更多内容时首行提示")
   assert.ok(out[5].includes("↓ more"), "窗口下方有更多内容时末行提示")

@@ -54,7 +54,9 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
   // --- verify guard: push model to verify mutated files before completion ---
   // OPT-IN ONLY (verifyGuard: true). Engineering mode is excluded because it
   // uses flow-driven review, not per-turn mechanical pushback (ENGINEERING-MODE.md §2.3).
-  if (depth === 0 && agent.config.verifyGuard === true && !agent.config?.agent?.engineering) {
+  // Backward compat: also accept root-level verifyGuard
+  const verifyGuard = agent.config?.agent?.verifyGuard ?? agent.config?.verifyGuard
+  if (depth === 0 && verifyGuard === true && !agent.config?.agent?.engineering) {
     // Not verified yet → pushback to run verify
     if (agent._mutatedThisRun && !agent._verifiedThisRun && hasCodeMutations(agent) && guardPushbacks < MAX_VERIFY_PUSHBACKS) {
       guardPushbacks++

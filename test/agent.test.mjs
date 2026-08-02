@@ -855,11 +855,11 @@ test("provider: TPM 闸门——单请求估算超预算时放行（不卡死）
 
 function makeMutationTool() {
   return {
-    name: "mutate",
+    name: "write",
     description: "test mutation",
-    parameters: { type: "object", properties: {} },
+    parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } },
     readonly: false,
-    execute: async () => "ok",
+    execute: async () => "Wrote 5 chars to test.txt",
   }
 }
 
@@ -868,7 +868,7 @@ function makeMutationTool() {
 test("runAgent: verify guard on — mutated files but no verify → pushback (max 2)", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
-    { toolCall: { name: "mutate" } },
+    { toolCall: { name: "write", arguments: "{\"path\":\"src/test.js\",\"content\":\"x\"}" } },
     { content: "完成了" },
     { content: "还是完成了" },
     { content: "验证后完成" },
@@ -893,7 +893,7 @@ test("runAgent: verify guard on — mutated files but no verify → pushback (ma
 test("runAgent: verify guard on — verify called → no pushback", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
-    { toolCall: { name: "mutate" } },
+    { toolCall: { name: "write", arguments: "{\"path\":\"src/test.js\",\"content\":\"x\"}" } },
     { toolCall: { name: "verify" } },
     { content: "done" },
   ]
@@ -938,7 +938,7 @@ test("runAgent: verify guard on — bash (sideEffectExempt) not treated as mutat
 test("runAgent: verify guard off — mutated files go straight through", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
-    { toolCall: { name: "mutate" } },
+    { toolCall: { name: "write", arguments: "{\"path\":\"src/test.js\",\"content\":\"x\"}" } },
     { content: "完成了" },
   ]
   const { server, port } = await mockLLM(script)
@@ -1207,7 +1207,7 @@ test("runAgent: 手动模式下 coder 子 agent 的权限请求透传到父审�
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "写个文件", role: "coder" }) } },
-    { toolCall: { name: "mutate" } },          // 子 agent 想写
+    { toolCall: { name: "write", arguments: "{\"path\":\"test.txt\",\"content\":\"x\"}" } },          // 子 agent 想写
     { content: "报告：已写入" },                // 子 agent 交报告
     { content: "完成" },                        // 父 agent 收尾
   ]
@@ -1225,7 +1225,7 @@ test("runAgent: 手动模式下 coder 子 agent 的权限请求透传到父审�
     })
     assert.equal(out, "完成")
     assert.ok(asks.includes("subagent"))        // 派生本身要批
-    assert.ok(asks.includes("coder/mutate"))    // 子 agent 的写操作透传上来了（以前被静默拒绝）
+    assert.ok(asks.includes("coder/write"))    // 子 agent 的写操作透传上来了（以前被静默拒绝）
     rmSync(cwd, { recursive: true, force: true })
   } finally {
     server.close()
@@ -1236,7 +1236,7 @@ test("runAgent: 父审批拒绝时 coder 子 agent 收到拒绝并交报告", as
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "写个文件", role: "coder" }) } },
-    { toolCall: { name: "mutate" } },
+    { toolCall: { name: "write", arguments: "{\"path\":\"test.txt\",\"content\":\"x\"}" } },
     { content: "报告：权限被拒，改为说明方案。".repeat(20) },
     { content: "完成" },
   ]
@@ -1310,7 +1310,7 @@ test("runAgent: 子 agent token + 工具调用 relay 到父回调（带 role#id 
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "做个小改动", role: "coder" }) } },
-    { toolCall: { name: "mutate", arguments: "{}" } },   // 子 agent 内部工具调用
+    { toolCall: { name: "write", arguments: "{\"path\":\"test.txt\",\"content\":\"x\"}" } },   // 子 agent 内部工具调用
     { content: "已完成实现。".repeat(40) },               // 子 agent 报告（token 应 relay）
     { content: "完成" },
   ]
@@ -1330,7 +1330,7 @@ test("runAgent: 子 agent token + 工具调用 relay 到父回调（带 role#id 
     })
     // 父回调见 subagent 本身 + 子 agent 的工具调用（带 coder#N/ 前缀）
     assert.ok(toolCalls.includes("subagent"))
-    assert.ok(toolCalls.some((n) => /^coder#\d+\/mutate$/.test(n)), `expected coder#N/mutate in ${JSON.stringify(toolCalls)}`)
+    assert.ok(toolCalls.some((n) => /^coder#\d+\/write$/.test(n)), `expected coder#N/mutate in ${JSON.stringify(toolCalls)}`)
     assert.deepStrictEqual(toolResults, ["subagent"])
     // 正文 token 带 coder#N/ 前缀 relay
     assert.ok(/coder#\d+\//.test(tokens), `expected coder#N/ prefix in tokens`)
@@ -1404,7 +1404,7 @@ test("runAgent: plan 子 agent 强制只读 + overlay 生效", async () => {
   const { createAgent, runAgent } = await import("../src/agent.mjs")
   const script = [
     { toolCall: { name: "subagent", arguments: JSON.stringify({ task: "设计一个缓存层", role: "plan" }) } },
-    { toolCall: { name: "mutate" } },              // plan agent 试图写 → 应被硬拒（不透传到父审批）
+    { toolCall: { name: "write", arguments: "{\"path\":\"test.txt\",\"content\":\"x\"}" } },              // plan agent 试图写 → 应被硬拒（不透传到父审批）
     { content: "实现计划：第一步……".repeat(20) },
     { content: "完成" },
   ]

@@ -22,8 +22,8 @@ export function computeLayout(state, { cols, rows }) {
   const W = Math.max(20, cols - 1)
 
   // --- input box ---
-  const inputBuf = state.interruptPrompt ? [...state.interruptPrompt.text] : state.input
-  const inputCursor = state.interruptPrompt ? inputBuf.length : state.cursor
+  const inputBuf = state.search ? [...state.search.query] : (state.interruptPrompt ? [...state.interruptPrompt.text] : state.input)
+  const inputCursor = state.search ? inputBuf.length : (state.interruptPrompt ? inputBuf.length : state.cursor)
   const inputLayout = layoutInput(inputBuf, inputCursor, W - 4)
   let inputOffset = 0
   if (inputLayout.lines.length > MAX_INPUT_LINES) {

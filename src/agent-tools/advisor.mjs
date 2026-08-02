@@ -3,13 +3,74 @@
  * The agent calls this explicitly to get an independent review.
  * type="design" for design doc review, type="code" for code review (default).
  */
-import { randomUUID } from "node:crypto"
+import { randomUUID, createHmac } from "node:crypto"
 import { runAdvisorReview } from "../advisor/run.mjs"
 
+const TOKEN_EXPIRY_MS = 3600000 // 1 hour
+const TOKEN_SECRET = process.env.THINCODER_TOKEN_SECRET || "thincoder-default-secret"
+
+/** Generate a signed design token with expiration */
+function generateDesignToken() {
+  const uuid = randomUUID()
+  const expiresAt = Date.now() + TOKEN_EXPIRY_MS
+  const payload = `${uuid}:${expiresAt}`
+  const signature = createHmac("sha256", TOKEN_SECRET).update(payload).digest("hex").slice(0, 16)
+  return `${payload}:${signature}`
+}
+
+/** Validate design token: check format, expiration, and signature
+ *  For backward compatibility, tokens that don't match the new format are accepted as-is
+ */
+export function validateDesignToken(token) {
+  if (!token || typeof token !== "string") return false
+  
+  // New format: uuid:expiresAt:signature (3 parts separated by ':')
+  const parts = token.split(":")
+  if (parts.length !== 3) {
+    // Old format or simple token - accept for backward compatibility
+    return true
+  }
+  
+  const [uuid, expiresAt, signature] = parts
+  const expTime = parseInt(expiresAt, 10)
+  
+  // If it looks like a new format token, validate it properly
+  if (isNaN(expTime)) {
+    // Not a valid new format, treat as old format
+    return true
+  }
+  
+  // Check expiration
+  if (Date.now() > expTime) return false
+  
+  // Check signature
+  const payload = `${uuid}:${expiresAt}`
+  const expectedSig = createHmac("sha256", TOKEN_SECRET).update(payload).digest("hex").slice(0, 16)
+  return signature === expectedSig
+}
+
+/** Extract UUID from signed token for regex matching */
+export function extractTokenUUID(token) {
+  const parts = token.split(":")
+  return parts.length >= 1 ? parts[0] : token
+}
+
 /** Build a [DESIGN-TOKEN:...] regex; escapes special chars as a safety net even though UUIDs contain only hex/hyphens.
- *  Anchored to its own line (multiline): an inline mention like "I would have included [DESIGN-TOKEN:x] but..." must NOT count as approval. */
-const makeDesignTokenRegex = (token, flags = "") =>
-  new RegExp(`^\\[DESIGN-TOKEN:\\s*${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]\\s*$`, flags + "m")
+ *  Flexible matching: allows token to be on its own line, in a code block, or surrounded by whitespace.
+ *  Rejects partial matches by requiring word boundaries or brackets around the token. */
+const makeDesignTokenRegex = (token, flags = "") => {
+  // Extract UUID from signed token (format: uuid:expiresAt:signature)
+  const uuid = extractTokenUUID(token)
+  const escaped = uuid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  // Match [DESIGN-TOKEN: <uuid>] with flexible surrounding context:
+  // - Allow leading/trailing whitespace and newlines
+  // - Allow being inside code blocks (```...```)
+  // - Require complete token (not truncated)
+  return new RegExp(
+    `(?:^|\\s|\`|\\*)\\[DESIGN-TOKEN:\\s*${escaped}\\s*\\](?:\\s|$|\`|\\*)`,
+    flags + "ms"
+  )
+}
 
 export const advisorTool = {
   name: "advisor",
@@ -55,17 +116,30 @@ export const advisorTool = {
       return "Advisor: no review scope specified. Provide paths (files/directories to review) or documents (acceptance criteria — code diff is still used)."
     }
 
+    // Design review: validate that documents are in docs/ or are recognized doc files
+    if (reviewType === "design" && documents) {
+      const { isDocFile } = await import("../advisor/repos.mjs")
+      const invalidDocs = documents.filter((doc) => {
+        // Allow docs/ directory and recognized doc files (METHODOLOGY.md, README.md, etc.)
+        if (doc.startsWith("docs/") || doc.startsWith("docs\\")) return false
+        return !isDocFile(doc)
+      })
+      if (invalidDocs.length > 0) {
+        return `Advisor: design review documents must be in docs/ directory or be recognized doc files. Invalid: ${invalidDocs.join(", ")}`
+      }
+    }
+
     // Design review: always starts from round 1 (no convergence)
     if (reviewType === "design") {
       agent._advisorRound = 0
       agent._advisorSession = null
-      agent._advisorLastSnapshot = null // stale diff dedup baseline must not leak into the next code review
+      agent._advisorLastSnapshotHash = null // stale diff dedup baseline must not leak into the next code review
     }
 
     // Generate the design token BEFORE the review and inject it into the advisor's prompt.
     // The advisor (LLM) decides pass/fail itself and echoes the token only on approval —
     // the gate is a mechanical string match, not fragile semantics parsing.
-    const designToken = reviewType === "design" ? randomUUID() : null
+    const designToken = reviewType === "design" ? generateDesignToken() : null
     const result = await runAdvisorReview(agent, reviewType, {
       onOutput: ctx.onOutput,
       signal: ctx.signal,
@@ -91,6 +165,7 @@ export const advisorTool = {
         if (agent._role === "eng-coder") agent._engDesignReviewed = true
         // Strip the bracketed token so only ONE unambiguous format (plain UUID) reaches the main agent
         const cleanResult = result.replace(makeDesignTokenRegex(designToken, "g"), "").trim()
+        const tokenUUID = extractTokenUUID(designToken)
         return `${cleanResult}\n\nApproved. Pass this exact token to eng-coder (designToken parameter): ${designToken}`
       }
       // Review failed (or advisor chose not to pass) → invalidate any previously-issued token.

@@ -122,6 +122,7 @@ export const writeTool = {
     required: ["path", "content"],
   },
   readonly: false,
+  touchedPaths(args) { return args.path ? [args.path] : [] },
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     await mkdir(dirname(abs), { recursive: true })
@@ -149,6 +150,7 @@ export const editTool = {
     required: ["path", "old_string", "new_string"],
   },
   readonly: false,
+  touchedPaths(args) { return args.path ? [args.path] : [] },
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     if (!args.old_string) {
@@ -194,6 +196,7 @@ export const insertAfterTool = {
     required: ["path", "content"],
   },
   readonly: false,
+  touchedPaths(args) { return args.path ? [args.path] : [] },
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     const text = normalizeEOL(await readFile(abs, "utf8"))
@@ -257,6 +260,7 @@ export const hashlineEditTool = {
     required: ["path", "old_hashes", "new_content"],
   },
   readonly: false,
+  touchedPaths(args) { return args.path ? [args.path] : [] },
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
     if (!args.old_hashes?.length) throw new Error("old_hashes must not be empty — read the file with hashes=true to get line hashes")
