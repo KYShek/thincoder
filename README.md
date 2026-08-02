@@ -15,17 +15,17 @@ Design philosophy (the entire meaning of the name): if the Node standard library
 - **Fix-verify loop**: file changes without `verify` get pushed back — syntax check + tests must pass before the agent can claim completion (auto-repair up to 3 rounds)
 - **Checkpoint system**: auto-snapshot before every user task, `list`/`create`/`rewind` tools for the model, single-file restore — rewinding itself is reversible (pre-rewind state auto-saved)
 - **Codebase understanding** ⭐0.5.0: `repo_outline` (dependency outline, auto-injected at startup), `code_search` (source FTS5 + vectors + JSDoc extraction), `doc_search` (docs chunked by ## headings) — background indexing, auto-incremental updates on file writes, three tools guided by "structure → intent → details"
-- **Model adaptation** ⭐: top-tier only, latest only. Built-in flagship models from five leading Chinese vendors — DeepSeek / Kimi / GLM / Qwen / MiniMax. No legacy model compatibility, no local model support. Auto-matched context windows, truncation-resume protocols (prefix/partial), thinking-mode APIs (thinking.type / reasoning_effort), reasoning_content echo strategies (reasoningEcho), output limits, temperature range clamping — all five deeply adapted.
+- **Model adaptation** ⭐: top-tier only, latest only. Built-in flagship models from twelve providers — DeepSeek / Kimi / GLM / Qwen / MiniMax / OpenAI / Claude / Gemini / Grok / Mistral / Volcengine Ark (豆包) / Hunyuan (腾讯混元) / SiliconFlow (硅基流动) / OpenRouter / Groq. No legacy model compatibility, no local model support. Auto-matched context windows, truncation-resume protocols (prefix/partial), thinking-mode APIs (thinking.type / reasoning_effort), reasoning_content echo strategies (reasoningEcho), output limits, temperature range clamping — all deeply adapted.
 - **Toolset**: `read` / `write` / `edit` / `bash` / `glob` (supports `**`) / `grep` / `websearch` / `ls` / `fetch` + `read_image` (image/video paste) + three retrieval tools + MCP — all zero-dependency, file tools confined to the working directory
 - **Memory system**: three layers (personal/project/team), FTS5 + vector RRF hybrid retrieval, git-friendly markdown format
 - **Two-phase tool scheduling**: permission prompts serialized, read-only tools parallelized, side-effect tools serialized
-- **Session persistence** ⭐0.5.0: up to 5 archive slots, `/session` to switch anytime, tool results visible after restore
+- **Session persistence** ⭐0.5.0: up to 5 archive slots, `/session` to switch anytime, tool results visible after restore. Process-level isolation — multiple instances in the same directory each get their own session slot
 - **Concurrent subagents**: three roles — `explore`/`plan`/`coder` — dispatched in parallel, streaming output visible, reports land in the conversation
 - **Plan Mode**: read-only exploration + design, implement after user approval
 - **AUTO mode**: `/auto` full authorization, no confirmations on long tasks
 - **Task tracking**: `task` tool breaks down multi-step work, status bar ✓n/m live progress, auto-filters completed items
 - **Goal/Verify/Skills**: long-goal tracking, completion verification, reusable skills
-- **Streaming TUI**: bare ANSI, permission preview right above the input box, write/edit auto-shows diffs, paste shortcut hint in the input box corner for multimodal models (Win: Alt+V / Mac/Linux: Ctrl+V)
+- **Streaming TUI**: bare ANSI, permission preview right above the input box, write/edit auto-shows diffs, paste shortcut hint in the input box corner for multimodal models (Win: Alt+V / Mac/Linux: Ctrl+V). Two-level model picker (providers → models), search/filter support, Shift+Enter for multiline input
 
 ## Memory: What One Learns, the Whole Team Knows
 
@@ -85,7 +85,7 @@ thincoder upgrade
 
 Running from source: replace `thincoder` above with `node bin/thincoder.mjs`.
 
-Slash commands in the TUI: `/help`, `/model` (arrow-key picker across all models of all providers; `/model <name>` switches directly), `/provider` (add/remove providers, set keys, custom endpoints), `/think` (thinking mode toggle and reasoning effort), `/config` (view config, `/config embedkey` for the embedding key, `/config set` for parameters), `/session` (list/switch archived sessions), `/reindex` (rebuild the index), `/extract` (extract knowledge from the current session), `/restore` (restore checkpoint), `/clear`, `/exit`. High-frequency commands support abbreviations: `/h` `/x` `/m` `/p` `/t` `/c` `/n`. Typing `/` shows live matching hints in the status bar.
+Slash commands in the TUI: `/help`, `/model` (two-level picker: first select provider, then model; `/model <provider>:<name>` switches directly), `/provider` (add/remove providers, set keys, custom endpoints), `/think` (thinking mode toggle and reasoning effort), `/config` (view config, `/config embedkey` for the embedding key, `/config set` for parameters), `/session` (list/switch archived sessions), `/reindex` (rebuild the index), `/extract` (extract knowledge from the current session), `/restore` (restore checkpoint), `/clear`, `/exit`. High-frequency commands support abbreviations: `/h` `/x` `/m` `/p` `/t` `/c` `/n`. Typing `/` shows live matching hints in the status bar. Model picker supports search/filter — type to narrow down results.
 
 Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`), `THINCODER_BASE_URL`, `THINCODER_MODEL`, `SILICONFLOW_API_KEY`.
 
@@ -164,7 +164,7 @@ src/
   memory/           three-layer memory — schema.mjs (DDL/constants), core.mjs (CRUD + retrieval),
                     code-index.mjs + code-sync.mjs (code_chunks), docs.mjs (doc_chunks)
   memory.mjs        re-export shim → src/memory/*
-  session.mjs       session persistence (up to 5 archive slots, isolated by project cwd)
+  session.mjs       session persistence (up to 5 archive slots, isolated by project cwd, process-level isolation via sessionId + slotSessions)
   skills.mjs        skill discovery/loading (.thincoder/skills/*.md)
   markdown.mjs      entry format (frontmatter parse/serialize)
   git/              checkpoint.mjs (git patch snapshots / rewind), gitmem.mjs (Team layer git sync)
@@ -204,6 +204,16 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 - More builtin skills
 
 ## Changelog
+
+### 0.12.2 (2026-08)
+- **Session isolation for multiple processes** — each process gets a unique session ID (`pid-timestamp-random`), manifest tracks slot ownership via `slotSessions` mapping. Concurrent sessions in the same directory automatically get separate slots. Dead process slots are intelligently reclaimed via `isProcessAlive()` check
+- **Two-level model picker** — `/model` now shows providers first, then models for selected provider. Reduces visual clutter when many providers are configured. Direct switching still works: `/model qwen:qwen-max`
+- **Picker improvements** — auto-scroll keeps selected item visible, "type to filter" hint shown, search/filter support added
+- **Shift+Enter multiline input** — TUI now supports Shift+Enter for multiline input (regular Enter still submits)
+- **New provider presets** — added Volcengine Ark (豆包), Hunyuan (腾讯混元), SiliconFlow (硅基流动), OpenRouter, Groq (5 new providers, total now 12)
+- **Execute tool security hardening** — blocks dynamic `import()` calls to prevent sandbox escape. Pre-execution regex check + sandbox blocks `require()` and `process` access
+- **Advisor system overhaul** — convergence hardening with round-aware prompts, evidence rules, round cap (5 max). Design-review token gate. Simplified prompts, removed git dependency. Unified streaming block
+- **Verify guard improvements** — file path validation, error context enrichment, test coverage expanded
 
 ### 0.12.1 (2026-07)
 - **Fix: `/exit` screen artifacts** — `/exit` now uses synchronous `process.exit(0)` instead of the deferred cleanup callback, preventing the post-handler `render()` from redrawing the TUI over the cleaned terminal. Ctrl+C and `/exit` now produce identical clean exits.
