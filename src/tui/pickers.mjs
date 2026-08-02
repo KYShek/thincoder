@@ -88,7 +88,7 @@ export function createPickers(ctx) {
 
   function renderPickerLines() { rebuildLines() }
 
-  // === model picker ===
+  // === two-level model picker ===
 
   /** Strip known version/date suffixes to get the "series" name of a model.
    *  e.g. "qwen-max-latest" → "qwen-max", "qwen-max-2024-09-19" → "qwen-max" */
@@ -119,84 +119,169 @@ export function createPickers(ctx) {
     return e.action === "switch" ? `switch:${e.provider}:${e.model}` : `action:${e.action}`
   }
 
+  /** Get API key for a provider (from config or env vars) */
+  function getApiKey(providerName, providerConfig) {
+    const envKey = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }[providerName]
+    let apiKey = providerConfig.apiKey
+    if (!apiKey && envKey && process.env[envKey]) apiKey = process.env[envKey]
+    if (!apiKey) apiKey = process.env.THINCODER_API_KEY
+    return apiKey
+  }
+
+  /** Level 1: Show provider list. Selecting a provider opens Level 2 (model list). */
   async function openModelPicker() {
     // 菜单循环：选中即关闭，子流程结束后重开主菜单；Esc 退出
     for (;;) {
-      const entries = buildModelEntries()
+      const entries = buildProviderEntries()
       const items = entries.filter((e) => e.type === "item")
       const current = items.findIndex(
-        (e) => e.action === "switch" && e.provider === agent.activeProvider && e.model === agent.provider.model)
+        (e) => e.action === "open-models" && e.provider === agent.activeProvider)
       const picked = showPicker("Models & Providers", entries, { defaultIndex: Math.max(0, current) })
-      // 后台异步拉取各 provider 模型列表，原地更新 entries（不 await，错误仅提示）
-      fetchModels(entries).catch((err) => pushLine(`[model] fetch models failed: ${err.message}`, C.error))
       const e = await picked
       if (!e) return
-      if (e.action === "switch") {
-        await selectModel(e).catch((err) => pushLine(`[error] ${err.message}`, C.error))
-        return
+      if (e.action === "open-models") {
+        // Level 2: open model list for this provider
+        const modelSelected = await openModelListForProvider(e.provider)
+        if (modelSelected) return // model selected, close picker
+        // Esc from model list → return to provider list
+      } else if (e.action === "add") {
+        await addProviderFlow()
+      } else if (e.action === "remove") {
+        await removeProviderFlow()
+      } else if (e.action === "key") {
+        await setKeyFlow()
       }
-      if (e.action === "add") await addProviderFlow()
-      else if (e.action === "remove") await removeProviderFlow()
-      else if (e.action === "key") await setKeyFlow()
     }
   }
 
-  /** 后台拉取模型列表并 splice 进 entries；更新时按 entryKey 恢复用户光标下的选中项 */
-  async function fetchModels(entries) {
-    const { listModels } = await import("../provider/index.mjs")
-    await Promise.all(agent.providers.map(async (p) => {
-      let selKey = null
-      try {
-        const envKey = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }[p.name]
-        let apiKey = p.apiKey
-        if (!apiKey && envKey && process.env[envKey]) apiKey = process.env[envKey]
-        if (!apiKey) apiKey = process.env.THINCODER_API_KEY
-        const models = await listModels({ baseURL: p.baseURL, apiKey: apiKey ?? "" }, { signal: AbortSignal.timeout(10000) })
-        if (state.picker?.entries !== entries) return // picker 已关或已换，不再更新
-        selKey = entryKey(pickerItems(state.picker)[state.picker.index])
-        
-        // 智能去重：同系列模型（如 qwen-max, qwen-max-latest, qwen-max-2024-09-19）
-        // 只显示最短的名字作为代表，避免小终端被几十个变体淹没
-        const deduped = dedupeModels(models)
-        
-        const at = entries.findLastIndex((e) => e.type === "item" && e.action === "switch" && e.provider === p.name)
-        if (at >= 0) entries.splice(at + 1, 0, ...deduped.filter((m) => m !== p.model).map((m) => ({ type: "item", text: m, action: "switch", provider: p.name, model: m })))
-        const header = entries.find((e) => e.type === "header" && e.text === p.name)
-        if (header) {
-          const hint = deduped.length < models.length ? `  (${models.length} models, ${deduped.length} shown — type to filter or use /model ${p.name}:<name>)` : ""
-          header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}${hint}`
-        }
-      } catch (error) {
-        if (state.picker?.entries !== entries) return
-        const header = entries.find((e) => e.type === "header" && e.text === p.name)
-        if (header) header.note = `${p.baseURL}${p.apiKey ? "" : " (no key)"}  (fetch failed: ${sliceByWidth(error.message, 40)})`
-      }
-      // 异步 splice 会改变光标下的项：按 entry 标识恢复选中，找不到则 clamp 到合法范围
-      const pk = state.picker
-      const items = pickerItems(pk)
-      const restored = selKey ? items.findIndex((e) => entryKey(e) === selKey) : -1
-      pk.index = restored >= 0 ? restored : Math.min(pk.index, Math.max(0, items.length - 1))
-      rebuildLines()
-    }))
+  /** Level 2: Show model list for a specific provider. Returns true if a model was selected. */
+  async function openModelListForProvider(providerName) {
+    const providerConfig = agent.providers.find((p) => p.name === providerName)
+    if (!providerConfig) return false
+
+    const entries = buildModelEntriesForProvider(providerName, providerConfig)
+    const items = entries.filter((e) => e.type === "item")
+    const currentModel = providerName === agent.activeProvider
+      ? (agent.activeModel || providerConfig.model)
+      : providerConfig.model
+    const current = items.findIndex((e) => e.model === currentModel)
+    const picked = showPicker(`${providerName} models`, entries, { defaultIndex: Math.max(0, current) })
+
+    // Async fetch models in background
+    fetchModelsForProvider(providerName, entries).catch((err) => {
+      pushLine(`[model] fetch models failed: ${err.message}`, C.error)
+    })
+
+    const e = await picked
+    if (!e) return false // Esc → back to provider list
+    if (e.action === "switch") {
+      await selectModel(e).catch((err) => pushLine(`[error] ${err.message}`, C.error))
+      return true
+    }
+    return false
   }
 
-  function buildModelEntries() {
+  /** Build entries for Level 1: provider list */
+  function buildProviderEntries() {
     const entries = []
     for (const p of agent.providers) {
       const active = p.name === agent.activeProvider
-      const isDefaultModel = !agent.activeModel || agent.activeModel === p.model
-      entries.push({ type: "header", text: p.name, note: `${p.baseURL}${p.apiKey ? "" : " (no key)"}${active ? " ← current" : ""}  loading...` })
-      entries.push({ type: "item", text: p.model, action: "switch", provider: p.name, model: p.model, marker: active && isDefaultModel ? "●" : "" })
-      // If a non-default model is active, show it immediately (before API fetch completes)
-      if (active && agent.activeModel && agent.activeModel !== p.model) {
-        entries.push({ type: "item", text: agent.activeModel, action: "switch", provider: p.name, model: agent.activeModel, marker: "●" })
-      }
+      const currentModel = active ? (agent.activeModel || p.model) : p.model
+      const marker = active ? "●" : ""
+      const note = active ? " ← current" : ""
+      const keyStatus = p.apiKey ? "" : " (no key)"
+      entries.push({
+        type: "item",
+        text: `${p.name.padEnd(12)} ${currentModel}${note}`,
+        action: "open-models",
+        provider: p.name,
+        marker,
+        note: `${p.baseURL}${keyStatus}`,
+      })
     }
-    entries.push({ type: "header", text: "Provider Management" })
+    entries.push({ type: "header", text: "Management" })
     entries.push({ type: "item", text: "Add provider…", action: "add" })
     if (agent.providers.length > 1) entries.push({ type: "item", text: "Remove provider…", action: "remove" })
     entries.push({ type: "item", text: "Set / change API key…", action: "key" })
     return entries
+  }
+
+  /** Build entries for Level 2: model list for a specific provider */
+  function buildModelEntriesForProvider(providerName, providerConfig) {
+    const entries = []
+    const active = providerName === agent.activeProvider
+    const currentModel = active ? (agent.activeModel || providerConfig.model) : providerConfig.model
+    const isDefaultModel = currentModel === providerConfig.model
+
+    entries.push({ type: "header", text: "Current model" })
+    entries.push({
+      type: "item",
+      text: currentModel,
+      action: "switch",
+      provider: providerName,
+      model: currentModel,
+      marker: active && isDefaultModel ? "●" : "",
+    })
+
+    entries.push({ type: "header", text: "Available models (loading…)" })
+    return entries
+  }
+
+  /** Async fetch and splice models for a specific provider */
+  async function fetchModelsForProvider(providerName, entries) {
+    const { listModels } = await import("../provider/index.mjs")
+    const providerConfig = agent.providers.find((p) => p.name === providerName)
+    if (!providerConfig) return
+
+    let selKey = null
+    try {
+      const apiKey = getApiKey(providerName, providerConfig)
+      const models = await listModels(
+        { baseURL: providerConfig.baseURL, apiKey: apiKey ?? "" },
+        { signal: AbortSignal.timeout(10000) }
+      )
+      if (state.picker?.entries !== entries) return // picker closed or changed
+      selKey = entryKey(pickerItems(state.picker)[state.picker.index])
+
+      // Dedupe and filter
+      const deduped = dedupeModels(models)
+      const currentModel = providerName === agent.activeProvider
+        ? (agent.activeModel || providerConfig.model)
+        : providerConfig.model
+
+      // Find the "Available models" header and splice after it
+      const headerIdx = entries.findIndex((e) => e.type === "header" && e.text.startsWith("Available models"))
+      if (headerIdx >= 0) {
+        // Update header with count info
+        const hint = deduped.length < models.length
+          ? ` (${models.length} total, ${deduped.length} shown — type to filter)`
+          : ` (${deduped.length})`
+        entries[headerIdx].text = `Available models${hint}`
+
+        // Splice models after header (skip current model)
+        const newModels = deduped.filter((m) => m !== currentModel)
+        entries.splice(headerIdx + 1, 0, ...newModels.map((m) => ({
+          type: "item",
+          text: m,
+          action: "switch",
+          provider: providerName,
+          model: m,
+        })))
+      }
+    } catch (error) {
+      if (state.picker?.entries !== entries) return
+      const headerIdx = entries.findIndex((e) => e.type === "header" && e.text.startsWith("Available models"))
+      if (headerIdx >= 0) {
+        entries[headerIdx].text = `Available models (fetch failed: ${sliceByWidth(error.message, 30)})`
+      }
+    }
+
+    // Restore selection
+    const pk = state.picker
+    const items = pickerItems(pk)
+    const restored = selKey ? items.findIndex((e) => entryKey(e) === selKey) : -1
+    pk.index = restored >= 0 ? restored : Math.min(pk.index, Math.max(0, items.length - 1))
+    rebuildLines()
   }
 
   async function selectModel(item) {
