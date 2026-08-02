@@ -94,6 +94,11 @@ export const codeModeTool = {
       return abs
     }
 
+    // Block dynamic imports: check for import() syntax before execution
+    if (/\bimport\s*\(/.test(code)) {
+      return "Error: dynamic import() is not allowed in CodeMode sandbox. Use the provided readFile/writeFile/glob/grep/fetch functions instead."
+    }
+
     const sandbox = createContext({
       readFile: (p) => {
         const abs = safePath(p)
@@ -147,6 +152,9 @@ export const codeModeTool = {
         }
       },
       fetch: sandboxFetch,
+      // Block process and require access
+      require: () => { throw new Error("require() is not available in CodeMode sandbox") },
+      process: undefined,
     })
 
     try {
