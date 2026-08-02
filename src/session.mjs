@@ -11,10 +11,21 @@
 import { createHash } from "node:crypto"
 import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from "node:fs"
 import { join, dirname } from "node:path"
+import { execSync } from "node:child_process"
 import { configDir } from "./config.mjs"
 
 const MAX_SLOTS = 5
 const CWD_HASH_LEN = 12
+
+let currentSessionId = null
+
+/** Generate unique session ID for this process */
+export function getSessionId() {
+  if (!currentSessionId) {
+    currentSessionId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  }
+  return currentSessionId
+}
 
 /** Derive base session path from cwd hash (legacy, kept for migration and tests) */
 export function sessionPath(cwd) {
@@ -82,12 +93,15 @@ function slotDigest(data) {
 function loadManifest(cwd) {
   try {
     const p = manifestPath(cwd)
-    if (!existsSync(p)) return { slots: {} }
-    return JSON.parse(readFileSync(p, "utf8"))
-  } catch { return { slots: {} } }
+    if (!existsSync(p)) return { slots: {}, sessionId: null }
+    const m = JSON.parse(readFileSync(p, "utf8"))
+    if (!m.sessionId) m.sessionId = null
+    return m
+  } catch { return { slots: {}, sessionId: null } }
 }
 
 function saveManifest(cwd, m) {
+  m.sessionId = getSessionId()
   writeSessionFile(manifestPath(cwd), m)
 }
 
@@ -96,51 +110,81 @@ function saveManifest(cwd, m) {
  * Called by activeSlot() — idempotent, safe to call repeatedly.
  */
 function ensureActive(cwd, m) {
-  // Already have an active slot
-  if (m.active) return
-
-  const legacy = sessionPath(cwd) // {hash}.json (old current file)
-
-  // Migrate legacy current file if it exists
-  if (existsSync(legacy)) {
-    try {
-      const data = JSON.parse(readFileSync(legacy, "utf8"))
-      if (data && Array.isArray(data.history)) {
-        const digest = slotDigest(data)
-        // Check if any existing slot has matching content
-        for (const [n, meta] of Object.entries(m.slots)) {
-          if (typeof meta === "object" && meta.firstMessage === digest.firstMessage && meta.messageCount === digest.messageCount) {
-            m.active = Number(n)
-            saveManifest(cwd, m)
-            try { unlinkSync(legacy) } catch {}
-            return
-          }
-        }
-        // No match — create a new slot from the legacy file
-        let slot = 1
-        while (m.slots[slot]) slot++
-        const dst = slotPath(cwd, slot)
-        writeSessionFile(dst, data)
-        m.slots[slot] = digest
+  const mySessionId = getSessionId()
+  
+  // Initialize slotSessions if not present
+  if (!m.slotSessions) m.slotSessions = {}
+  
+  // Check if we already own the active slot
+  if (m.active && m.slotSessions[m.active] === mySessionId) {
+    return
+  }
+  
+  // Try to find an available slot:
+  // 1. Empty slots (not in slotSessions)
+  // 2. Slots owned by dead processes (check if PID is still running)
+  // 3. Oldest slot if all are busy
+  
+  const allSlots = Object.keys(m.slots).filter(n => /^\d+$/.test(n)).map(Number).sort((a, b) => a - b)
+  
+  // Find first empty or dead slot
+  for (const slot of allSlots) {
+    const ownerSessionId = m.slotSessions[slot]
+    if (!ownerSessionId) {
+      // Empty slot - claim it
+      m.active = slot
+      m.slotSessions[slot] = mySessionId
+      saveManifest(cwd, m)
+      return
+    }
+    if (ownerSessionId !== mySessionId) {
+      // Check if owner process is still alive
+      const ownerPid = parseInt(ownerSessionId.split('-')[0])
+      if (!isProcessAlive(ownerPid)) {
+        // Dead process - reclaim slot
         m.active = slot
+        m.slotSessions[slot] = mySessionId
         saveManifest(cwd, m)
-        try { unlinkSync(legacy) } catch {}
         return
       }
-    } catch {
-      // Corrupted legacy file — remove it
-      try { unlinkSync(legacy) } catch {}
     }
   }
-
-  // No legacy file — if slots exist, pick newest; otherwise create slot 1 (no file yet)
-  const entries = Object.entries(m.slots).filter(([n]) => /^\d+$/.test(n))
-  if (entries.length > 0) {
-    m.active = Number(entries.sort((a, b) => slotMetaTs(b[1]) - slotMetaTs(a[1]))[0][0])
-  } else {
-    m.active = 1
+  
+  // All slots busy - create new slot if under limit, otherwise use oldest
+  if (allSlots.length < MAX_SLOTS) {
+    const newSlot = allSlots.length > 0 ? Math.max(...allSlots) + 1 : 1
+    m.active = newSlot
+    m.slotSessions[newSlot] = mySessionId
+    saveManifest(cwd, m)
+    return
   }
+  
+  // All slots busy and at limit - use oldest slot (smallest number)
+  m.active = allSlots[0]
+  m.slotSessions[m.active] = mySessionId
   saveManifest(cwd, m)
+}
+
+/**
+ * Check if a process with given PID is still alive.
+ * Returns false if process doesn't exist or we can't determine.
+ */
+function isProcessAlive(pid) {
+  if (!pid || isNaN(pid)) return false
+  try {
+    // On Windows: tasklist /FI "PID eq <pid>" /NH
+    // On Unix: kill(pid, 0) or check /proc/<pid>
+    if (process.platform === 'win32') {
+      const output = execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8', stdio: 'pipe' })
+      return output.includes(String(pid))
+    } else {
+      // Unix: try to send signal 0 (doesn't kill, just checks)
+      process.kill(pid, 0)
+      return true
+    }
+  } catch {
+    return false
+  }
 }
 
 /** Return the active slot number, migrating legacy data if necessary */
