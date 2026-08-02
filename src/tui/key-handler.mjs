@@ -456,7 +456,14 @@ export function createKeyHandler(ctx) {
       return
     }
     if (key.name === "return" || key.name === "enter" || str === "\r") {
-      submit().catch((e) => pushLine(`[error] ${e.message}`, C.error))
+      if (key.shift) {
+        // Shift+Enter: insert newline for multiline input
+        state.input.splice(state.cursor, 0, '\n')
+        state.cursor++
+        render()
+      } else {
+        submit().catch((e) => pushLine(`[error] ${e.message}`, C.error))
+      }
       return
     }
 
