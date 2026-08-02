@@ -134,48 +134,47 @@ function saveManifest(cwd, m) {
  * Ensure an active slot exists in the manifest, migrating legacy data if needed.
  * Called by activeSlot() — idempotent, safe to call repeatedly.
  */
+/**
+ * Claim a slot for this process and set it as active. Idempotent.
+ * Preference order:
+ *  1. The current active slot, if it is unowned / ours / its owner is dead — reuse it.
+ *  2. Any slot that is unowned or owned by a dead process (reclaim).
+ *  3. A brand-new slot when all are owned by live processes.
+ * The owner is recorded in m.slotSessions so other processes (CLI ↔ VS Code) can
+ * see which slots are taken and avoid them.
+ */
 function ensureActive(cwd, m) {
   const mySessionId = getSessionId()
-  
-  // Initialize slotSessions if not present
   if (!m.slotSessions) m.slotSessions = {}
-  
-  // Check if we already own the active slot
-  if (m.active && m.slotSessions[m.active] === mySessionId) {
+
+  // Already own the active slot — nothing to do.
+  if (m.active && m.slotSessions[m.active] === mySessionId) return
+
+  const isFree = (slot) => {
+    const owner = m.slotSessions[slot]
+    if (!owner || owner === mySessionId) return true
+    return !isProcessAlive(parseInt(owner.split('-')[0]))
+  }
+
+  // 1. Prefer the current active slot if we can take it (preserves "resume where you left off").
+  if (m.active && m.slots[m.active] && isFree(m.active)) {
+    m.slotSessions[m.active] = mySessionId
+    saveManifest(cwd, m)
     return
   }
-  
-  // Try to find an available slot:
-  // 1. Empty slots (not in slotSessions)
-  // 2. Slots owned by dead processes (check if PID is still running)
-  // 3. Oldest slot if all are busy
-  
+
+  // 2. Otherwise claim the first slot that is free.
   const allSlots = Object.keys(m.slots).filter(n => /^\d+$/.test(n)).map(Number).sort((a, b) => a - b)
-  
-  // Find first empty or dead slot
   for (const slot of allSlots) {
-    const ownerSessionId = m.slotSessions[slot]
-    if (!ownerSessionId) {
-      // Empty slot - claim it
+    if (isFree(slot)) {
       m.active = slot
       m.slotSessions[slot] = mySessionId
       saveManifest(cwd, m)
       return
     }
-    if (ownerSessionId !== mySessionId) {
-      // Check if owner process is still alive
-      const ownerPid = parseInt(ownerSessionId.split('-')[0])
-      if (!isProcessAlive(ownerPid)) {
-        // Dead process - reclaim slot
-        m.active = slot
-        m.slotSessions[slot] = mySessionId
-        saveManifest(cwd, m)
-        return
-      }
-    }
   }
-  
-  // All slots busy - create new slot (no limit)
+
+  // 3. All slots owned by live processes — allocate a new one (no limit).
   const newSlot = allSlots.length > 0 ? Math.max(...allSlots) + 1 : 1
   m.active = newSlot
   m.slotSessions[newSlot] = mySessionId
@@ -204,10 +203,10 @@ function isProcessAlive(pid) {
   }
 }
 
-/** Return the active slot number, migrating legacy data if necessary */
+/** Return the active slot number for this process, claiming one if necessary */
 export function activeSlot(cwd) {
   const m = loadManifest(cwd)
-  if (!m.active) ensureActive(cwd, m)
+  ensureActive(cwd, m)
   return m.active
 }
 
@@ -374,17 +373,14 @@ export function loadSession(cwd) {
 
 /** Apply loaded session data onto an agent object; returns true if provider was switched */
 export function applySession(agent, data) {
-  // data.history is the FULL never-compacted record; data.contextHistory is the (possibly
-  // compacted) machine context. Seed _fullHistory from the full record (real messages only,
-  // written via pushReal). Correctness over token savings on resume: also seed the machine
-  // context from the FULL history. data.contextHistory may be stale — another writer (e.g.
-  // the VS Code extension) can append turns after our last compaction while passing our
-  // contextHistory through unchanged, and there's no reliable tail to distinguish that from a
-  // normal post-compaction state. Resuming from full history is always safe; contextHistory is
-  // persisted for diagnostics only.
+  // data.history is the FULL never-compacted record (human line); data.contextHistory is the
+  // (possibly compacted) machine line. Restore each line from its own source — the machine
+  // context keeps its compaction savings across resume. Legacy files without contextHistory
+  // fall back to seeding the machine line from the full history (it re-compacts when needed).
   const full = Array.isArray(data.history) ? data.history : []
+  const machine = Array.isArray(data.contextHistory) ? data.contextHistory : full
   agent._fullHistory = [...full]
-  agent.history = full
+  agent.history = [...machine]
   agent.title = data.title ?? ""
   agent.tasks = data.tasks ?? []
   agent.planMode = data.planMode ?? false

@@ -279,7 +279,7 @@ export function pushReal(agent, msg)          // 真实消息双写：同时追�
 
 ```
 ~/.thincoder/sessions/
-  <sha1(cwd)>.json.manifest   # { slots: { 1: {ts, title, firstMessage, turnCount, activeProvider, updatedAt}, ... }, active: N, sessionId }
+  <sha1(cwd)>.json.manifest   # { slots: { 1: {ts, title, firstMessage, turnCount, activeProvider, updatedAt}, ... }, active: N, sessionId, slotSessions: { N: "<pid>-<ts>-<rand>" } }
   <sha1(cwd)>.json.1          # 槽位1: { version:2, cwd, title, history, contextHistory, display, tasks, ... }
   <sha1(cwd)>.json.2          # 槽位2
 ```
@@ -288,6 +288,7 @@ export function pushReal(agent, msg)          // 真实消息双写：同时追�
 
 **设计要点**：
 - **槽位模型**：数字键 `1..N`（无上限），文件名 `session.json.N`；manifest 存元数据 + active 指针 + sessionId（PID 防多开）。
+- **槽位认领与避让（关键）**：`slotSessions` 记录"哪个槽位正被哪个活进程占用"——键是槽位号，值是占用者的 `sessionId`（`<pid>-<ts>-<rand>`，取首段为 PID）。每个进程启动时**必须**经 `activeSlot()` → `ensureActive()` 认领一个槽位（把 `slotSessions[槽位]` 写为自己的 sessionId），供其它进程（CLI ↔ VS Code）判断占用并避让。认领的偏好顺序：① 当前 active 槽位若可拿（无人认领 / 是自己的 / 认领者已死）→ 复用（保留"接着上次"体验）；② 否则认领第一个空槽或死进程槽（按 `isProcessAlive(pid)` 判定，Windows `tasklist` / Unix `kill(pid,0)`）；③ 全被活进程占用 → 分配新槽位（避让）。**曾有的 bug**：旧 `activeSlot()` 有 `if (!m.active)` 守卫——active 非空就跳过 `ensureActive`，导致 CLI 从不写 `slotSessions`，VS Code 因而看不到占用、误开同一槽位。修复后两端都"总是认领"，占用对彼此可见。
 - **cwd 归一化（关键）**：`sha1(cwd)` 的输入必须先归一化，否则两端因路径大小写/分隔符差异算出不同 hash，会话互不可见。规则：**Windows 盘符转大写**（`d:\…` → `D:\…`），路径分隔符保持反斜杠；非 Windows 平台原样。VS Code 的 `uri.fsPath` 会把盘符小写化，CLI 的 `process.cwd()` 保留用户输入大小写——归一化后两端收敛到同一 hash。
 - **hash 不截断**：文件名用完整 40 位 sha1。早期曾截断（CLI 12 位 / VS Code 16 位），既无设计依据又导致两端不一致的 bug——不截断从根上消除"该截几位"的争议，且零碰撞风险。12/16 位旧文件由 CLI 首次访问时自动改名为 40 位。
 - **标题**：`title` 字段两端都认。CLI 在**第一条用户消息后自动生成**（复用 VS Code 的 generate-title 逻辑）；VS Code 保留现有自动标题 + 下拉 UI。标题写入 manifest 与槽位文件，不再 rename 文件。

@@ -103,7 +103,7 @@ test("saveSession double-writes full history + compacted contextHistory; loadSes
   }
 })
 
-test("applySession resumes machine context from full history and reseeds _fullHistory", () => {
+test("applySession resumes machine context from contextHistory, full record from history", () => {
   const cwd = mkdtempSync(join(tmpdir(), "sess-cmp-"))
   try {
     const full = makeHistory(20)
@@ -115,8 +115,9 @@ test("applySession resumes machine context from full history and reseeds _fullHi
     const reader = makeAgent(cwd, [])
     applySession(reader, data)
 
-    // Correctness over token savings: resume seeds the machine context from the FULL history.
-    assert.equal(reader.history.length, full.length, "resumed machine context should be the full history")
+    // Dual-track: machine line resumes from the COMPACTED contextHistory (keeps token savings),
+    // human line resumes from the FULL history.
+    assert.ok(reader.history.length < full.length, "resumed machine context should keep compaction")
     assert.equal(reader._fullHistory.length, full.length, "_fullHistory reseeded from full record")
 
     // A post-resume exchange appends to BOTH the machine context and the full record via pushReal.
@@ -124,6 +125,7 @@ test("applySession resumes machine context from full history and reseeds _fullHi
     pushReal(reader, { role: "assistant", content: "post-resume answer" })
     assert.equal(reader._fullHistory.length, full.length + 2, "new exchange appended onto full history")
     assert.ok(reader._fullHistory.some((m) => m.content === "post-resume question"))
+    assert.ok(reader.history.some((m) => m.content === "post-resume question"), "machine line also gets the new exchange")
   } finally {
     cleanup(cwd)
     rmSync(cwd, { recursive: true, force: true })
