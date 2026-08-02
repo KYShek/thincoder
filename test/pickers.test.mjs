@@ -147,21 +147,14 @@ test("rebuildLines: 无匹配显示 (no match)", () => {
 // /model 异步更新：按 entry 标识恢复选中
 // ====================================================================
 
-test("openModelPicker: listModels 异步 splice 后按 provider/model 标识恢复选中项", async () => {
-  // 本地 HTTP server 模拟 GET /models（端口 0 随机分配）
-  const server = createServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "application/json" })
-    res.end(JSON.stringify({ data: [{ id: "m1" }, { id: "m2" }, { id: "m3" }] }))
-  })
-  await new Promise((r) => server.listen(0, "127.0.0.1", r))
-  const baseURL = `http://127.0.0.1:${server.address().port}`
-
+test("openModelPicker: 两级 picker — Level 1 显示 provider 列表", async () => {
   const agent = {
     providers: [
-      { name: "p1", baseURL, model: "m1", apiKey: "k" },
-      { name: "active", baseURL, model: "m1", apiKey: "k" },
+      { name: "p1", baseURL: "http://example.com/v1", model: "m1", apiKey: "k" },
+      { name: "active", baseURL: "http://example.com/v1", model: "m1", apiKey: "k" },
     ],
     activeProvider: "active",
+    activeModel: null,
     provider: { model: "m1" },
     config: {},
   }
@@ -170,25 +163,28 @@ test("openModelPicker: listModels 异步 splice 后按 provider/model 标识恢�
 
   const flow = openModelPicker() // 不 await：它停在 showPicker 上等用户选择
   try {
-    // 等异步 listModels 完成（每个 provider 分组下会多出 m2/m3，items 从 5 → 9）
-    const deadline = Date.now() + 5000
-    while (Date.now() < deadline) {
-      if ((state.picker?.filteredItems ?? []).length > 5) break
-      await new Promise((r) => setTimeout(r, 20))
-    }
-    const items = state.picker.filteredItems
-    assert.ok(items.length > 5, "模型列表已异步合并")
+    // 等 picker 渲染
+    await new Promise((r) => setTimeout(r, 50))
 
-    // 选中 "active/m1"（当前模型），再触发一次异步更新场景无法直接重放，
-    // 但首次 splice 完成后选中应仍指向打开时的当前模型项而不是错位到别的 entry
-    const sel = items[state.picker.index]
-    assert.equal(sel.action, "switch")
-    assert.equal(sel.provider, "active")
-    assert.equal(sel.model, "m1")
+    const items = state.picker?.filteredItems ?? []
+    // Level 1: 2 providers + 3 management items (add/remove/key)
+    assert.equal(items.length, 5, "Level 1 应有 2 个 provider + 3 个 management 项")
+
+    // 验证 provider 项
+    const providerItems = items.filter((i) => i.action === "open-models")
+    assert.equal(providerItems.length, 2)
+    assert.equal(providerItems[0].provider, "p1")
+    assert.equal(providerItems[1].provider, "active")
+
+    // 验证 management 项
+    const managementItems = items.filter((i) => ["add", "remove", "key"].includes(i.action))
+    assert.equal(managementItems.length, 3)
 
     popPicker(null) // Esc 退出菜单循环
     await flow
-  } finally {
-    server.close()
+  } catch (e) {
+    popPicker(null)
+    await flow.catch(() => {})
+    throw e
   }
 })
