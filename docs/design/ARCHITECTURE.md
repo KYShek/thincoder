@@ -252,6 +252,10 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 2. 主循环注入多模态工具结果时，非视觉模型改注入 system reminder（"图片未注入，不要重复调用"），image 部分不进历史（纵深防御）
 3. `stripImagesForTextModel`（`provider/core.mjs`）发送前把历史里残留的 image_url 替换为文本占位符——防"视觉模型会话切到文本 provider 恢复"的存量毒化；历史本身不改，切回视觉模型图片即恢复
 
+**tool 配对协议防护（DeepSeek 严格校验）**：严格 provider（DeepSeek）要求每条 tool 消息**紧跟**声明其 tool_call_id 的 assistant 消息，中间隔一条 user 消息都整个请求 400。历史可能合法地违反紧邻性——并行 read_image 在 tool 结果之间注入多模态 user 消息、压缩切割、中断会话留下悬空 tool_calls。两道防线：
+1. 源头：主循环把多模态 user 消息（图片注入 / 未注入提醒）**延后到所有 tool 结果提交之后**再入历史（`deferredUserMsgs`），新产生的历史天然紧邻
+2. 兜底：`normalizeToolPairing`（`provider/core.mjs`）发送前规范化线上载荷——tool 消息重排到 owner assistant 之后、孤儿 tool 丢弃、缺失结果合成占位；与 `stripImagesForTextModel` 同语义，历史本身不改。覆盖存量会话（恢复/压缩产生的交错历史）
+
 **TUI todo 面板**：对话区与输入框之间常驻，最多 5 行（`▶ in_progress` / `✓ done`（暗色+删除线）/ `○ pending`；超 5 条优先 in_progress、兼顾最早 pending 和最近 done）；一轮结束全部 done 自动收起；会话恢复时以 `agent.tasks` 直接初始化。状态栏保留 `▶done/total` 计数，对话区每次更新留痕 `[task] x/y ▶ 当前任务`。chat 命令经 stderr 输出同款留痕。
 
 **token 用量展示**：`readSSE` 捕获 `usage` → runAgent 经 `callbacks.onUsage` 透传 → TUI 状态栏累计显示 `↑输入 ↓输出 hit 缓存命中率%`（DeepSeek usage 自带 `prompt_cache_hit/miss_tokens`，前缀缓存效果因此可观测）；chat 命令结束时 stderr 输出 `[usage]` 汇总行。状态栏另显示**上下文利用率** `ctx N%`（`estimateTokens(history) / compactThreshold`，history 长度变化才重算；≥80% 变黄——到 100% 触发压缩，提醒用户收尾或 /new）。

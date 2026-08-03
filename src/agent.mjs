@@ -335,6 +335,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     guardPushbacks = 0
     advisorPushbacks = 0
 
+    // Multimodal user messages (injected images / not-injected reminders) must NOT be pushed
+    // between tool results of parallel calls — strict providers (DeepSeek) 400 when a tool
+    // message does not immediately follow its assistant tool_calls. Defer to after the loop.
+    // real: image injections are real messages (pushReal → _fullHistory); reminders stay machine-only.
+    const deferredUserMsgs = []
+
     for (const { toolCall, result, ok } of results) {
       const tool = toolByName.get(toolCall.name)
       // Multimodal tools return JSON { text, images } — inject as multimodal user message
@@ -346,16 +352,22 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
             pushReal(agent, { role: "tool", tool_call_id: toolCall.id, content: parsed.text })
             if (specForModel(agent.provider.model).multimodal) {
               // then inject multimodal user message with base64 images for the model to actually "see" them on the next turn
-              pushReal(agent, {
-                role: "user",
-                content: [{ type: "text", text: parsed.text }, ...parsed.images],
+              deferredUserMsgs.push({
+                real: true,
+                msg: {
+                  role: "user",
+                  content: [{ type: "text", text: parsed.text }, ...parsed.images],
+                },
               })
             } else {
               // Non-vision model: image parts must never enter history — text-only APIs 400 on them on EVERY
               // subsequent request, poisoning the conversation. (read_image itself already refuses; this is defense-in-depth.)
-              agent.history.push({
-                role: "user",
-                content: `[System reminder: the image returned by ${toolCall.name} was NOT injected — model ${agent.provider.model} does not support image input. Do not call ${toolCall.name} again under this provider; verify visual output programmatically instead.]`,
+              deferredUserMsgs.push({
+                real: false,
+                msg: {
+                  role: "user",
+                  content: `[System reminder: the image returned by ${toolCall.name} was NOT injected — model ${agent.provider.model} does not support image input. Do not call ${toolCall.name} again under this provider; verify visual output programmatically instead.]`,
+                },
               })
             }
             continue
@@ -413,6 +425,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           }
         }
       }
+    }
+
+    // All tool results committed — now safe to inject deferred multimodal user messages
+    for (const { real, msg } of deferredUserMsgs) {
+      if (real) pushReal(agent, msg)
+      else agent.history.push(msg)
     }
 
     injectPostTurn(agent, results, recentCallSigs, callbacks, turn)
