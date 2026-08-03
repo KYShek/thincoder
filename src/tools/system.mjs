@@ -156,13 +156,40 @@ function runBash(command, cwd, { timeout, signal, onOutput }) {
     const timer = setTimeout(killTree, timeout)
     if (signal) signal.addEventListener("abort", killTree, { once: true })
 
-    child.on("error", (error) => {
+    let settled = false
+    let graceTimer = null
+    const finish = (result) => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
-      resolve(truncate(`Command failed: ${error.message}\n[stdout]:\n${outBuf || "(empty)"}`))
+      clearTimeout(graceTimer)
+      resolve(result)
+    }
+
+    child.on("error", (error) => {
+      finish(truncate(`Command failed: ${error.message}\n[stdout]:\n${outBuf || "(empty)"}`))
+    })
+
+    // Shell exited. Normally 'close' follows within milliseconds — but a BACKGROUND
+    // child (start /b, &, nohup …) inherits the stdio pipes, so the pipe stays open
+    // and 'close' never fires: the tool would hang until the timeout. Resolve after
+    // a short grace period instead, returning whatever output was collected.
+    child.on("exit", (code, exitSignal) => {
+      graceTimer = setTimeout(() => {
+        const outFlush = sanitizeOutput(outDecoder(Buffer.alloc(0), true))
+        const errFlush = sanitizeOutput(errDecoder(Buffer.alloc(0), true))
+        if (outFlush) onOutput?.(outFlush)
+        if (errFlush) onOutput?.(errFlush)
+        const status = exitSignal ? `killed: ${exitSignal}` : `exit code ${code}`
+        const parts = [`[stdout]:\n${(outBuf + outFlush).trim() || "(empty)"}`]
+        if ((errBuf + errFlush).trim()) parts.push(`[stderr]:\n${(errBuf + errFlush).trim()}`)
+        parts.push(`(${status})`)
+        parts.push("[background] the shell exited but a child process still holds the output pipe — output may be incomplete; the process may still be running")
+        finish(truncate(parts.join("\n\n") + truncatedNote))
+      }, 1500)
     })
 
     child.on("close", (code, exitSignal) => {
-      clearTimeout(timer)
       // Flush decoder tails — also push final bytes to panel
       const outFlush = sanitizeOutput(outDecoder(Buffer.alloc(0), true))
       const errFlush = sanitizeOutput(errDecoder(Buffer.alloc(0), true))
@@ -179,7 +206,7 @@ function runBash(command, cwd, { timeout, signal, onOutput }) {
       const parts = [`[stdout]:\n${outBuf.trim() || "(empty)"}`]
       if (errBuf.trim()) parts.push(`[stderr]:\n${errBuf.trim()}`)
       parts.push(`(${status})`)
-      resolve(truncate(parts.join("\n\n") + truncatedNote))
+      finish(truncate(parts.join("\n\n") + truncatedNote))
     })
   })
 }

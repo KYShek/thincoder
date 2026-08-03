@@ -658,6 +658,30 @@ test("checkpoint 工具：list 的文件名做 XML 转义（防注入模型上�
     const created = await byName.git.execute({ action: "checkpoint", checkpointAction: "create" }, ctx)
     const id = created.match(/Checkpoint (\S+) created/)[1]
 
+test("bash 工具：后台进程不卡死（子进程持有管道，grace 兜底返回）", async () => {
+  const { bashTool } = await import("../src/tools/system.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-bg-"))
+  try {
+    // 后台启动一个 5 秒后自退的 node 进程：shell 立即退出，但子进程持有 stdout 管道，
+    // 'close' 事件不会触发——旧实现会卡到 120s 超时，新实现应在 grace 后返回。
+    const cmd = process.platform === "win32"
+      ? 'start /b node -e "setTimeout(() => process.exit(0), 5000)"'
+      : 'node -e "setTimeout(() => process.exit(0), 5000)" &'
+    const t0 = Date.now()
+    const r = await bashTool.execute({ command: cmd }, { cwd: dir })
+    const elapsed = Date.now() - t0
+    assert.ok(elapsed < 10000, `应在 grace（~1.5s）后返回而非卡到超时，实际 ${elapsed}ms`)
+    assert.match(r, /\[background\]/, "提示后台进程持有管道: " + r.slice(0, 150))
+    assert.match(r, /exit code 0/, "shell 退出码 0")
+  } finally {
+    // 后台子进程的 cwd 是 dir，5 秒自退后才可删除——轮询等待
+    for (let i = 0; i < 20; i++) {
+      try { rmSync(dir, { recursive: true, force: true }); break } catch { await new Promise((r) => setTimeout(r, 500)) }
+    }
+  }
+})
+
+
     const overview = await byName.git.execute({ action: "checkpoint", checkpointAction: "list" }, ctx)
     assert.ok(overview.includes("a&amp;&apos;b&apos;.txt"), `overview 应转义文件名: ${overview}`)
     assert.ok(!overview.includes("a&'b'.txt"))
