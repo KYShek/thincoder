@@ -54,7 +54,7 @@ function buildConvLines(state, cols) {
       for (const wrapped of wrapText(line, cols - 1)) {
         // Lightweight markdown display (IK5VW3): headings bold + inline markers styled.
         // Runs AFTER wrapping so the ANSI it inserts never skews width math.
-        convLines.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: l.color, _foldId: l._foldId })
+        convLines.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: l.color, _foldId: l._foldId, _src: i })
       }
     }
   }
@@ -118,6 +118,8 @@ function buildConvLines(state, cols) {
 export function countConvLines(state, cols) {
   return buildConvLines(state, cols).length
 }
+
+export { buildConvLines }
 
 export function renderConversation(state, cols, visibleH, scroll) {
   const convLines = buildConvLines(state, cols)

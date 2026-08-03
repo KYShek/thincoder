@@ -28,6 +28,7 @@ import { createPickers } from "./pickers.mjs"
 import { runDistill as runDistillImpl } from "./distill-cmd.mjs"
 import { createInteraction } from "./interaction.mjs"
 import { pasteClipboardImage as pasteClipboardImageImpl, insertPastedText, translateShiftEnter } from "./clipboard.mjs"
+import { parseMouseClicks, handleMouseClick } from "./mouse.mjs"
 import { runAgentTurn } from "./agent-turn.mjs"
 import { createKeyHandler } from "./key-handler.mjs"
 import { showStartup, backgroundIndex } from "./startup.mjs"
@@ -176,6 +177,16 @@ export async function startTUI(agent, opts = {}) {
         state.scroll += 3
       } else if (Number(m[1]) === 65) {
         state.scroll = Math.max(0, state.scroll - 3)
+      }
+    }
+
+    // Left-click: \x1b[<0;col;rowM → picker selection / line action menu
+    for (const click of parseMouseClicks(text)) {
+      try {
+        onMouseClick(click.col, click.row)
+      } catch (e) {
+        pushLine(`[mouse] ${e.message || e}`, C.error)
+        render()
       }
     }
 
@@ -374,6 +385,9 @@ export async function startTUI(agent, opts = {}) {
       render()
     }
   })
+
+  // Mouse clicks (SGR \x1b[<0;col;rowM) — picker selection + line action menu.
+  const onMouseClick = (col, row) => handleMouseClick({ state, render, showPicker, popPicker, pushLine }, col, row)
 
   // ---------------------------------------------------------- Startup screen + background indexing
 

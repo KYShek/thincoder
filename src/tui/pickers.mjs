@@ -63,7 +63,7 @@ export function createPickers(ctx) {
         const sel = row === p.index
         if (sel) selLine = lines.length
         const marker = e.marker ? `  ${e.marker}` : ""
-        lines.push({ text: `${sel ? " ▸ " : "   "}${e.text}${marker}`, color: sel ? ansi.bold + C.text : C.dim })
+        lines.push({ text: `${sel ? " ▸ " : "   "}${e.text}${marker}`, color: sel ? ansi.bold + C.text : C.dim, _row: row })
         row++
       }
     }
