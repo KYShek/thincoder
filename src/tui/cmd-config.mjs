@@ -153,7 +153,6 @@ export async function handleConfigCommand(ctx, args = []) {
       { type: "item", text: `agent.compactThreshold = ${ac.compactThreshold ?? 100000}${agent.config?.agent?.compactThresholdAuto ? " (auto)" : ""}`, action: "agent.compactThreshold" },
       { type: "item", text: `agent.verifyGuard = ${ac.verifyGuard === true ? "on" : "off"}`, action: "agent.verifyGuard" },
       { type: "item", text: "Set embedding API key", action: "embedkey" },
-      { type: "item", text: `embedding.model = ${ec.model ?? "BAAI/bge-m3"}`, action: "embedding.model" },
       { type: "item", text: `proxy = ${proxySummary()}`, action: "proxy" },
       { type: "item", text: "View full config", action: "view" },
     ]
@@ -201,31 +200,8 @@ export async function handleConfigCommand(ctx, args = []) {
       continue
     }
 
-    if (choice.action === "embedding.model") {
-      const models = [
-        { label: "BAAI/bge-m3 (multilingual, 1024d)", value: "BAAI/bge-m3" },
-        { label: "BAAI/bge-large-zh-v1.5 (Chinese, 1024d)", value: "BAAI/bge-large-zh-v1.5" },
-        { label: "BAAI/bge-large-en-v1.5 (English, 1024d)", value: "BAAI/bge-large-en-v1.5" },
-        { label: "text-embedding-3-small (OpenAI, 1536d)", value: "text-embedding-3-small" },
-        { label: "text-embedding-3-large (OpenAI, 3072d)", value: "text-embedding-3-large" },
-      ]
-      const currentVal = ec.model ?? "BAAI/bge-m3"
-      const modelChoice = await showPicker("Embedding Model", [
-        { type: "header", text: `Current: ${currentVal}` },
-        ...models.map(m => ({ type: "item", text: m.label, action: m.value })),
-      ])
-      if (!modelChoice) continue
-      try {
-        await saveProxy((raw) => {
-          raw.embedding ??= {}
-          raw.embedding.model = modelChoice.action
-        })
-        pushLabel("❯ Config", ansi.bold + C.tool)
-        pushLine(`embedding.model = ${modelChoice.action}`, C.tool)
-        running = false
-      } catch (error) { pushLine(`Save failed: ${error.message}`, C.error) }
-      continue
-    }
+    // Embedding model is fixed (BAAI/bge-m3, SiliconFlow) — no picker; it's over-engineering
+    // to expose model choice when the vector index format assumes one embedding space.
 
     // Numeric config items
     const label = choice.action
