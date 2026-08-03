@@ -258,6 +258,10 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 
 **TUI todo 面板**：对话区与输入框之间常驻，最多 5 行（`▶ in_progress` / `✓ done`（暗色+删除线）/ `○ pending`；超 5 条优先 in_progress、兼顾最早 pending 和最近 done）；一轮结束全部 done 自动收起；会话恢复时以 `agent.tasks` 直接初始化。状态栏保留 `▶done/total` 计数，对话区每次更新留痕 `[task] x/y ▶ 当前任务`。chat 命令经 stderr 输出同款留痕。
 
+**轻量 markdown 显示（IK5VW3）**：`tui/markdown.mjs` 把模型回复的行内标记渲染为 ANSI——`**粗体**`/`__粗体__`（`\x1b[1m`，用 `22` 关闭不破坏行底色）、`` `代码` ``（反色 `7m/27m`）、`~~删除线~~`（`9m/29m`）、`# 标题`（去标记+整行粗体）。设计约束：**在 wrapText 之后渲染**（ANSI 不再影响宽度数学）；反引号内标记不解释（markdown 语义）；未闭合标记按原文（流式安全）。表格对齐走 render.mjs 既有 `formatTables`，不受影响。复制文本时 ANSI 剥离即得干净内容。
+
+**Ctrl+C 两段确认（IK61BI）**：空闲态第一次 Ctrl+C 只提示"再按一次退出"并武装（3 秒窗口，超时自动解除），窗口内再按才退出；picker 打开时 Ctrl+C = 取消 picker、生成中 Ctrl+C = abort，均不退出进程。状态栏与 F1 帮助文案同步（`Ctrl+C: exit (×2)`）。
+
 **token 用量展示**：`readSSE` 捕获 `usage` → runAgent 经 `callbacks.onUsage` 透传 → TUI 状态栏累计显示 `↑输入 ↓输出 hit 缓存命中率%`（DeepSeek usage 自带 `prompt_cache_hit/miss_tokens`，前缀缓存效果因此可观测）；chat 命令结束时 stderr 输出 `[usage]` 汇总行。状态栏另显示**上下文利用率** `ctx N%`（`estimateTokens(history) / compactThreshold`，history 长度变化才重算；≥80% 变黄——到 100% 触发压缩，提醒用户收尾或 /new）。
 
 ### context.mjs — 上下文管理 + 压缩
@@ -269,7 +273,7 @@ export function compressFallback(agent)       // 压缩失败时确定性截断�
 export function pushReal(agent, msg)          // 真实消息双写：同时追加 agent.history 与 agent._fullHistory
 ```
 
-压缩策略（学 kimi-code，简化版）：保留 system + 最早 2 条 + 最近 N 条，中间用 LLM 摘要成一条。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文的实测值。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表。原子写（tmp+rename）；每 5 个工具 turn 增量保存。
+压缩策略（学 kimi-code，简化版）：保留 system + 最早 2 条 + 最近 N 条，中间用 LLM 摘要成一条。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文的实测值。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表。原子写（tmp+rename）；每 5 个工具 turn 增量保存。**CLI 与 VS Code 的压缩语义统一规范见 `CONTEXT-COMPACTION.md`（D1–D11：窗口自适应 tail、实测基线、双侧配对保护、三级降级、摘要对前端静默等）——两端实现以该文档为准。**
 
 **机读上下文与人读历史分离（双结构）**：`agent.history` 是机读上下文（压缩照常），`agent._fullHistory` 是**永不压缩**的完整记录（人读）。压缩只作用前者；后者只追加。两线在**源头各自独立写入**：真实消息（用户输入、assistant 回复、tool 结果、多模态图像）统一走 `pushReal`——同时追加进 `agent.history` 与 `agent._fullHistory`（后者懒初始化）；机读消息（`[System reminder:`、`[User interrupt:`、压缩 note、task/plan/checkpoint 回注等 transient 注入）直接 push 进 `agent.history`，**不经过** `pushReal`，因此永远不进人读线。这一版取代了旧的事后差量同步（`syncFullHistory`/`_syncedLen` 基线）：差量基线需要在 reminder/checkpoint splice 时手工补偿，太脆、易错；源头双写语义直白——两条线各写各的，无需事后对账。checkpoint 引用、压缩 note、task/plan reminder 等机读消息**有意不进** `_fullHistory`。
 
@@ -337,8 +341,8 @@ export async function reindexFile(memory, cwd, absPath)     // 单文件增量
 ```js
 export function loadConfig()    // 读 ~/.thincoder/config.json + 环境变量兜底
 export function saveConfig(config)
-export const PROVIDER_PRESETS   // 内置 provider 预设表（DeepSeek/Kimi/GLM/Qwen/MiniMax）
-export function specForModel(model)  // 查模型规格（contextWindow / reasoningEcho / multimodal / tempRange）
+export const PROVIDER_PRESETS   // 内置 provider 预设表（17 个：DeepSeek/Kimi/kimi-code/GLM/Qwen/MiniMax/OpenAI/Claude/Gemini/Grok/Mistral/Volcengine/Hunyuan/SiliconFlow/OpenRouter/Groq 等；kimi-code = Kimi For Coding 端点，key 与 Moonshot 不通用）
+export function specForModel(model)  // 查模型规格（contextWindow / reasoningEcho / multimodal / tempRange）；未知模型警告一次后回落 DEFAULT_SPEC（IK5VGJ）
 ```
 
 ```jsonc
