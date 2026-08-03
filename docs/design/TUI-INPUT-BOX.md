@@ -95,6 +95,15 @@ Ctrl+J 能插入 `\n` 后暴露 `layoutInput` 两个渲染 bug：
 2. 后续行前缀从 `""` 改为 `"  "`（2 空格，与 `▸ ` 等宽），使文本左侧对齐
 3. `cursorCol` 两个分支统一为 `2 + col`（后续行加缩进后，光标列同样偏移 2）
 
+### 2.6 图片粘贴死分支（用户报告 Alt+V/Ctrl+Alt+V 无反应，2026-08-04）
+
+**BUG-8**：图片粘贴分支判断 `key.name === "v" && key.alt`，但 readline 对 ESC 前缀组合键（Alt+字符）一律报 **`key.meta = true`、`key.alt = false`**（key-probe 实测确认）。分支从未命中，按键掉到可打印字符分支又被 `!key.meta` 守卫吞掉——表现为"毫无反应"。连带问题：Ctrl+V 文本粘贴分支只排除 `key.alt`，会把 Ctrl+Alt+V（readline 报 ctrl+meta）截走。
+
+**修法**：
+1. 图片分支改判 `key.alt || key.meta`（兼容两种上报方式的终端）
+2. Ctrl+V 文本分支增加 `!key.meta` 排除，让 Ctrl+Alt+V 落到图片分支
+3. F1 帮助补 "Alt+V — Paste clipboard image" 条目
+
 ## 3. 已确认回归与修复方案（逐项，已全部修复 @ post-aac53d9）
 
 ### BUG-1（P0）搜索框打不出字母 n/p — **已修**

@@ -428,6 +428,28 @@ test("keyHandler: up with empty input leaves no draft; down past end goes to bla
   assert.equal(state.historyIndex, -1)
 })
 
+test("keyHandler: Alt+V (meta+v) triggers image paste — key.alt alone is dead (readline sets meta)", () => {
+  // BUG-8 regression: the old branch checked key.alt, but readline parses ESC-prefixed
+  // combos as meta:true alt:false — image paste never fired.
+  const state = tuiState()
+  let called = false
+  const ctx = { ...keyCtx(state), pasteClipboardImage: async () => { called = true } }
+  const handler = createKeyHandler(ctx)
+  handler("", { name: "v", meta: true })
+  assert.equal(called, true, "meta+v fires image paste")
+})
+
+test("keyHandler: Ctrl+Alt+V (ctrl+meta) also fires image paste, not text paste", () => {
+  // readline reports Ctrl+Alt+V as ctrl:true meta:true — the text-paste branch must
+  // exclude meta or it would eat the key before the image branch sees it.
+  const state = tuiState()
+  let imageCalled = false
+  const ctx = { ...keyCtx(state), pasteClipboardImage: async () => { imageCalled = true } }
+  const handler = createKeyHandler(ctx)
+  handler("", { name: "v", ctrl: true, meta: true })
+  assert.equal(imageCalled, true, "ctrl+meta+v fires image paste")
+})
+
 // ====================================================================
 // search mode regressions (79fc3df audit, docs/design/TUI-INPUT-BOX.md)
 // ====================================================================

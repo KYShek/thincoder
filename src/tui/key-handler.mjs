@@ -238,6 +238,7 @@ export function createKeyHandler(ctx) {
         { type: "item", text: "Ctrl+I — Interrupt and inject message" },
         { type: "item", text: "Ctrl+F — Search conversation history" },
         { type: "item", text: "Shift+Enter / Ctrl+J — Insert newline (multiline input)" },
+        { type: "item", text: "Alt+V — Paste clipboard image" },
         { type: "item", text: "Ctrl+U — Clear input line" },
         { type: "item", text: "Esc — Cancel current input/picker" },
         { type: "item", text: "↑/↓ — Navigate input history" },
@@ -488,8 +489,10 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // Ctrl+V: paste clipboard text into the active text target
-    if (key.ctrl && !key.alt && key.name === "v") {
+    // Ctrl+V: paste clipboard text into the active text target.
+    // Exclude meta (ESC-prefix) so Ctrl+Alt+V — which readline reports as ctrl+meta —
+    // falls through to the image-paste branch below instead of being eaten here.
+    if (key.ctrl && !key.alt && !key.meta && key.name === "v") {
       ;(async () => {
         const text = await readClipboardText()
         if (text) {
@@ -500,8 +503,13 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // Ctrl+Alt+V (Windows) / Alt+V: paste clipboard image
-    const isPasteImage = key.name === "v" && key.alt
+    // Alt+V / Ctrl+Alt+V: paste clipboard image.
+    // NOTE: readline reports ESC-prefixed combos as key.meta, NOT key.alt (probe-verified:
+    // \x1b + char → { meta: true, alt: false }). Checking key.alt alone is a dead branch —
+    // the key fell through to the printable handler which ignores meta keys, so image paste
+    // silently did nothing. Accept meta (and alt, for terminals that set it); the text-paste
+    // branch above excludes meta so Ctrl+Alt+V reaches here.
+    const isPasteImage = key.name === "v" && (key.alt || key.meta)
     if (isPasteImage) {
       pasteClipboardImage(agent).catch((e) => pushLine(`[error] ${e.message}`, C.error))
       return
