@@ -101,6 +101,7 @@ thincoder/
 ## 模块接口
 
 ### provider/ — LLM 调用
+> 详细设计见 [`PROVIDER.md`](PROVIDER.md)。
 
 `src/provider/core.mjs` 是核心，`index.mjs` 重导出 `chat` / `createProvider` / `listModels`。
 
@@ -125,6 +126,7 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, si
 thinking 模式的协议约束：是否回传 reasoning_content 由规格表 reasoningEcho 决定——"required"（DeepSeek/Kimi K3，缺失会 400 / Preserved Thinking 要求保留）必须回传；"optional"（GLM，clear_thinking 默认清除历史 reasoning）不回传；未声明（未知模型）保守不回传。实现：readSSE 累积 reasoning → agent.mjs 入 history 时按 reasoningEcho 决定是否以 reasoning_content 字段挂在 assistant 消息上。估算 token 时该字段计入长度（思考链很长，影响压缩阈值判断）。
 
 ### tools/ — 工具系统
+> 详细设计见 [`TOOLS.md`](TOOLS.md)。
 
 工具定义分散在 `src/tools/file.mjs` / `system.mjs` / `git.mjs` / `web.mjs` / `patch.mjs` / `checklist.mjs`，统一在 `index.mjs` 注册为 `builtinTools` 数组。描述文本存在 `src/tools/*.md`，运行时动态加载。
 
@@ -153,6 +155,7 @@ export function toOpenAISchema(tool)     // 转成 OpenAI tools 参数格式
 - `checklist` 管**项目级**任务清单（`.thincoder/checklist.md`，人可读可手改），与 `task`（会话内单任务拆解）互补；条目一一对应需求/设计要点，标 done 自动归档到 `checklist-done.md`；每轮 run 开头把 pending + in_progress 条目作为 transient reminder 注入（`setup.mjs`）——上下文会压缩，清单文件不丢
 
 ### agent.mjs — 主循环
+> 详细设计见 [`AGENT-LOOP.md`](AGENT-LOOP.md)。
 
 主循环在 `src/agent.mjs`，辅助模块在 `src/agent/`：
 - `dispatch.mjs`：两段式工具调度（阶段一权限确认，阶段二分类执行）
@@ -265,6 +268,7 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 **token 用量展示**：`readSSE` 捕获 `usage` → runAgent 经 `callbacks.onUsage` 透传 → TUI 状态栏累计显示 `↑输入 ↓输出 hit 缓存命中率%`（DeepSeek usage 自带 `prompt_cache_hit/miss_tokens`，前缀缓存效果因此可观测）；chat 命令结束时 stderr 输出 `[usage]` 汇总行。状态栏另显示**上下文利用率** `ctx N%`（`estimateTokens(history) / compactThreshold`，history 长度变化才重算；≥80% 变黄——到 100% 触发压缩，提醒用户收尾或 /new）。
 
 ### context.mjs — 上下文管理 + 压缩
+> 压缩统一规范见 [`CONTEXT-COMPACTION.md`](CONTEXT-COMPACTION.md)。
 
 ```js
 export function estimateTokens(messages)      // 粗略 token 估算
@@ -316,6 +320,7 @@ export function pushReal(agent, msg)          // 真实消息双写：同时追�
 
 
 ### memory/ — 记忆系统
+> 详细设计见 [`MEMORY.md`](MEMORY.md)。
 
 核心在 `src/memory/core.mjs`，`memory.mjs` 重导出所有接口。三层记忆（Personal / Project / Team），FTS5 + 向量 RRF 混合检索。
 
@@ -362,6 +367,7 @@ export function specForModel(model)  // 查模型规格（contextWindow / reason
 apiKey 也可走环境变量（`THINCODER_API_KEY` 或 provider 惯用变量），配置文件不明文存储时可留空。
 
 ### tui/ — 裸 ANSI 终端 UI
+> 详细设计见 [`TUI.md`](TUI.md)。
 
 `src/tui/index.mjs` 是入口，~24 个模块约 3,000 行，全部自研零依赖。
 
