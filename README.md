@@ -208,6 +208,13 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.4 (2026-08)
+- **Context compaction unified spec** — CLI/VS Code now share one compaction semantics (`docs/design/CONTEXT-COMPACTION.md`): window-adaptive tail size (`max(10, ctx/100K×30)`, ≤40% of history), measured prompt-token baseline preferred, pure-estimation path includes system+tools overhead, head/tail tool-call pairing protection on both sides, 3-tier fallback (LLM summary → deterministic truncation after 3 failures → per-message shrink), compaction summaries are silent to the frontend (no streaming into the conversation), task re-injection deduplicated. Unknown model names now warn once instead of silently degrading to the 128K default
+- **Kimi For Coding support** — new `kimi-code` preset (`api.kimi.com/coding/v1`, model `k3`, platform.kimi.com, `sk-kimi-` keys — NOT interchangeable with Moonshot); `MODEL_SPECS` gains the `k3` alias (1M context / multimodal / partialMode / reasoningEcho); 401 errors hint at the two-platform key mismatch; README documents the split
+- **Ctrl+C double-confirm** — idle-state first Ctrl+C only warns (3s window), second press exits; picker-cancel and in-flight abort semantics unchanged
+- **Empty-response auto-retry** — a transient empty LLM response (reasoning exhausted / truncated output) injects a retry reminder instead of aborting the whole turn; after 2 consecutive empties the original error surfaces (with the `/think` lowering hint)
+- **Lightweight inline markdown display** — model replies render `**bold**`, `` `code` `` (reverse video), `~~strike~~`, and `# headings` (marker-stripped + bold) via ANSI instead of showing literal markers; code spans are not re-interpreted; streaming-safe on unclosed markers; copied text comes out clean
+
 ### 0.12.3 (2026-08)
 - **Fix: user-level skills loading** — skills in `~/.thincoder/skills/` are now properly discovered and loaded alongside project-level skills. Project-level skills with the same name take priority. Both `skill list` and `skill load` support both directories.
 
