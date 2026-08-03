@@ -46,22 +46,31 @@
 | 途径 | 状态 | 说明 |
 |------|------|------|
 | **粘贴多行文本** | ✅ 正常 | bracketed paste → `insertPastedText` 保留 `\n`；v0.11.1 就如此 |
-| **Shift+Enter 插换行** | ✅ 修复后正常 | 见下方协议方案 |
-| Alt+Enter 插换行 | ✅ 保留 | 作为不支持键盘协议终端的后备路径（readline 对 `\x1b\r` 稳定解析为 `name:"return", meta:true`） |
+| **Shift+Enter 插换行** | ✅ 现代终端可用 | 需终端键盘增强协议，见 §1.5；旧版控制台物理上不可能 |
+| **Ctrl+J 插换行** | ✅ **所有终端可用（主后备）** | Ctrl+J 发送 `\n`（0x0A），Enter 发送 `\r`（0x0D），字节天然不同，不依赖任何协议；readline 解析为 `name:"enter"` |
+| Alt+Enter 插换行 | ✅ 保留 | readline 对 `\x1b\r` 稳定解析为 `name:"return", meta:true`；但 Windows 旧版控制台把 Alt+Enter 截走切全屏（不可用） |
 
-### 1.5 Shift+Enter 的实现方案（用户要求 Shift+Enter，2026-08-03 拍板）
+### 1.5 多行键实现方案（2026-08-03 用户拍板 Shift+Enter；2026-08-04 诊断后补 Ctrl+J 后备）
 
 **问题**：多数终端默认对 Shift+Enter 发送裸 `\r`，与 Enter 字节级不可区分——监听 `key.shift` 是死路（`99fecb4` 的错误）。
 
-**方案：键盘增强协议（kitty keyboard protocol / CSI-u）**
-1. 启动时向终端发送 `\x1b[>1u`（push keyboard mode：disambiguate + report event types）。支持的终端（Windows Terminal 1.18+、VS Code 终端、kitty、iTerm2、alacritty）从此对修饰键组合发 CSI-u 序列；不支持的终端忽略该序列，行为不变（裸 `\r` 仍正常提交）
-2. Shift+Enter 在 CSI-u 下是 `\x1b[13;2u`。stdin 数据层（bracketed paste 解析之后）把 `\x1b[13;2u` 与 modifyOtherKeys 变体 `\x1b[27;2;13~` 翻译为 `\x1b\r`
-3. `\x1b\r` 进 readline → 稳定解析为 `name:"return", meta:true` → 命中 key-handler 的 Alt+Enter 分支插 `\n`
-4. 退出时发送 `\x1b[<u`（pop keyboard mode）恢复终端默认
+**实测诊断（用户机器，key-probe.mjs）**：Shift+Enter 发裸 `\r`、Alt+Enter 触发全屏切换——两个现象共同证明终端是**旧版控制台（legacy conhost）**，两种键盘协议都不支持。参考 kimi-code（pi-tui/terminal.ts）确认：它也是键盘协议 + modifyOtherKeys 降级这同一条路，在旧版控制台上同样无解（pi-tui 的 win32 原生插件解决的是别的问题，且违反零依赖约束，不引）。
 
-**为什么走 stdin 翻译而不是在 key-handler 里处理 CSI-u**：Node readline 不认识 CSI-u 序列（实测解析为 `name:"undefined"` 或拆成垃圾字符），必须在进 readline 之前拦截。翻译层与 bracketed paste、鼠标序列剥离同层（index.mjs 的 stdin data handler）。
+**方案：三层**
+1. **Shift+Enter（现代终端）**：启动时同时启用两种协议（不支持的终端直接忽略）：
+   - `\x1b[>1u` — kitty keyboard protocol push（Windows Terminal 1.19+、VS Code 终端、kitty、iTerm2）：Shift+Enter → `\x1b[13;2u`
+   - `\x1b[>4;2m` — xterm modifyOtherKeys level 2（mintty/Git Bash）：Shift+Enter → `\x1b[27;2;13~`
+   - stdin 层 `translateShiftEnter` 把两种序列翻译为 `\x1b\r` → readline 解析为 meta+return → 多行分支
+   - 退出时 `\x1b[<u` + `\x1b[>4m` 复位
+   - 教训：f035a29 首版只启用 kitty push 没启用 modifyOtherKeys，翻译写了协议没开
+2. **Ctrl+J（所有终端，含旧版控制台）**：key-handler 的提交分支把 `name === "enter"`（即 `\n`）改为插换行。唯一风险：终端被配置成 Enter 发送 LF（极罕见；那样 Enter 与 Ctrl+J 同为 `\n`，无换行键）
+3. **Alt+Enter（第三后备）**：保持 meta+return 分支不动；旧版控制台上被系统截走（切全屏），现代终端可用
 
-**后备**：终端不支持协议时 Shift+Enter 退化为普通 Enter（提交）；用户可用 Alt+Enter 换行。
+**为什么走 stdin 翻译而不是在 key-handler 里处理 CSI-u**：Node readline 不认识 CSI-u 序列（实测解析为 `name:"undefined"` 或拆成垃圾字符），必须在进 readline 之前拦截。
+
+**诊断工具**：`node scripts/key-probe.mjs`，按键看终端实际发的字节。
+
+**网上流传的 "key.name==='enter' + key.shift" 教程不可用**：`key.shift` 只在协议启用时才有值；其代码真正触发的路径恰好是 Ctrl+J（`name:"enter"` ← `\n`），歪打正着验证了方案 2。
 
 ## 2. v0.11.1 → HEAD 变更与回归审计
 

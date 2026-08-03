@@ -452,6 +452,14 @@ test("keyHandler: Alt+Enter (meta+return) inserts newline for multiline input", 
   assert.equal(state.cursor, 3)
 })
 
+test("keyHandler: Ctrl+J (\\n → name:'enter') inserts newline — universal fallback for legacy terminals", () => {
+  const state = tuiState({ input: [..."ab"], cursor: 2 })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("\n", { name: "enter" })
+  assert.equal(state.input.join(""), "ab\n")
+  assert.equal(state.cursor, 3)
+})
+
 test("keyHandler: bare Enter submits (does not insert newline)", () => {
   const state = tuiState({ input: [..."ab"], cursor: 2 })
   let submitted = false

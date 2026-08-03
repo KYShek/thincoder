@@ -237,7 +237,7 @@ export function createKeyHandler(ctx) {
         { type: "item", text: "Ctrl+C — Cancel/Abort current operation" },
         { type: "item", text: "Ctrl+I — Interrupt and inject message" },
         { type: "item", text: "Ctrl+F — Search conversation history" },
-        { type: "item", text: "Shift+Enter — Insert newline (multiline input)" },
+        { type: "item", text: "Shift+Enter / Ctrl+J — Insert newline (multiline input)" },
         { type: "item", text: "Ctrl+U — Clear input line" },
         { type: "item", text: "Esc — Cancel current input/picker" },
         { type: "item", text: "↑/↓ — Navigate input history" },
@@ -470,12 +470,15 @@ export function createKeyHandler(ctx) {
       return
     }
     if (key.name === "return" || key.name === "enter" || str === "\r") {
-      if (key.meta && key.name === "return") {
-        // Multiline newline. Reached via Alt+Enter directly, or via Shift+Enter after
-        // translateShiftEnter maps the CSI-u sequence (\x1b[13;2u) to \x1b\r in the stdin
-        // layer. readline parses \x1b\r reliably as meta+return on every platform.
-        // Plain \r (terminals without keyboard enhancement) falls to submit — Alt+Enter is
-        // the fallback in that case. See docs/design/TUI-INPUT-BOX.md §1.5.
+      // Multiline newline — three entry points (docs/design/TUI-INPUT-BOX.md §1.5):
+      //  1. Alt+Enter: readline parses \x1b\r as meta+return (all terminals)
+      //  2. Shift+Enter: keyboard-enhanced terminals send \x1b[13;2u / \x1b[27;2;13~,
+      //     translateShiftEnter maps them to \x1b\r → also meta+return
+      //  3. Ctrl+J: sends \n (0x0A), readline parses as name:"enter" — the universal
+      //     fallback: \n and \r are distinct bytes in EVERY terminal, no protocol needed
+      //     (legacy conhost users: Shift+Enter is a bare \r there, physically
+      //     indistinguishable from Enter — Ctrl+J is their newline key)
+      if ((key.name === "return" && key.meta) || key.name === "enter") {
         state.input.splice(state.cursor, 0, "\n")
         state.cursor++
         render()

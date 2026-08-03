@@ -109,10 +109,11 @@ export async function startTUI(agent, opts = {}) {
   const startupRows = process.stdout.rows || 24
   emitKeypressEvents(keyStream)
   process.stdin.setRawMode(true)
-  // keyboardPush: ask terminals with keyboard enhancement (Windows Terminal 1.18+, VS Code
-  // terminal, kitty, …) to disambiguate modifier combos — Shift+Enter arrives as \x1b[13;2u
-  // instead of a bare \r. Unsupported terminals ignore the sequence.
-  process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn + ansi.bracketedPasteOn + ansi.keyboardPush)
+  // Keyboard enhancement — enable BOTH protocols (unsupported terminals ignore them):
+  // kitty push (\x1b[>1u): Shift+Enter → \x1b[13;2u (Windows Terminal 1.19+, VS Code, kitty, iTerm2)
+  // modifyOtherKeys lvl 2 (\x1b[>4;2m): Shift+Enter → \x1b[27;2;13~ (mintty / Git Bash)
+  // translateShiftEnter (stdin layer) maps both to \x1b\r → meta+return → multiline branch.
+  process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn + ansi.bracketedPasteOn + ansi.keyboardPush + ansi.modifyOtherKeysOn)
 
   const utf8Decoder = new TextDecoder("utf-8", { fatal: false })
 
@@ -217,7 +218,7 @@ export async function startTUI(agent, opts = {}) {
       // Can't close? fine, process is exiting anyway
     }
     process.stdin.setRawMode(false)
-    process.stdout.write(ansi.clearScreen + ansi.mouseOff + ansi.bracketedPasteOff + ansi.keyboardPop + ansi.mainBuffer + ansi.showCursor + ansi.reset)
+    process.stdout.write(ansi.clearScreen + ansi.mouseOff + ansi.bracketedPasteOff + ansi.keyboardPop + ansi.modifyOtherKeysOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
   }
   process.on("exit", cleanup)
 
