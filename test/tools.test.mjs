@@ -442,7 +442,7 @@ test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
   }
 })
 
-test("bash 工具：git 破坏性命令被拒但已自动快照（未提交工作可恢复）", async () => {
+test("bash 工具：git 破坏性命令先快照后放行（未提交工作不丢且命令正常执行）", async () => {
   const { execFileSync } = await import("node:child_process")
   const { bashTool } = await import("../src/tools/system.mjs")
   const { writeFile, readFile: rf } = await import("node:fs/promises")
@@ -456,28 +456,28 @@ test("bash 工具：git 破坏性命令被拒但已自动快照（未提交工�
     git("add", ".")
     git("commit", "-qm", "init")
 
-    // 模型写好一批代码（未提交）—— 尚未有 checkpoint 记录这批改动
+    // 模型写好一批代码（未提交）
     await writeFile(join(dir, "app.js"), "const v = 2 // 写好的未提交代码\n")
     await writeFile(join(dir, "new-file.js"), "export const fresh = 42\n")
 
-    // 模型搞乱后犯傻：git checkout -- . 回滚（会被防线拒绝，但自动快照已建立）
-    await assert.rejects(
-      () => bashTool.execute({ command: "git checkout -- ." }, { cwd: dir }),
-      (e) => {
-        assert.match(e.message, /Refusing destructive git command/, "拒绝执行: " + e.message.slice(0, 100))
-        assert.match(e.message, /\[auto-protection\] Snapshot \S+ was created/, "拒绝消息携带自动快照 id")
-        return true
-      },
-    )
-    // 工作区未被破坏（拒绝生效）
-    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 2 // 写好的未提交代码\n")
-    assert.equal(await rf(join(dir, "new-file.js"), "utf8"), "export const fresh = 42\n")
+    // 模型搞乱后回滚：git checkout -- . —— 不拦截，快照后放行
+    const r = await bashTool.execute({ command: "git checkout -- ." }, { cwd: dir })
+    assert.match(r, /\[auto-protection\]/, "返回结果应提示自动快照: " + r.slice(0, 150))
+    assert.match(r, /snapshot \S+ created BEFORE execution/)
+    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 1\n", "回滚已执行（命令未被拦截）")
+
+    // 从自动快照恢复被抹掉的未提交工作
+    const id = r.match(/snapshot (\S+) created/)[1]
+    const { rewind } = await import("../src/git/checkpoint.mjs")
+    await rewind(dir, id)
+    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 2 // 写好的未提交代码\n", "tracked 未提交修改恢复")
+    assert.equal(await rf(join(dir, "new-file.js"), "utf8"), "export const fresh = 42\n", "untracked 新文件恢复")
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test("bash 工具：变体 git checkout HEAD -- . 被快照保护（防线漏网路径）", async () => {
+test("bash 工具：变体 git checkout HEAD -- . 同样快照后放行", async () => {
   const { execFileSync } = await import("node:child_process")
   const { bashTool } = await import("../src/tools/system.mjs")
   const { writeFile, readFile: rf } = await import("node:fs/promises")
@@ -494,7 +494,6 @@ test("bash 工具：变体 git checkout HEAD -- . 被快照保护（防线漏网
     await writeFile(join(dir, "app.js"), "const v = 2 // 写好的未提交代码\n")
     await writeFile(join(dir, "new-file.js"), "export const fresh = 42\n")
 
-    // 变体：git checkout HEAD -- .（isDestructiveGitSegment 匹配不到 → 放行）
     const r = await bashTool.execute({ command: "git checkout HEAD -- ." }, { cwd: dir })
     assert.match(r, /\[auto-protection\]/, "变体命令也应触发自动快照: " + r.slice(0, 150))
     assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 1\n", "tracked 未提交修改被回滚抹掉")
@@ -511,7 +510,7 @@ test("bash 工具：变体 git checkout HEAD -- . 被快照保护（防线漏网
   }
 })
 
-test("bash 工具：非破坏性 git 命令不触发保护", async () => {
+test("bash 工具：非破坏性 git 命令不触发保护；非 git 仓库静默放行", async () => {
   const { execFileSync } = await import("node:child_process")
   const { bashTool } = await import("../src/tools/system.mjs")
   const dir = mkdtempSync(join(tmpdir(), "thincoder-gitguard3-"))
@@ -528,12 +527,10 @@ test("bash 工具：非破坏性 git 命令不触发保护", async () => {
       const r = await bashTool.execute({ command: cmd }, { cwd: dir })
       assert.ok(!r.includes("[auto-protection]"), `${cmd} 不应触发保护: ${r.slice(0, 80)}`)
     }
-    // 非 git 仓库：防线拒绝（restore 在非仓库无意义），且无自动快照污染
+    // 非 git 仓库：无快照、不拦截（git 自己的 stderr 返回给模型）
     const plain = mkdtempSync(join(tmpdir(), "thincoder-gitguard4-"))
-    await assert.rejects(
-      () => bashTool.execute({ command: "git restore ." }, { cwd: plain }),
-      /not a git repository/,
-    )
+    const r4 = await bashTool.execute({ command: "git restore ." }, { cwd: plain })
+    assert.ok(!r4.includes("[auto-protection]"), "非 git 仓库保护静默")
     rmSync(plain, { recursive: true, force: true })
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -569,7 +566,7 @@ test("checkpoint 工具：list 的文件名做 XML 转义（防注入模型上�
   }
 })
 
-test("bash 护栏：checkout ./restore/clean -f/链式写法拦截，安全写法放行", async () => {
+test("bash 护栏：checkout ./restore/clean -f/链式写法先快照后放行，安全写法不触发", async () => {
   const { execFileSync } = await import("node:child_process")
   const dir = mkdtempSync(join(tmpdir(), "thincoder-guard-"))
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
@@ -582,9 +579,9 @@ test("bash 护栏：checkout ./restore/clean -f/链式写法拦截，安全写�
     writeFileSync(join(dir, "app.js"), "const v = 1\n")
     git("add", ".")
     git("commit", "-qm", "init")
-    writeFileSync(join(dir, "app.js"), "const v = 2\n") // 未提交改动 → 护栏生效条件
+    writeFileSync(join(dir, "app.js"), "const v = 2\n") // 未提交改动 → 快照保护对象
 
-    // 这些都必须被拒（昨天的事故就是这类命令漏过去的）
+    // 这些命令全部放行（不拦截模型 git 操作），但执行前自动快照
     for (const cmd of [
       "git checkout .",
       "git checkout -- app.js",
@@ -595,14 +592,23 @@ test("bash 护栏：checkout ./restore/clean -f/链式写法拦截，安全写�
       "echo ok && git checkout .",   // 链式绕过
       "cd . ; git reset --hard HEAD", // 分号链式
     ]) {
-      await assert.rejects(() => byName.bash.execute({ command: cmd }, ctx), /Refusing destructive/, cmd)
+      const r = await byName.bash.execute({ command: cmd }, ctx)
+      assert.match(r, /\[auto-protection\]/, `${cmd} 应快照后放行: ${r.slice(0, 80)}`)
     }
-    // 拒绝时未提交改动原样保留
-    assert.equal(readFileSync(join(dir, "app.js"), "utf8"), "const v = 2\n")
 
-    // 安全写法不误伤：切分支（无路径）、restore --staged、clean -n dry-run
+    // 命令已执行（app.js 被重置回 v1），但从快照可恢复未提交改动
+    assert.equal(readFileSync(join(dir, "app.js"), "utf8").replace(/\r\n/g, "\n"), "const v = 1\n")
+    const { listCheckpoints, rewind } = await import("../src/git/checkpoint.mjs")
+    const cps = await listCheckpoints(dir)
+    assert.ok(cps.length >= 1, "应有自动快照")
+    // 倒序（最新→最旧）：最旧 = 第一个命令前的快照（app.js 仍为 v2）
+    await rewind(dir, cps[cps.length - 1].id)
+    assert.equal(readFileSync(join(dir, "app.js"), "utf8").replace(/\r\n/g, "\n"), "const v = 2\n", "快照恢复未提交改动")
+
+    // 安全写法不误伤：切分支（无路径）、restore --staged、clean -n dry-run —— 不触发快照
     for (const cmd of ["git checkout -b feature-x", "git restore --staged app.js", "git clean -nd"]) {
-      await byName.bash.execute({ command: cmd }, ctx)
+      const r = await byName.bash.execute({ command: cmd }, ctx)
+      assert.ok(!r.includes("[auto-protection]"), `${cmd} 不应触发快照`)
     }
     git("checkout", "-q", "-") // 回到原分支，清理
   } finally {

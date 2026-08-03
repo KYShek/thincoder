@@ -7,10 +7,8 @@ import {
   IGNORED_DIRS,
   resolveInCwd,
   shellSegments,
-  isDestructiveGitSegment,
   isDestructiveCommand,
   hasFileRedirection,
-  insideGitRepo,
   globToRegex,
   normalizeEOL,
 } from "./shared.mjs";
@@ -27,8 +25,10 @@ const MAX_STREAM_BUF = 2_000_000
 
 /**
  * Pre-execution safety checks for bash commands.
- * Three layers: file redirection → destructive commands → destructive git ops with uncommitted changes.
- * Throws with actionable guidance on failure.
+ * Layers: file redirection → destructive commands (rm -rf etc.).
+ * Git destructive ops are deliberately NOT rejected — the model would just find a
+ * way around the rejection; instead gitGuardSnapshot copies every uncommitted file
+ * and the command is ALLOWED (snapshot-then-proceed, never block).
  */
 function checkBashSafety(command, cwd) {
   if (hasFileRedirection(command)) {
@@ -39,21 +39,6 @@ function checkBashSafety(command, cwd) {
       "Destructive command blocked — use specific tools or confirm with the user first. " +
       "(If work was already destroyed, recover from auto-snapshot: checkpoint action=list then action=rewind.)"
     )
-  }
-  if (shellSegments(command).some(isDestructiveGitSegment)) {
-    if (!insideGitRepo(cwd)) {
-      throw new Error(`Refusing destructive git command: not a git repository: ${cwd}`)
-    }
-    const status = execFileSync("git", ["status", "--porcelain"], {
-      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim()
-    if (status) {
-      throw new Error(
-        `Refusing destructive git command: uncommitted changes exist.\n` +
-        `First create a checkpoint (action=create) to protect current work, then commit or stash before the destructive operation.\n` +
-        `(If uncommitted work was already lost, recover from the latest auto-snapshot: checkpoint action=list, then action=rewind.)\n\n${status}`
-      )
-    }
   }
 }
 
@@ -114,7 +99,7 @@ function killProcessTree(child) {
  * Matching is intentionally WIDE (false positives are harmless — one extra snapshot;
  * a missed match is a data-loss disaster).
  */
-const GIT_DESTRUCTIVE_RE = /\bgit\s+(?:checkout\s+(?:[\w./-]+\s+)?--(?!\w)|checkout\s+\.|restore\s+(?!--help\b)|reset\s+--hard|clean\s+-\w*[fd])/i
+const GIT_DESTRUCTIVE_RE = /\bgit\s+(?:checkout\s+(?:[\w./-]+\s+)?--(?!\w)|checkout\s+\.|restore\s+(?!--help\b)(?!--staged\b(?!.*--worktree))|reset\s+--hard|clean\s+-(?=\S*f)(?!\S*n))/i
 
 /** Returns { id, notice } when a snapshot was taken, else null. Never throws. */
 async function gitGuardSnapshot(command, cwd) {
@@ -217,19 +202,12 @@ export const bashTool = {
   readonly: false,
   outputPanel: true, // stream stdout/stderr to panel during execution, collapse to summary on completion
   async execute(args, ctx) {
-    // Layer 1: snapshot before any destructive git command (covers variants the
-    // exact matcher misses, e.g. `git checkout HEAD -- .`) — defense in depth.
+    // Git destructive commands are NEVER rejected — the model would bypass the
+    // guard anyway. Instead: snapshot every uncommitted file first, then ALLOW
+    // the command. The snapshot makes the rollback reversible (defense in depth:
+    // the wide matcher also covers variants like `git checkout HEAD -- .`).
+    checkBashSafety(args.command, ctx.cwd)
     const guard = await gitGuardSnapshot(args.command, ctx.cwd)
-    try {
-      checkBashSafety(args.command, ctx.cwd)
-    } catch (e) {
-      // Layer 2 rejected the command, but the pre-command snapshot already protects
-      // the uncommitted work — surface its id so recovery is one step away.
-      if (guard && /destructive git/.test(e.message)) {
-        throw new Error(`${e.message}\n\n[auto-protection] Snapshot ${guard.id} was created before this attempt — recover with: checkpoint action=checkpoint checkpointAction=rewind checkpointId=${guard.id}`)
-      }
-      throw e
-    }
     const result = await runBash(args.command, ctx.cwd, {
       timeout: args.timeout ?? BASH_TIMEOUT_MS,
       signal: ctx.signal,
