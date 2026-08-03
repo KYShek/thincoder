@@ -31,14 +31,15 @@ function parse(filePath) {
     const status = raw === "x" ? "done" : raw === "~" ? "in_progress" : "pending"
     const text = m[3].trim()
 
-    // Extract explicit ID if present (e.g. "T1:", "T1.1:")
-    const idMatch = text.match(/^(T[\d.]+):/)
+    // Extract explicit ID if present (e.g. "T1:", "T1.1:") — strip it from the text
+    // so write() doesn't re-prepend it (round-trip would otherwise accumulate "T1: T1: ...")
+    const idMatch = text.match(/^(T[\d.]+):\s*/)
     const node = {
       id: idMatch ? idMatch[1] : null,
       index: flatIdx,
       depth,
       status,
-      text,
+      text: idMatch ? text.slice(idMatch[0].length) : text,
       children: [],
     }
 

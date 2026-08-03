@@ -30,8 +30,11 @@ const MAX_OUTPUT = 50_000
 const MAX_SCRIPT = 50_000
 const DEFAULT_TIMEOUT = 30_000
 
-/** SSRF-safe fetch: only http/https, private IP rejection, 10s timeout. */
-async function sandboxFetch(url) {
+/** SSRF-safe fetch: only http/https, private IP rejection, 10s timeout.
+ *  Validation throws SYNCHRONOUSLY so the vm sandbox's try/catch can catch it —
+ *  an async throw here would become an unhandled rejection and crash the host process,
+ *  and the rejection message would never reach the model. */
+function sandboxFetch(url) {
   const parsed = new URL(url)
   if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`CodeMode fetch: protocol not allowed: ${parsed.protocol}`)
@@ -40,6 +43,10 @@ async function sandboxFetch(url) {
   if (isPrivateHost(parsed.hostname)) {
     throw new Error(`CodeMode fetch: private/internal host not allowed: ${parsed.hostname}`)
   }
+  return doFetch(url)
+}
+
+async function doFetch(url) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
   try {
@@ -158,11 +165,10 @@ export const codeModeTool = {
     })
 
     try {
-      const script = new Script(code, {
-        filename: "codemode.js",
-        timeout: timeoutMs,
-      })
-      script.runInContext(sandbox)
+      const script = new Script(code, { filename: "codemode.js" })
+      // timeout belongs on runInContext — the Script constructor ignores it,
+      // so passing it there let runaway scripts (while(true)) hang the process forever.
+      script.runInContext(sandbox, { timeout: timeoutMs })
       return output.join("\n") || "(no output)"
     } catch (err) {
       const out = output.join("\n")

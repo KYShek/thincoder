@@ -984,3 +984,80 @@ test("ls: missing directory gives helpful error", async () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------- checklist ID round-trip regression
+
+import { checklistTool } from "../src/tools/checklist.mjs"
+
+test("checklist: ID 前缀往返不叠加（add→write→parse→write 循环保持单一前缀）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cl-"))
+  const ctx = { cwd: dir }
+  try {
+    checklistTool.execute({ action: "add", item: "第一项" }, ctx)
+    checklistTool.execute({ action: "add", item: "第二项" }, ctx)
+    // mark done → parse → write 往返
+    checklistTool.execute({ action: "mark", index: 1, status: "in_progress" }, ctx)
+    checklistTool.execute({ action: "mark", index: 1, status: "pending" }, ctx)
+    checklistTool.execute({ action: "mark", index: 2, status: "in_progress" }, ctx)
+    checklistTool.execute({ action: "mark", index: 2, status: "pending" }, ctx)
+    const content = readFileSync(join(dir, ".thincoder", "checklist.md"), "utf-8")
+    // 往返多次后每行 ID 只出现一次，绝不能 "T1: T1:"
+    assert.doesNotMatch(content, /T1: T1/)
+    assert.doesNotMatch(content, /T2: T2/)
+    assert.match(content, /- \[ \] T1: 第一项/)
+    assert.match(content, /- \[ \] T2: 第二项/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("checklist: 手写带前缀的存量文件往返一次后前缀不翻倍", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cl2-"))
+  mkdirSync(join(dir, ".thincoder"), { recursive: true })
+  writeFileSync(join(dir, ".thincoder", "checklist.md"), "- [ ] T1: 存量任务\n")
+  const ctx = { cwd: dir }
+  try {
+    checklistTool.execute({ action: "mark", index: 1, status: "in_progress" }, ctx)
+    checklistTool.execute({ action: "mark", index: 1, status: "pending" }, ctx)
+    const content = readFileSync(join(dir, ".thincoder", "checklist.md"), "utf-8")
+    assert.doesNotMatch(content, /T1: T1/)
+    assert.match(content, /- \[ \] T1: 存量任务/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- execute tool regressions
+
+import { codeModeTool } from "../src/tools/codemode.mjs"
+
+test("execute: timeout 生效——无限循环脚本在限定时间内返回错误而不是挂死", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-exec-"))
+  try {
+    const out = await codeModeTool.execute({ code: "while (true) {}", timeoutMs: 300 }, { cwd: dir })
+    assert.match(out, /Error/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("execute: SSRF 拒绝信息同步返回给模型（不是 unhandled rejection 崩进程）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-exec2-"))
+  try {
+    const out = await codeModeTool.execute({ code: 'fetch("http://169.254.169.254/latest/meta-data/")' }, { cwd: dir })
+    assert.match(out, /private\/internal host not allowed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("execute: 正常沙箱行为不受影响（log/readFile/grep）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-exec3-"))
+  writeFileSync(join(dir, "f.txt"), "hello\nworld\n")
+  try {
+    const out = await codeModeTool.execute({ code: 'log(grep("wor", "f.txt").join(","))' }, { cwd: dir })
+    assert.equal(out, "2: world")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
