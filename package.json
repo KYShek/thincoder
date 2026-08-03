@@ -30,8 +30,8 @@
     "url": "https://gitee.com/shanghai-xinbo/thincoder.git"
   },
   "scripts": {
-    "test": "node --test",
-    "prepublishOnly": "node --test"
+    "test": "node --test \"test/*.mjs\"",
+    "prepublishOnly": "node --test \"test/*.mjs\""
   },
   "author": "liwei <liwei@51marine.com> (上海新舶)",
   "license": "MIT"
