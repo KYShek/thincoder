@@ -89,6 +89,8 @@ Slash commands in the TUI: `/help`, `/model` (two-level picker: first select pro
 
 Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`), `THINCODER_BASE_URL`, `THINCODER_MODEL`, `SILICONFLOW_API_KEY`.
 
+> **Kimi note**: Kimi has **two separate platforms with non-interchangeable API keys** — Moonshot (`https://api.moonshot.cn/v1`, keys `sk-...`, platform.moonshot.cn) and **Kimi For Coding** (`https://api.kimi.com/coding/v1`, keys `sk-kimi-...`, platform.kimi.com, model ID `k3`). Use the `kimi` preset for Moonshot and `kimi-code` for Kimi For Coding — putting one platform's key on the other's endpoint fails with 401 (a hint is appended when the key/baseURL look mismatched).
+
 ## Configuration
 
 `~/.thincoder/config.json`:

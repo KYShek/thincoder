@@ -16,6 +16,7 @@ export const configPath = join(configDir, "config.json")
 export const PROVIDER_PRESETS = {
   deepseek: { baseURL: "https://api.deepseek.com", model: "deepseek-v4-pro", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 393216, desc: "DeepSeek" },
   kimi:     { baseURL: "https://api.moonshot.cn/v1", model: "kimi-k3", thinking: null, reasoningEffort: "max", maxTokens: 131072, desc: "Kimi / Moonshot" },
+  "kimi-code": { baseURL: "https://api.kimi.com/coding/v1", model: "k3", thinking: null, reasoningEffort: "max", maxTokens: 131072, desc: "Kimi For Coding (platform.kimi.com — sk-kimi- keys; NOT interchangeable with Moonshot)" },
   glm:      { baseURL: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", thinking: { type: "enabled" }, reasoningEffort: "max", maxTokens: 128000, desc: "Zhipu GLM" },
   qwen:     { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", reasoningEffort: "high", maxTokens: 131072, desc: "Qwen / Alibaba" },
   qwenplan: { baseURL: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", model: "qwen3.7-max", reasoningEffort: "high", maxTokens: 131072, desc: "Qwen Token Plan (百炼套餐)" },
@@ -89,6 +90,8 @@ const MODEL_SPECS = [
   ["deepseek-chat",     { context: 256_000,   maxOutput: 384_000, thinking: false, prefixMode: true,  cacheMode: "prompt", thinkApi: "type", reasoningEcho: "required", reasoningEffortEnum: ["high", "max"], tempRange: [0, 2] }],
   // Kimi series
   ["kimi-k3",           { context: 1_000_000, maxOutput: 131_072, thinking: true,  partialMode: true, multimodal: true, cacheMode: "auto",  thinkApi: "effort", reasoningEcho: "required", reasoningEffortEnum: ["low", "high", "max"] }],
+  // Kimi For Coding endpoint uses the short model ID "k3" (same specs as kimi-k3) — IK5VGJ
+  ["k3",                { context: 1_000_000, maxOutput: 131_072, thinking: true,  partialMode: true, multimodal: true, cacheMode: "auto",  thinkApi: "effort", reasoningEcho: "required", reasoningEffortEnum: ["low", "high", "max"] }],
   ["kimi-k2",           { context: 256_000,   maxOutput: 128_000, thinking: false, partialMode: true, multimodal: true, cacheMode: "none" }],
   ["moonshot",          { context: 128_000,   maxOutput: 32_000,  thinking: false, cacheMode: "none" }],
   // GLM series
@@ -132,10 +135,17 @@ const DEFAULT_SPEC = { context: 128_000, maxOutput: 32_000, cacheMode: "none" }
 const COMPACT_RATIO = 0.6
 
 /** Look up spec by model name prefix (case-insensitive), conservative default for unknown models */
+const warnedModels = new Set() // warn once per model name — specForModel is a hot path (every request)
 export function specForModel(model) {
   const m = (model ?? "").toLowerCase()
   for (const [prefix, spec] of [...MODEL_SPECS].sort((a,b) => b[0].length - a[0].length)) {
     if (m.startsWith(prefix.toLowerCase())) return spec
+  }
+  // Unknown model: warn ONCE (not per request) so a typo'd ID or a missing alias surfaces
+  // instead of silently degrading to the 128K default (IK5VGJ).
+  if (m && !warnedModels.has(m)) {
+    warnedModels.add(m)
+    console.warn(`[config] model "${model}" not found in MODEL_SPECS — using default spec (128K context, 32K output). Check the model ID or add an alias.`)
   }
   return DEFAULT_SPEC
 }

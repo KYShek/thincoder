@@ -336,6 +336,63 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
   assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 153600, auto: true })
 })
 
+test("config: Kimi For Coding 短 ID \"k3\" 命中 kimi-k3 规格（IK5VGJ）", async () => {
+  const { specForModel, PROVIDER_PRESETS } = await import("../src/config.mjs")
+  // k3 别名 → kimi-k3 完整规格：1M 上下文 / 多模态 / 截断续写 / 推理回显
+  const s = specForModel("k3")
+  assert.equal(s.context, 1_000_000, "k3 must get 1M context (not the 128K default)")
+  assert.equal(s.multimodal, true, "k3 supports images — read_image must not be gated off")
+  assert.equal(s.partialMode, true)
+  assert.equal(s.reasoningEcho, "required")
+  // kimi-k3 本身不受影响（前缀匹配长优先）
+  assert.equal(specForModel("kimi-k3").context, 1_000_000)
+  // kimi-code 预设存在且指向正确端点
+  const preset = PROVIDER_PRESETS["kimi-code"]
+  assert.ok(preset, "kimi-code preset must exist")
+  assert.equal(preset.baseURL, "https://api.kimi.com/coding/v1")
+  assert.equal(preset.model, "k3")
+})
+
+test("config: 未知模型名警告一次（不静默降级，防刷屏）", async () => {
+  const { specForModel } = await import("../src/config.mjs")
+  const warns = []
+  const orig = console.warn
+  console.warn = (...a) => warns.push(a.join(" "))
+  try {
+    const name = `no-such-model-${Date.now()}`
+    assert.equal(specForModel(name).context, 128_000) // 降级仍发生
+    assert.equal(specForModel(name).context, 128_000) // 第二次不再警告
+    assert.equal(warns.length, 1, "warn exactly once per model name")
+    assert.ok(warns[0].includes(name))
+  } finally {
+    console.warn = orig
+  }
+})
+
+test("provider: 401 + sk-kimi- key 给出双平台提示（IK5VGJ）", async () => {
+  const { chat, _rateHooks } = await import("../src/provider/index.mjs")
+  const { server, port } = await mockRaw([{ status: 401, body: JSON.stringify({ error: { message: "invalid api key" } }) }])
+  const orig = { ..._rateHooks }
+  _rateHooks.sleep = () => Promise.resolve()
+  try {
+    // Kimi For Coding key 配 Moonshot 端点（错误组合）→ 错误消息带平台提示
+    const p = { baseURL: `http://127.0.0.1:${port}`, apiKey: "sk-kimi-abc", model: "k3" }
+    await assert.rejects(
+      () => chat(p, { messages: [{ role: "user", content: "hi" }] }),
+      /Kimi|Moonshot/,
+      "401 with sk-kimi- key must hint at the two-platform mismatch",
+    )
+    // 普通 key + 普通端点 → 无提示（保持原样）
+    const p2 = { baseURL: `http://127.0.0.1:${port}`, apiKey: "sk-abc", model: "m" }
+    const err2 = await chat(p2, { messages: [{ role: "user", content: "hi" }] }).then(() => null, (e) => e)
+    assert.ok(!/tip: Kimi/.test(err2.message), "non-Kimi 401 keeps the bare message")
+  } finally {
+    Object.assign(_rateHooks, orig)
+    server.close()
+  }
+})
+
+
 // ---------------------------------------------------------------- ContinueError + resume 模式
 
 test("runAgent: ContinueError 类属性正确", async () => {
