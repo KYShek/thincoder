@@ -38,6 +38,15 @@ export function insertPastedText(state, rawText) {
   state.cursor += chars.length
 }
 
+/** Translate Shift+Enter sequences from keyboard-enhanced terminals into the Alt+Enter path.
+ *  kitty/CSI-u: \x1b[13;2u; xterm modifyOtherKeys: \x1b[27;2;13~. Both become \x1b\r,
+ *  which readline parses reliably as meta+return (the multiline branch in key-handler).
+ *  Terminals without enhancement send a bare \r for Shift+Enter — nothing to translate
+ *  (degrades to a normal submit; Alt+Enter remains the fallback). */
+export function translateShiftEnter(text) {
+  return text.replace(/\x1b\[13;2u/g, "\x1b\r").replace(/\x1b\[27;2;13~/g, "\x1b\r")
+}
+
 /** Ctrl+V / Alt+V: read clipboard image → write temp file in working directory → insert read_image command into input box.
  *  Extracted from index.mjs.
  *  ctx: { agent, state, pushLine, render } */

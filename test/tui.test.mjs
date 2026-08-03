@@ -309,6 +309,24 @@ test("insertPastedText: no question → inserts into main input at cursor, keeps
   assert.equal(state.cursor, 7)
 })
 
+test("translateShiftEnter: CSI-u and modifyOtherKeys Shift+Enter map to \\x1b\\r (meta+return path)", async () => {
+  const { translateShiftEnter } = await import("../src/tui/clipboard.mjs")
+  assert.equal(translateShiftEnter("\x1b[13;2u"), "\x1b\r")
+  assert.equal(translateShiftEnter("\x1b[27;2;13~"), "\x1b\r")
+  assert.equal(translateShiftEnter("abc"), "abc", "plain text untouched")
+  assert.equal(translateShiftEnter("\r"), "\r", "bare CR untouched (no-enhancement terminals)")
+  assert.equal(translateShiftEnter("\x1b[13;3u"), "\x1b[13;3u", "Alt+Enter CSI-u untouched (modifier 3 ≠ shift)")
+})
+
+test("keyHandler: shift+enter via translated CSI-u inserts newline", () => {
+  // End-to-end shape: stdin layer turns \x1b[13;2u into \x1b\r, readline yields meta+return
+  const state = tuiState({ input: [..."ab"], cursor: 2 })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("\x1b\r", { name: "return", meta: true })
+  assert.equal(state.input.join(""), "ab\n")
+  assert.equal(state.cursor, 3)
+})
+
 // ====================================================================
 // key-handler.mjs — createKeyHandler
 // ====================================================================

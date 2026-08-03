@@ -13,6 +13,8 @@ export const ansi = {
   mouseOff: `${ESC}[?1000l${ESC}[?1006l`,
   bracketedPasteOn: `${ESC}[?2004h`,
   bracketedPasteOff: `${ESC}[?2004l`,
+  keyboardPush: `${ESC}[>1u`,   // kitty keyboard protocol: push disambiguate mode (Shift+Enter → CSI-u)
+  keyboardPop: `${ESC}[<u`,     // pop keyboard mode (restore terminal defaults on exit)
   home: `${ESC}[H`,
   clearLine: `${ESC}[K`,
   clearToEnd: `${ESC}[J`,

@@ -24,7 +24,8 @@
 | ← → Home End | 光标移动 |
 | Ctrl+U | 清空输入框 |
 | Enter（`return`/`\r`） | 提交 |
-| **Alt+Enter（`meta+return`）** | **插入换行（多行输入）** ← 修复后的唯一多行键 |
+| **Shift+Enter** | **插入换行（多行输入）** — 需终端键盘增强协议（见 1.5）；不支持时退化为提交 |
+| Alt+Enter（`meta+return`） | 插入换行（后备多行键，所有终端可用） |
 | Tab | 斜杠命令补全循环 |
 | ↑ ↓ | 输入历史导航（见 1.3） |
 | Ctrl+V | 粘贴剪贴板文本（保留 `\n`，支持多行粘贴） |
@@ -33,11 +34,11 @@
 | Ctrl+I / Tab(处理中) | 中断注入模式 |
 | PgUp/PgDn | 会话区滚动 |
 
-### 1.3 历史导航的真实语义（用户须知，两版一致，从未改变）
+### 1.3 历史导航语义（FIX-5 已实现草稿保护）
 
-- ↑：`historyIndex` 回退，**当前未提交的输入被历史条目直接覆盖**（无草稿保护）
-- ↓：`historyIndex` 前进；走到头（超出最后一条）时 `input = []` 回到空白
-- **不存在"↓ 恢复我刚才正在打的草稿"这一功能**——草稿在按 ↑ 的瞬间就被覆盖丢失了。若需要此功能，属于新增需求（见 §4 FIX-5），不是回归
+- ↑：`historyIndex` 回退，加载历史条目；**首次进入导航前，未提交的输入存入 `state._draft`**
+- ↓：`historyIndex` 前进；走到头时**从 `_draft` 恢复原来在打的字**（无草稿则回空白），恢复后清 `_draft`
+- 空输入进入导航不存草稿；`submit()` 清 `_draft`
 - 处理中（`processing`）：↑↓ 被屏蔽，输入排队进 `state.queue`
 
 ### 1.4 多行输入的真实能力（实测结论）
@@ -45,8 +46,22 @@
 | 途径 | 状态 | 说明 |
 |------|------|------|
 | **粘贴多行文本** | ✅ 正常 | bracketed paste → `insertPastedText` 保留 `\n`；v0.11.1 就如此 |
-| **Alt+Enter 插换行** | ✅ 修复后正常 | readline 对 `\x1b\r` 稳定解析为 `name:"return", meta:true` |
-| Shift+Enter | ❌ 不可靠，已废弃 | 多数终端发 `\r`（与 Enter 不可区分）；CSI-u 序列 readline 不认；modifyOtherKeys 序列被拆成 `1`/`3`/`~` 垃圾字符 |
+| **Shift+Enter 插换行** | ✅ 修复后正常 | 见下方协议方案 |
+| Alt+Enter 插换行 | ✅ 保留 | 作为不支持键盘协议终端的后备路径（readline 对 `\x1b\r` 稳定解析为 `name:"return", meta:true`） |
+
+### 1.5 Shift+Enter 的实现方案（用户要求 Shift+Enter，2026-08-03 拍板）
+
+**问题**：多数终端默认对 Shift+Enter 发送裸 `\r`，与 Enter 字节级不可区分——监听 `key.shift` 是死路（`99fecb4` 的错误）。
+
+**方案：键盘增强协议（kitty keyboard protocol / CSI-u）**
+1. 启动时向终端发送 `\x1b[>1u`（push keyboard mode：disambiguate + report event types）。支持的终端（Windows Terminal 1.18+、VS Code 终端、kitty、iTerm2、alacritty）从此对修饰键组合发 CSI-u 序列；不支持的终端忽略该序列，行为不变（裸 `\r` 仍正常提交）
+2. Shift+Enter 在 CSI-u 下是 `\x1b[13;2u`。stdin 数据层（bracketed paste 解析之后）把 `\x1b[13;2u` 与 modifyOtherKeys 变体 `\x1b[27;2;13~` 翻译为 `\x1b\r`
+3. `\x1b\r` 进 readline → 稳定解析为 `name:"return", meta:true` → 命中 key-handler 的 Alt+Enter 分支插 `\n`
+4. 退出时发送 `\x1b[<u`（pop keyboard mode）恢复终端默认
+
+**为什么走 stdin 翻译而不是在 key-handler 里处理 CSI-u**：Node readline 不认识 CSI-u 序列（实测解析为 `name:"undefined"` 或拆成垃圾字符），必须在进 readline 之前拦截。翻译层与 bracketed paste、鼠标序列剥离同层（index.mjs 的 stdin data handler）。
+
+**后备**：终端不支持协议时 Shift+Enter 退化为普通 Enter（提交）；用户可用 Alt+Enter 换行。
 
 ## 2. v0.11.1 → HEAD 变更与回归审计
 
@@ -74,9 +89,9 @@
 `b0bcab4` 删了 `agent._pendingReminders.push(...)`。
 **修法**：恢复 v0.11.1 的 2 行注入。测试断言 `_pendingReminders` 含 AUTO reminder。
 
-### BUG-5（P0）Shift+Enter 多行不可用且污染输入 — **已修**
-`99fecb4` 的 `if (key.shift)` 分支在真实终端不触发或触发垃圾字符（见 §1.4 实测）。
-**修法**：删除 Shift 分支；Enter 处理改为 `key.meta`（Alt+Enter，readline 稳定解析）插 `\n`，否则提交。F1 帮助与输入框边框提示同步更新。
+### BUG-5（P0）Shift+Enter 多行不可用且污染输入 — **已修（Shift+Enter 恢复可用）**
+`99fecb4` 的 `if (key.shift)` 分支在真实终端不触发或触发垃圾字符（见 §1.4/§1.5 实测）。
+**修法**：删除 key-handler 里的 Shift 分支（死代码），改为 §1.5 的键盘协议方案：stdin 层启用 CSI-u 并把 Shift+Enter 序列翻译为 `\x1b\r`，命中 meta+return 分支插换行。不支持协议的终端退化：Shift+Enter = 普通提交，Alt+Enter 仍可换行。F1 帮助与输入框边框提示显示 "Shift+Enter newline"。
 
 ## 4. 新增需求（用户报告"↓ 回不到当前输入"）
 
@@ -95,13 +110,16 @@
 2. Alt+Enter（`key.meta` + return）插入 `\n`；普通 return 提交
 3. 权限 'a'：`agent._pendingReminders` 含 AUTO reminder
 4. 草稿保护：打字 → ↑ → ↓ 到头 → input 恢复为原草稿
-5. 全量 `npm test` 过（当前基线 360）
+5. translateShiftEnter：CSI-u `\x1b[13;2u` / modifyOtherKeys `\x1b[27;2;13~` → `\x1b\r`；裸 `\r` 与 Alt+Enter CSI-u（modifier≠2）不动
+6. 全量 `npm test` 过（当前基线 369）
 
 ## 6. 修改文件清单
 
 | 文件 | 改动 |
 |------|------|
-| `src/tui/key-handler.mjs` | BUG-1/2/4/5 修复 + FIX-5 草稿保护 |
-| `src/tui/index.mjs` | state 加 `_draft: null` |
-| `src/tui/render-frame.mjs` | 输入框边框提示加 "Alt+Enter 换行" |
-| `test/tui.test.mjs` | §5 的 4 组测试 |
+| `src/tui/key-handler.mjs` | BUG-1/2/4/5 修复 + FIX-5 草稿保护 + meta+return 多行分支 |
+| `src/tui/index.mjs` | state 加 `_draft: null`；stdin 层 translateShiftEnter 接线；启动 keyboardPush / 退出 keyboardPop |
+| `src/tui/ansi.mjs` | keyboardPush / keyboardPop 序列常量 |
+| `src/tui/clipboard.mjs` | translateShiftEnter（CSI-u / modifyOtherKeys → `\x1b\r`） |
+| `src/tui/render-frame.mjs` | 输入框边框提示 "Shift+Enter newline" |
+| `test/tui.test.mjs` | §5 的测试 + translateShiftEnter/多行键测试 |

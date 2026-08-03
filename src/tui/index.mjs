@@ -27,7 +27,7 @@ import { createWizard } from "./wizard.mjs"
 import { createPickers } from "./pickers.mjs"
 import { runDistill as runDistillImpl } from "./distill-cmd.mjs"
 import { createInteraction } from "./interaction.mjs"
-import { pasteClipboardImage as pasteClipboardImageImpl, insertPastedText } from "./clipboard.mjs"
+import { pasteClipboardImage as pasteClipboardImageImpl, insertPastedText, translateShiftEnter } from "./clipboard.mjs"
 import { runAgentTurn } from "./agent-turn.mjs"
 import { createKeyHandler } from "./key-handler.mjs"
 import { showStartup, backgroundIndex } from "./startup.mjs"
@@ -109,7 +109,10 @@ export async function startTUI(agent, opts = {}) {
   const startupRows = process.stdout.rows || 24
   emitKeypressEvents(keyStream)
   process.stdin.setRawMode(true)
-  process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn + ansi.bracketedPasteOn)
+  // keyboardPush: ask terminals with keyboard enhancement (Windows Terminal 1.18+, VS Code
+  // terminal, kitty, …) to disambiguate modifier combos — Shift+Enter arrives as \x1b[13;2u
+  // instead of a bare \r. Unsupported terminals ignore the sequence.
+  process.stdout.write(ansi.altBuffer + ansi.hideCursor + ansi.mouseOn + ansi.bracketedPasteOn + ansi.keyboardPush)
 
   const utf8Decoder = new TextDecoder("utf-8", { fatal: false })
 
@@ -182,6 +185,9 @@ export async function startTUI(agent, opts = {}) {
       text = text.slice(0, -tail[0].length)
     }
 
+    // Shift+Enter (keyboard-enhanced terminals) → Alt+Enter path (\x1b\r = meta+return)
+    text = translateShiftEnter(text)
+
     if (state.scroll !== lastRenderedScroll) {
       lastRenderedScroll = state.scroll
       render()
@@ -211,7 +217,7 @@ export async function startTUI(agent, opts = {}) {
       // Can't close? fine, process is exiting anyway
     }
     process.stdin.setRawMode(false)
-    process.stdout.write(ansi.clearScreen + ansi.mouseOff + ansi.bracketedPasteOff + ansi.mainBuffer + ansi.showCursor + ansi.reset)
+    process.stdout.write(ansi.clearScreen + ansi.mouseOff + ansi.bracketedPasteOff + ansi.keyboardPop + ansi.mainBuffer + ansi.showCursor + ansi.reset)
   }
   process.on("exit", cleanup)
 
