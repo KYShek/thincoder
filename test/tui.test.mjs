@@ -58,6 +58,34 @@ test("layoutInput: 折行与光标定位", async () => {
   assert.ok(lay2.lines.length > 1, "long input wraps")
 })
 
+test("layoutInput: trailing \\n flushes the empty cursor line (box grows with Ctrl+J)", async () => {
+  // BUG-6 regression: without this the multiline box never grew — the cursor's row
+  // after a trailing newline was never materialized.
+  const { layoutInput } = await import("../src/tui/render.mjs")
+  const lay = layoutInput([..."ab\n"], 3, 40)
+  assert.equal(lay.lines.length, 2, "trailing newline creates the empty second line")
+  assert.equal(lay.cursorLine, 1, "cursor sits on the new line")
+  assert.equal(lay.cursorCol, 2, "cursor column accounts for the 2-col prefix")
+  const lay3 = layoutInput([..."ab\ncd\n"], 5, 40)
+  assert.equal(lay3.lines.length, 3, "each \\n adds a row")
+})
+
+test("layoutInput: continuation lines left-align with the first line (2-col prefix)", async () => {
+  // BUG-7 regression: wrapped/newline rows used to start 2 columns left of the first
+  // line (first line has the "▸ " prompt, continuations had no prefix).
+  const { layoutInput } = await import("../src/tui/render.mjs")
+  const lay = layoutInput([..."ab\ncd"], 4, 40)
+  assert.ok(lay.lines[0].startsWith("\u25b8 "), "first line carries the prompt")
+  assert.ok(lay.lines[1].startsWith("  "), "continuation carries a 2-space prefix")
+  assert.equal(lay.lines[1], "  cd")
+  // Cursor between c and d on the continuation line: 2 prefix + 1 char
+  assert.equal(lay.cursorLine, 1)
+  assert.equal(lay.cursorCol, 3)
+  // Cursor at the very end: 2 prefix + 2 chars
+  const layEnd = layoutInput([..."ab\ncd"], 5, 40)
+  assert.equal(layEnd.cursorCol, 4)
+})
+
 test("formatTables: CJK 表格按显示宽度对齐", async () => {
   const { formatTables } = await import("../src/tui/render.mjs")
   const table = "| 名称 | 描述 |\n|---|---|\n| 你好 | hello |"

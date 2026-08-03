@@ -130,18 +130,23 @@ function renderTable(block, width) {
   return out
 }
 
-/** Input area layout: wrap input buffer into lines, also compute cursor (row, col) position (display width) */
+/** Input area layout: wrap input buffer into lines, also compute cursor (row, col) position (display width).
+ *  Every line carries a 2-column prefix so all content left-edges align: first line gets the
+ *  `▸ ` prompt, continuation lines (wrap or explicit \n) get 2 spaces. Content width is
+ *  `width - 2` on every line. A trailing \n flushes an empty line so the cursor's row exists —
+ *  without it the box wouldn't grow for multiline input and the cursor row would be out of range. */
 export function layoutInput(chars, cursor, width) {
-  const PROMPT = "\u25b8 "
+  const PROMPT = "\u25b8 "  // first-line prefix (display width 2)
+  const CONT = "  "         // continuation prefix (width 2) — keeps left edge aligned
   const lines = []
   let cursorLine = 0
   let cursorCol = 0
   let cur = ""
   let col = 0
   let firstLine = true
-  const avail = () => (firstLine ? width - 2 : width)
+  const avail = () => width - 2 // every line reserves 2 cols for its prefix
   const flush = () => {
-    lines.push((firstLine ? PROMPT : "") + cur)
+    lines.push((firstLine ? PROMPT : CONT) + cur)
     firstLine = false
     cur = ""
     col = 0
@@ -153,19 +158,20 @@ export function layoutInput(chars, cursor, width) {
       if (col + w > avail()) flush()
       if (i === cursor) {
         cursorLine = lines.length
-        cursorCol = (firstLine ? 2 : 0) + col
+        cursorCol = 2 + col
       }
       cur += ch
       col += w
     } else {
       if (i === cursor) {
         cursorLine = lines.length
-        cursorCol = (firstLine ? 2 : 0) + col
+        cursorCol = 2 + col
       }
       if (ch === "\n") flush()
     }
   }
-  if (cur || lines.length === 0) flush()
+  const endsWithNewline = chars.length > 0 && chars[chars.length - 1] === "\n"
+  if (cur || lines.length === 0 || endsWithNewline) flush()
   return { lines, cursorLine, cursorCol }
 }
 
