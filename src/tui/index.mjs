@@ -89,6 +89,7 @@ export async function startTUI(agent, opts = {}) {
     search: null, // Ctrl+F search mode: { query: "", matches: [{lineIndex, charIndex}], index: 0 } or null
     expandedBlocks: new Set(), // block hashes that are expanded (Enter toggles)
     foldEnabled: true, // global fold toggle — /fold on|off
+    exitArmed: false, // Ctrl+C double-confirm: first press arms, second (within window) exits
   }
 
   // On session restore, if all tasks are completed, auto-collapse the todo panel (match runtime behavior)

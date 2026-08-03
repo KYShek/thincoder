@@ -410,5 +410,5 @@ function buildStatusLine(state, agent, { cols, slashCommands }) {
   const ctxHint = ctxPct > 0
     ? ctxPct >= 80 ? ` │ ${ansi.reset}${C.warn}context ${ctxPct}%${ctxTokensHint}${ansi.reset}${ansi.dim}` : ` │ context ${ctxPct}%${ctxTokensHint}` : ""
   const queueHint = state.queue.length > 0 ? ` │ queue: ${state.queue.length}` : ""
-  return ` ${statusText}${taskHint}${turnHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+I: inject │ Ctrl+C: exit`
+  return ` ${statusText}${taskHint}${turnHint}${tokenHint}${ctxHint}${queueHint}${scrollHint} │ Enter: send${state.processing ? " (queue)" : ""} │ /: commands │ wheel/PgUp/PgDn: scroll │ Ctrl+I: inject │ Ctrl+C: exit (×2)`
 }

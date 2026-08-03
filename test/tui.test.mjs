@@ -1013,19 +1013,53 @@ test("keyHandler: Ctrl+C 在 picker 打开时取消 picker 而不是退出", () 
   assert.equal(cleaned, false, "不应触发退出")
 })
 
-test("keyHandler: Ctrl+C 无 picker 时保持原退出行为", () => {
+test("keyHandler: Ctrl+C 无 picker 时第一段仅提示不退出（防误触）", () => {
   let cleaned = false
+  const lines = []
   const state = tuiState()
-  // 注入超大退出延迟，定时器永远不会在测试进程内触发；结束时清理
-  const ctx = { ...keyCtx(state), cleanup: () => { cleaned = true }, exitDelay: 60_000 }
+  const ctx = {
+    ...keyCtx(state),
+    cleanup: () => { cleaned = true },
+    exitDelay: 60_000,
+    exitArmDelay: 60_000,
+    pushLine: (text) => lines.push(text),
+  }
   const handler = createKeyHandler(ctx)
   try {
     handler("", { name: "c", ctrl: true })
-    assert.equal(cleaned, true, "无 picker 时走 cleanup 退出路径")
+    assert.equal(cleaned, false, "第一次 Ctrl+C 不应退出")
+    assert.equal(state.exitArmed, true, "第一次 Ctrl+C 武装 exitArmed")
+    assert.ok(ctx.exitArmTimer, "武装定时器已创建")
+    assert.ok(lines.some((l) => l.includes("again")), "给出再按确认提示")
+    // 第二次 Ctrl+C 才真正退出
+    handler("", { name: "c", ctrl: true })
+    assert.equal(cleaned, true, "第二次 Ctrl+C 走 cleanup 退出路径")
     assert.ok(ctx.exitTimer, "退出定时器已创建")
   } finally {
+    clearTimeout(ctx.exitArmTimer)
     clearTimeout(ctx.exitTimer)
   }
+})
+
+test("keyHandler: Ctrl+C 武装超时后自动解除，需重新武装", async () => {
+  let cleaned = false
+  const state = tuiState()
+  const ctx = {
+    ...keyCtx(state),
+    cleanup: () => { cleaned = true },
+    exitDelay: 60_000,
+    exitArmDelay: 10,
+  }
+  const handler = createKeyHandler(ctx)
+  handler("", { name: "c", ctrl: true })
+  assert.equal(state.exitArmed, true)
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(state.exitArmed, false, "窗口过期后自动解除")
+  handler("", { name: "c", ctrl: true })
+  assert.equal(cleaned, false, "解除后再次 Ctrl+C 仍只是武装")
+  assert.equal(state.exitArmed, true)
+  clearTimeout(ctx.exitArmTimer)
+  clearTimeout(ctx.exitTimer)
 })
 
 test("renderPicker: 位置指示 / filter 标题 / ↑ more / ↓ more", () => {

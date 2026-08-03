@@ -225,6 +225,17 @@ export function createKeyHandler(ctx) {
         render()
         return
       }
+      // 防误触：空闲态第一次 Ctrl+C 仅提示并武装，窗口内再按才真正退出
+      if (!state.exitArmed) {
+        state.exitArmed = true
+        if (ctx.exitArmTimer) clearTimeout(ctx.exitArmTimer)
+        ctx.exitArmTimer = setTimeout(() => { state.exitArmed = false }, ctx.exitArmDelay ?? 3000)
+        ctx.exitArmTimer.unref?.()
+        pushLine("[exit] Press Ctrl+C again within 3s to exit", C.warn)
+        render()
+        return
+      }
+      if (ctx.exitArmTimer) clearTimeout(ctx.exitArmTimer)
       cleanup()
       // 延迟退出可注入（测试传大值并清理定时器，避免定时器在 mock 恢复后调到真 process.exit）
       ctx.exitTimer = setTimeout(() => process.exit(0), ctx.exitDelay ?? 100)
@@ -234,7 +245,7 @@ export function createKeyHandler(ctx) {
     // F1: 显示快捷键帮助
     if (key.name === "f1" && !state.picker && !state.permission && !state.question) {
       showPicker("Keyboard Shortcuts", [
-        { type: "item", text: "Ctrl+C — Cancel/Abort current operation" },
+        { type: "item", text: "Ctrl+C — Cancel/Abort; idle: press twice to exit" },
         { type: "item", text: "Ctrl+I — Interrupt and inject message" },
         { type: "item", text: "Ctrl+F — Search conversation history" },
         { type: "item", text: "Shift+Enter / Ctrl+J — Insert newline (multiline input)" },
