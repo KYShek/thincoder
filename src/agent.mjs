@@ -3,6 +3,7 @@
  * LLM ↔ tool-call loop, until the task is done.
  */
 import { chat } from "./provider/index.mjs"
+import { estimateText } from "./provider/rate.mjs"
 import { compressIfNeeded, compressFallback, COMPRESS_FAILURE_LIMIT, pushReal } from "./context.mjs"
 import { specForModel } from "./config.mjs"
 import { readFileSync } from "node:fs"
@@ -132,6 +133,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     agent._advisorSession = null // advisor session is per-run: discard when the task ends, next task starts fresh
     agent._advisorLastSnapshotHash = null // dedup baseline is per-run too — stale snapshot could wrongly suppress a diff refresh
     agent._emptyRetries = 0 // empty-response retry budget is per-run: a fresh user turn restarts from zero
+    agent._compressFailures = 0 // compaction summary-failure counter is per-run: a fresh user turn restarts from zero
   }
   // eng-coder authorization is set by subagent.mjs AFTER token validation but BEFORE runAgent —
   // only reset for the top-level agent (depth 0); child runs must keep their granted authorization
@@ -146,6 +148,16 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
   // this set survives across chat() calls (rule abort-retry, tool loop) within the turn.
   const streamRuleFired = new Set()
 
+  // Compaction overhead for the pure-estimation path: system prompt + tools schema are
+  // part of every request but not in history — without them the first-turn/restored/just-
+  // compacted estimate under-counts and may never trigger compaction. Measured baseline
+  // path already includes both (prompt_tokens is the full context), so this only applies
+  // when _lastPromptTokens is null.
+  const compactionOverhead = {
+    systemPrompt,
+    tools: toolSchemas,
+  }
+
   for (let turn = 0; turn < maxTurns; turn++) {
     // Update turn counter for status bar display
     agent._currentTurn = turn + 1
@@ -154,7 +166,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     const lastRole = agent.history.at(-1)?.role
     if (lastRole === "user" || lastRole === "tool") {
       try {
-        if (await compressIfNeeded(agent, threshold, callbacks)) {
+        if (await compressIfNeeded(agent, threshold, callbacks, compactionOverhead)) {
           agent._compressFailures = 0
           agent._planReminderAtLen = 0 // After compression history shrinks, reset cadence so reminders resume
           recentCallSigs.length = 0 // After compression history is rebuilt, reset stall detection counter

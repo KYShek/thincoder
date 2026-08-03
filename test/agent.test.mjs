@@ -487,7 +487,8 @@ test("context: 截断兜底不碰网络，结构合法且 task 回注去重", as
     _usageAtLen: 3,
   }
   assert.equal(compressFallback(agent), true)
-  assert.equal(agent.history.length, 14) // head(2) + 笔记 + ack + tail(10)
+  // 14 条历史 → 默认模型窗口自适应 keepTail = min(38, floor(14*0.4)=5) = 5 → head(2) + 笔记 + ack + tail(5) = 9
+  assert.equal(agent.history.length, 9)
   assert.match(agent.history[2].content, /truncated after repeated summarization failures/)
   // tail 里残留的旧回注被清掉，只留末尾最新的一份
   const reinjects = agent.history.filter((m) => typeof m.content === "string" && m.content.includes("current task list after compaction"))
@@ -503,16 +504,23 @@ test("runAgent: 工具链末尾（last=tool）也是压缩安全点", async () =
     description: "noop",
     parameters: { type: "object", properties: {} },
     readonly: true,
-    execute: async () => "x".repeat(400), // 100 token，把上下文推过阈值
+    execute: async () => "x".repeat(400), // 100 token，增量推过阈值
   }
-  // 主循环第 1 次调用 → 工具；工具结果落尾（last=tool）→ 触发压缩（第 2 次调用是摘要）；第 3 次返回最终答案
-  const script = [{ toolCall: { name: "noop" } }, { content: "这是摘要" }, { content: "done" }]
+  // 主循环第 1 次调用 → 工具（带实测 usage 7950）；工具结果落尾（last=tool）→ 下一轮
+  // 实测基线 7950 + 增量 100 = 8050 > 阈值 8000 → 触发压缩（第 2 次调用是摘要）；压缩后
+  // 基线失效回到纯估算（历史 ~250 + system/tools 开销），远低于 8000 → 第 3 次返回最终答案。
+  // 用实测路径而非纯估算，是因为 system/tools 开销是内部动态值，纯估算场景无法稳定设阈值。
+  const script = [
+    { toolCall: { name: "noop" }, usage: { prompt_tokens: 7950 } },
+    { content: "这是摘要" },
+    { content: "done" },
+  ]
   const { server, port, requests } = await mockLLM(script)
   try {
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
     const cwd = mkdtempSync(join(tmpdir(), "thincoder-compress-tool-"))
-    const agent = createAgent({ provider, tools: [bigNoop], config: { agent: { compactThreshold: 200 } }, cwd })
-    // 预填 12 条小消息：turn 0 估算 ~140 低于阈值不压缩，工具结果把下一轮推过 200
+    const agent = createAgent({ provider, tools: [bigNoop], config: { agent: { compactThreshold: 8000 } }, cwd })
+    // 预填 12 条小消息：turn 0 纯估算（~150 + system/tools 开销）低于 8000，不提前压缩
     agent.history = Array.from({ length: 12 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(32) }))
     let compressed = 0
     const out = await runAgent(agent, "继续", { onCompress: () => compressed++ })
@@ -1658,6 +1666,75 @@ test("context: 历史太短切不出中间段时，巨型消息被确定性瘦�
   assert.ok(agent.history[1].content.includes("truncated"))
   assert.ok(agent.history[1].content.startsWith("开"))
   assert.equal(agent.history[3].tool_call_id, "c1")
+
+test("context: tail 保留量随模型窗口自适应（1M 窗口 40 条，小窗口模型 38 条，短历史受 40% 上限）", async () => {
+  const { compressFallback } = await import("../src/context.mjs")
+  const makeAgent = (model) => ({
+    provider: { baseURL: "http://127.0.0.1:1", apiKey: "x", model },
+    history: Array.from({ length: 100 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(20) })),
+    tasks: [], planMode: false,
+  })
+  // 1M 窗口：keepTail = min(300, 40) = 40 → head(2)+note+ack+tail(40) = 44
+  const big = makeAgent("deepseek-v4-pro")
+  assert.equal(compressFallback(big), true)
+  assert.equal(big.history.length, 44, "1M 窗口保留 40 条 tail")
+  // 128K 窗口（默认 spec）：keepTail = min(38, 40) = 38 → 2+1+1+38 = 42
+  const small = makeAgent("gpt-4o")
+  assert.equal(compressFallback(small), true)
+  assert.equal(small.history.length, 42, "128K 窗口保留 38 条 tail")
+  // 短历史受 40% 上限：20 条 → min(max(10,38), 8) = 8 → 2+1+1+8 = 12
+  const short = {
+    provider: { baseURL: "http://127.0.0.1:1", apiKey: "x", model: "m" },
+    history: Array.from({ length: 20 }, (_, i) => ({ role: "user", content: `m${i} ` + "x".repeat(20) })),
+    tasks: [], planMode: false,
+  }
+  assert.equal(compressFallback(short), true)
+  assert.equal(short.history.length, 12, "20 条历史按 40% 上限保留 8 条 tail")
+})
+
+test("context: 纯估算路径计入 system/tools 开销（无实测基线时触发压缩）", async () => {
+  const { compressIfNeeded } = await import("../src/context.mjs")
+  const { server, port } = await mockLLM([{ content: "这是摘要" }])
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const history = Array.from({ length: 14 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(4) }))
+    const agent = { provider, history: [...history], tasks: [], planMode: false }
+    // 不传 extras：纯历史估算 ~140 < 500 → 不触发
+    assert.equal(await compressIfNeeded(agent, 500), false)
+    // 传 extras（system 4000 字符 ≈ 1000 token + tools）：估算 ~1150 > 500 → 触发
+    const agent2 = { provider, history: [...history], tasks: [], planMode: false }
+    const done = await compressIfNeeded(agent2, 500, {}, { systemPrompt: "x".repeat(4000), tools: [] })
+    assert.equal(done, true)
+    assert.match(agent2.history[2].content, /这是摘要/)
+  } finally {
+    server.close()
+  }
+})
+
+test("context: 摘要生成对前端静默（不转发 onToken/onReasoning）", async () => {
+  const { compressIfNeeded } = await import("../src/context.mjs")
+  const { server, port } = await mockLLM([{ content: "摘要" }])
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const agent = {
+      provider,
+      history: Array.from({ length: 14 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(50) })),
+      tasks: [], planMode: false,
+    }
+    let tokenCalls = 0
+    let reasoningCalls = 0
+    const done = await compressIfNeeded(agent, 10, {
+      onToken: () => tokenCalls++,
+      onReasoning: () => reasoningCalls++,
+    })
+    assert.equal(done, true)
+    assert.equal(tokenCalls, 0, "压缩摘要 token 不得流向前端")
+    assert.equal(reasoningCalls, 0, "压缩摘要 reasoning 不得流向前端")
+  } finally {
+    server.close()
+  }
+})
+
   assert.ok(agent.history[3].content.length < 7_000)
   assert.ok(estimateTokens(agent.history) < before / 5)
   // 没有 oversized 消息时不再动作（等价于旧的 return false）

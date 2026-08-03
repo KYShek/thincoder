@@ -7,8 +7,9 @@
 
 import { chat } from "./provider/index.mjs"
 import { estimateText } from "./provider/rate.mjs"
+import { specForModel } from "./config.mjs"
 
-const IMAGE_TOKEN_ESTIMATE = 256 // rough estimate for image placeholder tokens
+const IMAGE_TOKEN_ESTIMATE = 2000 // rough estimate for image content tokens (CLI legacy 256 underestimated real image costs, delaying compaction)
 
 /** Rough token count for a list of messages (body + reasoning + tool_calls params) */
 export function estimateTokens(messages) {
@@ -30,7 +31,13 @@ export function estimateTokens(messages) {
 }
 
 const KEEP_HEAD = 2 // Keep the earliest user intent — must not lose it
-const KEEP_TAIL = 10 // Keep the most recent work context — must not lose it
+// Tail size scales with the model context window (~30 messages per 100K tokens),
+// capped at 40% of history so small histories don't over-reserve. Window-adaptive
+// replaces the old fixed 10: on a 1M window, 10 messages is too thin for recent work.
+function keepTailSize(provider, historyLen) {
+  const ctxWindow = specForModel(provider?.model ?? "").context
+  return Math.min(Math.max(10, Math.floor((ctxWindow / 100_000) * 30)), Math.floor(historyLen * 0.4))
+}
 
 const SUMMARIZE_PROMPT = `You are a conversation compressor. Summarize the following agent work log into a compact summary for use as context in the ongoing conversation.
 Requirements:
@@ -69,15 +76,15 @@ const FALLBACK_NOTE =
  * The tail boundary must include any assistant whose tool results are in the tail — if the assistant is in the middle,
  * the summary swallows it, leaving orphan tool results → protocol 400.
  */
-function splitHistory(history) {
-  if (history.length <= KEEP_HEAD + KEEP_TAIL + 1) return null
+function splitHistory(history, keepTail) {
+  if (history.length <= KEEP_HEAD + keepTail + 1) return null
   let headEnd = KEEP_HEAD
   // head must not end with dangling tool_calls: when assistant declares tool_calls, all its tool results must stay in head.
   // Parallel calls: one assistant followed by multiple tool messages — accepting only one still causes 400, must collect all
   if (history[headEnd - 1]?.role === "assistant" && history[headEnd - 1].tool_calls?.length) {
     while (headEnd < history.length && history[headEnd].role === "tool") headEnd++
   }
-  let tailStart = history.length - KEEP_TAIL
+  let tailStart = history.length - keepTail
 
   // Tool messages in the tail region whose assistant tool_calls are in the middle: the summary would swallow the assistant,
   // leaving orphan tool results → protocol 400. Collect tool_call_ids from the tail, find their owner assistants and pull them into tail
@@ -159,20 +166,30 @@ function applyCompression(agent, headEnd, tailStart, note) {
  * If history exceeds threshold, compact it. Returns whether compaction happened.
  * Only called at safe points in the loop (history ends with user or tool message — a complete exchange boundary).
  * Automatically re-injects task list state after compaction.
+ * @param {object} agent
+ * @param {number} threshold - compaction threshold in tokens
+ * @param {object} callbacks - { onToken, onReasoning, onCompress } — summary generation is SILENT
+ *   (never forwards onToken/onReasoning: the compaction process is an internal mechanism, not a model reply)
+ * @param {object} extras - { systemPrompt?, tools? } — estimated overhead for the pure-estimation
+ *   path (no measured baseline); the measured path already includes system+tools in prompt_tokens.
  */
-export async function compressIfNeeded(agent, threshold, callbacks) {
+export async function compressIfNeeded(agent, threshold, callbacks, extras = {}) {
   const history = agent.history
   // Prefer the real baseline: the last response's prompt_tokens is the measured value for the full context (system+tools+history).
   // Subsequent appended messages use estimation as increment; when no measured value exists (first turn / after restore / right after compaction), fall back to pure estimation
+  const overhead =
+    (extras.systemPrompt ? estimateText(extras.systemPrompt) : 0) +
+    (extras.tools ? estimateText(JSON.stringify(extras.tools)) : 0)
   const tokens =
     agent._lastPromptTokens != null
       ? agent._lastPromptTokens + estimateTokens(history.slice(agent._usageAtLen ?? history.length))
-      : estimateTokens(history)
+      : estimateTokens(history) + overhead
   if (tokens <= threshold) return false
 
-  const split = splitHistory(history)
+  const keepTail = keepTailSize(agent.provider, history.length)
+  const split = splitHistory(history, keepTail)
   if (!split) {
-    // History is too short (≤13 messages) to find a middle section, but tokens exceed threshold — typically a single giant message
+    // History is too short (≤KEEP_HEAD+keepTail+1 messages) to find a middle section, but tokens exceed threshold — typically a single giant message
     // (large paste / huge injection). When summarization has no room, degrade to deterministic shrinking to ensure context always reduces
     return shrinkOversized(agent)
   }
@@ -188,11 +205,10 @@ export async function compressIfNeeded(agent, threshold, callbacks) {
     })
     .join("\n")
 
-  // The summary is a plain-text task, no reasoning needed — passing thinking to the compaction provider wastes tokens
+  // The summary is a plain-text task, no reasoning needed — passing thinking to the compaction provider wastes tokens.
+  // Silent by design (D11): no onToken/onReasoning — the compaction process must not stream to the frontend.
   const summary = await chat({ ...agent.provider, thinking: null, reasoningEffort: null }, {
     messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
-    onToken: callbacks?.onToken,
-    onReasoning: callbacks?.onReasoning,
   })
 
   // Auto-checkpoint before compaction: snapshot current state so the model can
@@ -222,7 +238,8 @@ export async function compressIfNeeded(agent, threshold, callbacks) {
  * Drops the middle so the task can continue. Returns whether truncation happened.
  */
 export function compressFallback(agent) {
-  const split = splitHistory(agent.history)
+  const keepTail = keepTailSize(agent.provider, agent.history.length)
+  const split = splitHistory(agent.history, keepTail)
   if (!split) return false
   applyCompression(agent, split.headEnd, split.tailStart, FALLBACK_NOTE)
   return true
