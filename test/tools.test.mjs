@@ -442,6 +442,104 @@ test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
   }
 })
 
+test("bash 工具：git 破坏性命令被拒但已自动快照（未提交工作可恢复）", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { bashTool } = await import("../src/tools/system.mjs")
+  const { writeFile, readFile: rf } = await import("node:fs/promises")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-gitguard-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 模型写好一批代码（未提交）—— 尚未有 checkpoint 记录这批改动
+    await writeFile(join(dir, "app.js"), "const v = 2 // 写好的未提交代码\n")
+    await writeFile(join(dir, "new-file.js"), "export const fresh = 42\n")
+
+    // 模型搞乱后犯傻：git checkout -- . 回滚（会被防线拒绝，但自动快照已建立）
+    await assert.rejects(
+      () => bashTool.execute({ command: "git checkout -- ." }, { cwd: dir }),
+      (e) => {
+        assert.match(e.message, /Refusing destructive git command/, "拒绝执行: " + e.message.slice(0, 100))
+        assert.match(e.message, /\[auto-protection\] Snapshot \S+ was created/, "拒绝消息携带自动快照 id")
+        return true
+      },
+    )
+    // 工作区未被破坏（拒绝生效）
+    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 2 // 写好的未提交代码\n")
+    assert.equal(await rf(join(dir, "new-file.js"), "utf8"), "export const fresh = 42\n")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("bash 工具：变体 git checkout HEAD -- . 被快照保护（防线漏网路径）", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { bashTool } = await import("../src/tools/system.mjs")
+  const { writeFile, readFile: rf } = await import("node:fs/promises")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-gitguard2-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    await writeFile(join(dir, "app.js"), "const v = 2 // 写好的未提交代码\n")
+    await writeFile(join(dir, "new-file.js"), "export const fresh = 42\n")
+
+    // 变体：git checkout HEAD -- .（isDestructiveGitSegment 匹配不到 → 放行）
+    const r = await bashTool.execute({ command: "git checkout HEAD -- ." }, { cwd: dir })
+    assert.match(r, /\[auto-protection\]/, "变体命令也应触发自动快照: " + r.slice(0, 150))
+    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 1\n", "tracked 未提交修改被回滚抹掉")
+    // checkout 不删 untracked（只有 git clean 删）——新文件还在，但 tracked 修改已丢
+    assert.equal(await rf(join(dir, "new-file.js"), "utf8"), "export const fresh = 42\n", "untracked 文件不受 checkout 影响")
+
+    // 从自动快照恢复被抹掉的 tracked 未提交工作
+    const id = r.match(/snapshot (\S+) created/)[1]
+    const { rewind } = await import("../src/git/checkpoint.mjs")
+    await rewind(dir, id)
+    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 2 // 写好的未提交代码\n", "tracked 未提交修改恢复")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("bash 工具：非破坏性 git 命令不触发保护", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { bashTool } = await import("../src/tools/system.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-gitguard3-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    for (const cmd of ["git status", "git log --oneline", "git diff", "git checkout --help", "git branch"]) {
+      const r = await bashTool.execute({ command: cmd }, { cwd: dir })
+      assert.ok(!r.includes("[auto-protection]"), `${cmd} 不应触发保护: ${r.slice(0, 80)}`)
+    }
+    // 非 git 仓库：防线拒绝（restore 在非仓库无意义），且无自动快照污染
+    const plain = mkdtempSync(join(tmpdir(), "thincoder-gitguard4-"))
+    await assert.rejects(
+      () => bashTool.execute({ command: "git restore ." }, { cwd: plain }),
+      /not a git repository/,
+    )
+    rmSync(plain, { recursive: true, force: true })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("checkpoint 工具：list 的文件名做 XML 转义（防注入模型上下文）", async () => {
   const { execFileSync } = await import("node:child_process")
   const dir = mkdtempSync(join(tmpdir(), "thincoder-cpxml-"))

@@ -96,6 +96,43 @@ function killProcessTree(child) {
  *
  * Returns a promise that resolves to the formatted output string (stdout + stderr + status + truncation note).
  */
+
+/**
+ * Detect destructive git commands and auto-snapshot BEFORE execution.
+ * The scenario: the model writes uncommitted code, then (after breaking things)
+ * runs `git checkout -- .` / `git restore` / `git reset --hard` / `git clean -f` to
+ * roll back — which silently DESTROYS all uncommitted work. The pre-task checkpoint
+ * cannot help (it was taken before the code was written); only a snapshot taken
+ * immediately before the destructive command can.
+ *
+ * This is layer 1 (defense in depth): a WIDE match that snapshots before the command
+ * runs. Layer 2 (checkBashSafety) then rejects the command when uncommitted changes
+ * exist — but a rejection alone is not enough: the model may retry a variant that
+ * slips through the exact matcher (e.g. `git checkout HEAD -- .`), or run git outside
+ * the bash tool. The snapshot taken here survives all of those paths.
+ *
+ * Matching is intentionally WIDE (false positives are harmless — one extra snapshot;
+ * a missed match is a data-loss disaster).
+ */
+const GIT_DESTRUCTIVE_RE = /\bgit\s+(?:checkout\s+(?:[\w./-]+\s+)?--(?!\w)|checkout\s+\.|restore\s+(?!--help\b)|reset\s+--hard|clean\s+-\w*[fd])/i
+
+/** Returns { id, notice } when a snapshot was taken, else null. Never throws. */
+async function gitGuardSnapshot(command, cwd) {
+  if (!GIT_DESTRUCTIVE_RE.test(command)) return null
+  try {
+    const { isGitRepo, createCheckpoint } = await import("../git/checkpoint.mjs")
+    if (!isGitRepo(cwd)) return null
+    const cp = await createCheckpoint(cwd)
+    if (!cp) return null
+    return {
+      id: cp.id,
+      notice: `[auto-protection] Destructive git command detected — snapshot ${cp.id} created BEFORE execution (${cp.files} file(s): ${cp.tracked.length} tracked, ${cp.untracked.length} untracked). If this command destroyed uncommitted work, restore it: checkpoint action=checkpoint checkpointAction=rewind checkpointId=${cp.id}`,
+    }
+  } catch {
+    return null // protection is best-effort — never block the command
+  }
+}
+
 function runBash(command, cwd, { timeout, signal, onOutput }) {
   return new Promise((resolve) => {
     const child = spawn(command, {
@@ -180,12 +217,25 @@ export const bashTool = {
   readonly: false,
   outputPanel: true, // stream stdout/stderr to panel during execution, collapse to summary on completion
   async execute(args, ctx) {
-    checkBashSafety(args.command, ctx.cwd)
-    return runBash(args.command, ctx.cwd, {
+    // Layer 1: snapshot before any destructive git command (covers variants the
+    // exact matcher misses, e.g. `git checkout HEAD -- .`) — defense in depth.
+    const guard = await gitGuardSnapshot(args.command, ctx.cwd)
+    try {
+      checkBashSafety(args.command, ctx.cwd)
+    } catch (e) {
+      // Layer 2 rejected the command, but the pre-command snapshot already protects
+      // the uncommitted work — surface its id so recovery is one step away.
+      if (guard && /destructive git/.test(e.message)) {
+        throw new Error(`${e.message}\n\n[auto-protection] Snapshot ${guard.id} was created before this attempt — recover with: checkpoint action=checkpoint checkpointAction=rewind checkpointId=${guard.id}`)
+      }
+      throw e
+    }
+    const result = await runBash(args.command, ctx.cwd, {
       timeout: args.timeout ?? BASH_TIMEOUT_MS,
       signal: ctx.signal,
       onOutput: ctx.onOutput,
     })
+    return guard ? `${guard.notice}\n\n${result}` : result
   },
 }
 
