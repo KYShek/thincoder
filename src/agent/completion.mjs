@@ -17,6 +17,7 @@ function hasCodeMutations(agent) {
 const MAX_VERIFY_PUSHBACKS = 2
 const MAX_VERIFY_RETRIES = 3
 const MAX_ADVISOR_PUSHBACKS = 3
+const MAX_EMPTY_RETRIES = 2
 
 /**
  * Handle a model turn with zero tool calls. May push back (verify/advisor/pending tasks)
@@ -33,6 +34,19 @@ const MAX_ADVISOR_PUSHBACKS = 3
  */
 export function handleCompletion(agent, response, depth, turn, guardPushbacks, honestReminderInjected, advisorPushbacks, callbacks) {
   if (!response.content) {
+    // Transient empty response (reasoning exhausted / output truncated): instead of
+    // aborting the whole turn, inject a reminder and let the model respond again.
+    // Bounded — after MAX_EMPTY_RETRIES consecutive empties, surface the original error.
+    const retries = agent._emptyRetries ?? 0
+    if (retries < MAX_EMPTY_RETRIES) {
+      agent._emptyRetries = retries + 1
+      agent.history.push({
+        role: "user",
+        content: "[System reminder: your last response was empty — the provider returned no content (likely reasoning was exhausted or output was truncated). Respond again, continuing your work from where you left off.]",
+      })
+      callbacks.onTurnEnd?.(agent, turn)
+      return { action: "continue", guardPushbacks, honestReminderInjected, advisorPushbacks }
+    }
     throw new Error(
       "LLM returned empty response (likely reasoning exhausted or output truncated). " +
       "Try lowering reasoning effort if this persists (/think in TUI). " +
