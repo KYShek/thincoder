@@ -174,7 +174,8 @@ src/
   config.mjs        config loading
   tui/              bare-ANSI terminal UI — index.mjs (startTUI), render.mjs (drawing primitives),
                     render-frame.mjs (frame layout), render-conversation.mjs (conversation panel),
-                    markdown.mjs (lightweight inline markdown → ANSI), ansi.mjs
+                    markdown.mjs (lightweight inline markdown → ANSI), mouse.mjs (SGR clicks),
+                    clipboard.mjs (paste/copy), ansi.mjs
   tui.mjs           re-export shim → src/tui/index.mjs
   tui-render.mjs    re-export shim → src/tui/render.mjs
   prompts/          prompt texts — system.md (core), discipline.md (coding/testing rules),
@@ -207,6 +208,13 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 - More builtin skills
 
 ## Changelog
+
+### 0.12.6 (2026-08)
+- **Checkpoint v2 — full-file-copy snapshots** — snapshots now store complete copies of changed files (tracked + untracked) instead of a git diff patch: rollback works even after commits happened post-snapshot. New `versions` checkpoint action lists a file's historical copies across snapshots (time / size / content hash) and restores a specific version. **Full rollback is disabled** (as dangerous as a working-tree reset — silently discards post-snapshot work); oversized files (>5MB) are skipped with an explicit notice; files created after a snapshot are never deleted by a restore.
+- **Git destructive-command protection** — `checkout --` / `restore` / `reset --hard` / `clean -f` (including bypass variants like `checkout HEAD -- .`) auto-snapshot every uncommitted file **before** running, then execute without blocking — a model rollback can no longer destroy uncommitted work. Snapshot triggers slimmed to: destructive-git guard, pre-restore, manual.
+- **Fix: bash no longer hangs on background processes** — `start /b`, `&`, `nohup` children that hold the output pipe no longer stall the tool until timeout (resolves after a short grace with a notice).
+- **Mouse support** (SGR-protocol terminals) — click a picker option to select it, click a folded-block hint to expand it, click a message line for an action menu (copy to clipboard / load into the input box). **Long messages (>12 wrapped lines) auto-fold** to first/hint/last with click-to-expand — folding now has real objects in everyday sessions.
+- **Fix: legacy session hash migration** — the 12→40 char hash migration now tries every historical algorithm (CLI 12-char, VS Code 16-char, both drive-letter cases): Windows sessions from older versions are found and migrated on next startup instead of being stranded.
 
 ### 0.12.5 (2026-08)
 - **Fix: inline code styling** — markdown code spans now render with underline instead of reverse video (less harsh on the eyes)

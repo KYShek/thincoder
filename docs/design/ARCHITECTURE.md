@@ -377,16 +377,18 @@ src/tui/
 ├── layout.mjs         # 面板布局引擎（纯函数 computeLayout）
 ├── render.mjs         # 绘制原语（charWidth / wrapText / formatTables / sanitize）
 ├── render-frame.mjs   # 纯帧渲染器（renderFrame）
+├── render-conversation.mjs # 对话面板行构建（缓存/搜索高亮/折叠）
 ├── ansi.mjs           # ANSI 常量 + 颜色定义
+├── mouse.mjs          # SGR 鼠标点击：picker 选中 / 折叠展开 / 行菜单
 ├── agent-turn.mjs     # agent 循环 + 回调构造（流式/工具/子agent/压缩）
 ├── key-handler.mjs    # 键盘事件分发（权限/问题/选择器/向导/编辑/历史/粘贴）
 ├── interaction.mjs    # 权限审批 + Q&A 输入
 ├── pickers.mjs        # 通用列表选择器 + 模型管理选择器
 ├── wizard.mjs         # 首次启动配置向导
 ├── slash-commands.mjs # 斜杠命令分发 + Tab 补全
-├── cmd-*.mjs          # 各命令实现（17 个：model/think/session/config/…）
+├── cmd-*.mjs          # 各命令实现（22 个：model/think/session/config/…）
 ├── startup.mjs        # 启动画面 + 会话恢复 + 后台索引
-├── clipboard.mjs      # 剪贴板图片粘贴
+├── clipboard.mjs      # 剪贴板：图片粘贴 + 文本复制/读取
 ├── distill-cmd.mjs    # /distill 命令
 └── config-helpers.mjs # 配置持久化辅助
 ```
