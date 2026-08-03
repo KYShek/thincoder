@@ -16,8 +16,8 @@
 
 const BOLD = "\x1b[1m"
 const BOLD_OFF = "\x1b[22m"
-const REVERSE = "\x1b[7m"
-const REVERSE_OFF = "\x1b[27m"
+const UNDERLINE = "\x1b[4m"
+const UNDERLINE_OFF = "\x1b[24m"
 const STRIKE = "\x1b[9m"
 const STRIKE_OFF = "\x1b[29m"
 
@@ -33,7 +33,7 @@ export function renderMarkdownInline(line) {
   let out = ""
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 1) {
-      out += REVERSE + parts[i] + REVERSE_OFF
+      out += UNDERLINE + parts[i] + UNDERLINE_OFF
     } else {
       out += parts[i]
         .replace(/\*\*([^*\n]+)\*\*/g, `${BOLD}$1${BOLD_OFF}`)

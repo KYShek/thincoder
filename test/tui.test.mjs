@@ -869,9 +869,9 @@ test("markdown: 行内标记渲染为 ANSI（** 粗体 / ` 反色 / ~~ 删除线
   assert.ok(bold.includes("\x1b[1m"), "粗体开启序列")
   assert.ok(bold.includes("\x1b[22m"), "粗体关闭序列（不清颜色）")
   assert.equal(stripAnsi(bold), "这是 重点 内容", "标记符号消失")
-  // `code` → 反色
+  // `code` → 下划线（反白太扎眼，用户改订）
   const code = renderMarkdownInline("运行 `npm test` 即可")
-  assert.ok(code.includes("\x1b[7m"), "反色开启")
+  assert.ok(code.includes("\x1b[4m"), "下划线开启")
   assert.equal(stripAnsi(code), "运行 npm test 即可")
   // ~~删除线~~
   const strike = renderMarkdownInline("~~废弃~~的方案")
