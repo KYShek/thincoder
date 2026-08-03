@@ -106,11 +106,9 @@ export const gitTool = {
         }
         if (sub === "rewind") {
           if (!args.checkpointId) throw new Error("checkpointId is required for rewind — use checkpointAction=list to see snapshot ids")
+          if (!args.path) throw new Error("path is required for rewind — full restore is disabled (as dangerous as `git checkout -- .`). Restore files individually. Use checkpointAction=versions path=<file> to list a file's historical versions.")
           const s = await rewind(ctx.cwd, args.checkpointId, { path: args.path })
-          if (args.path) {
-            return `Restored "${args.path}" (${s.type}) from checkpoint ${args.checkpointId}.\n(The pre-rewind state was snapshotted first — you can rewind again to go back.)`
-          }
-          return `Rewound to checkpoint ${args.checkpointId}: patch ${s.patchApplied ? "applied" : "(empty)"}, ${s.restored ?? 0} untracked file(s) restored, ${s.deleted ?? 0} file(s) deleted.\n(The pre-rewind state was snapshotted first — you can rewind again to go back.)`
+          return `Restored "${args.path}" (${s.type}) from checkpoint ${args.checkpointId}.\n(The pre-restore state was snapshotted first — you can restore again to go back.)`
         }
         if (sub === "cat") {
           if (!args.checkpointId) throw new Error("checkpointId is required for cat — use checkpointAction=list to see snapshot ids")

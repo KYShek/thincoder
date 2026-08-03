@@ -299,7 +299,7 @@ test("bash: 流式输出实时透传（onOutput 分块到达）", async () => {
 
 // ---------------------------------------------------------------- checkpoint 快照与回滚
 
-test("checkpoint: 快照 → 改坏 → 回滚完全恢复（v2 全量副本）", async () => {
+test("checkpoint: 全量回滚被禁，单文件恢复可用（v2 全量副本）", async () => {
   const { execFileSync } = await import("node:child_process")
   const { createCheckpoint, rewind, listCheckpoints } = await import("../src/git/checkpoint.mjs")
   const { writeFile, readFile: rf, mkdir: mk, rm: del, access } = await import("node:fs/promises")
@@ -320,23 +320,30 @@ test("checkpoint: 快照 → 改坏 → 回滚完全恢复（v2 全量副本）"
     const cp = await createCheckpoint(dir)
     assert.ok(cp?.id)
 
+    // 全量回滚被禁（跟 git checkout 一样危险——静默丢弃快照后所有工作）
+    await assert.rejects(
+      () => rewind(dir, cp.id),
+      /Full rewind is disabled/,
+    )
+
     // agent 搞破坏：改跟踪文件、删未跟踪文件、新建垃圾文件
     await writeFile(join(dir, "app.js"), "const v = 999 // 改坏了\n")
     await del(join(dir, "note.md"))
     await mk(join(dir, "src"), { recursive: true })
     await writeFile(join(dir, "src", "junk.js"), "agent 新建的文件\n")
 
-    // 回滚
-    const summary = await rewind(dir, cp.id)
-    const restored = (await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n")
-    assert.equal(restored, "const v = 1\n") // 跟踪文件还原
+    // 单文件恢复（逐个）
+    const s1 = await rewind(dir, cp.id, { path: "app.js" })
+    assert.equal(s1.restored, true)
+    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 1\n") // 跟踪文件还原
+    const s2 = await rewind(dir, cp.id, { path: "note.md" })
+    assert.equal(s2.restored, true)
     assert.equal(await rf(join(dir, "note.md"), "utf8"), "原始笔记\n") // 未跟踪文件还原
-    // v2 语义：快照后新建的文件保留（restore ≠ destroy）
+    // 快照后新建的文件不动
     assert.equal(await rf(join(dir, "src", "junk.js"), "utf8"), "agent 新建的文件\n")
-    assert.equal(summary.deleted, 0)
 
     const cps2 = await listCheckpoints(dir)
-    assert.ok(cps2.length >= 2)
+    assert.ok(cps2.length >= 3) // 原始 + 两次恢复前的 pre-restore 快照
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -367,11 +374,11 @@ test("checkpoint: 快照后 commit 再回滚仍然恢复（v2 副本与 HEAD 无
     git("commit", "-qm", "snapshot state")
     await writeFile(join(dir, "app.js"), "const v = 999 // 改坏了\n")
 
-    // v2 回滚：副本覆盖，与 HEAD 无关
-    const summary = await rewind(dir, cp.id)
+    // v2 回滚：副本覆盖，与 HEAD 无关（单文件恢复）
+    const summary = await rewind(dir, cp.id, { path: "app.js" })
     const restored = (await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n")
     assert.equal(restored, "const v = 2 // snapshot state\n", "commit 后回滚仍恢复快照状态")
-    assert.ok(summary.restored >= 1)
+    assert.equal(summary.restored, true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -397,18 +404,16 @@ test("checkpoint: 超大文件跳过副本并提示（skipped 列表）", async 
     const cp = await createCheckpoint(dir)
     assert.ok(cp.skipped.includes("big.bin"), "大文件进 skipped 列表: " + cp.skipped.join(","))
 
-    // 改坏大文件后 rewind：skipped 文件不恢复，但返回提示
+    // 改坏大文件后单文件恢复：skipped 文件明确报错（副本不存在，不可恢复）
     await writeFile(join(dir, "big.bin"), Buffer.alloc(6 * 1024 * 1024, 2))
-    const summary = await rewind(dir, cp.id)
-    assert.ok(summary.skipped.includes("big.bin"), "rewind 报告 skipped 文件")
-    assert.ok((await rf(join(dir, "big.bin"))).length === 6 * 1024 * 1024, "文件仍在（未恢复/未删除）")
+    await assert.rejects(
+      () => rewind(dir, cp.id, { path: "big.bin" }),
+      /was NOT snapshotted/,
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
-
-test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
-  const { execFileSync } = await import("node:child_process")
 
 test("checkpoint: listFileVersions 区分同一文件的多个历史副本", async () => {
   const { execFileSync } = await import("node:child_process")
@@ -499,6 +504,9 @@ test("checkpoint 工具：versions 子命令列出文件历史版本", async () 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
+  const { execFileSync } = await import("node:child_process")
   const dir = mkdtempSync(join(tmpdir(), "thincoder-cptool-"))
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
   const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
@@ -517,9 +525,13 @@ test("checkpoint 工具：versions 子命令列出文件历史版本", async () 
     const listed = await byName.git.execute({ action: "checkpoint", checkpointAction: "list" }, ctx)
     assert.ok(listed.includes(id))
 
-    // 改坏 → rewind 恢复
+    // 改坏 → 单文件 rewind 恢复（path 必填；全量恢复被禁）
     writeFileSync(join(dir, "app.js"), "const v = 999\n")
-    await byName.git.execute({ action: "checkpoint", checkpointAction: "rewind", checkpointId: id }, ctx)
+    await assert.rejects(
+      () => byName.git.execute({ action: "checkpoint", checkpointAction: "rewind", checkpointId: id }, ctx),
+      /path is required for rewind/,
+    )
+    await byName.git.execute({ action: "checkpoint", checkpointAction: "rewind", checkpointId: id, path: "app.js" }, ctx)
     assert.equal(readFileSync(join(dir, "app.js"), "utf8").replace(/\r\n/g, "\n"), "const v = 1\n")
 
     // rewind 缺 id 报错；非 git 仓库报错
@@ -559,7 +571,7 @@ test("bash 工具：git 破坏性命令先快照后放行（未提交工作不�
     // 从自动快照恢复被抹掉的未提交工作
     const id = r.match(/snapshot (\S+) created/)[1]
     const { rewind } = await import("../src/git/checkpoint.mjs")
-    await rewind(dir, id)
+    await rewind(dir, id, { path: "app.js" })
     assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 2 // 写好的未提交代码\n", "tracked 未提交修改恢复")
     assert.equal(await rf(join(dir, "new-file.js"), "utf8"), "export const fresh = 42\n", "untracked 新文件恢复")
   } finally {
@@ -593,7 +605,7 @@ test("bash 工具：变体 git checkout HEAD -- . 同样快照后放行", async 
     // 从自动快照恢复被抹掉的 tracked 未提交工作
     const id = r.match(/snapshot (\S+) created/)[1]
     const { rewind } = await import("../src/git/checkpoint.mjs")
-    await rewind(dir, id)
+    await rewind(dir, id, { path: "app.js" })
     assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 2 // 写好的未提交代码\n", "tracked 未提交修改恢复")
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -692,8 +704,8 @@ test("bash 护栏：checkout ./restore/clean -f/链式写法先快照后放行�
     const { listCheckpoints, rewind } = await import("../src/git/checkpoint.mjs")
     const cps = await listCheckpoints(dir)
     assert.ok(cps.length >= 1, "应有自动快照")
-    // 倒序（最新→最旧）：最旧 = 第一个命令前的快照（app.js 仍为 v2）
-    await rewind(dir, cps[cps.length - 1].id)
+    // 倒序（最新→最旧）：最旧 = 第一个命令前的快照（app.js 仍为 v2）——单文件恢复
+    await rewind(dir, cps[cps.length - 1].id, { path: "app.js" })
     assert.equal(readFileSync(join(dir, "app.js"), "utf8").replace(/\r\n/g, "\n"), "const v = 2\n", "快照恢复未提交改动")
 
     // 安全写法不误伤：切分支（无路径）、restore --staged、clean -n dry-run —— 不触发快照
