@@ -1,12 +1,15 @@
 /**
- * checkpoint.mjs — workspace snapshot and rollback
- * Snapshot = git diff HEAD patch + untracked file copies (respects .gitignore).
+ * checkpoint.mjs — workspace snapshot and rollback (v2: full-file copies)
+ * Snapshot = full copies of changed tracked files + untracked file copies (respects .gitignore).
+ * v1 stored only a git diff patch — rewind depended on HEAD being unchanged (a commit after the
+ * snapshot made `git apply` fail and the failure recovery chain collapse). v2 copies files, so
+ * rewind works regardless of later commits.
  * Only available inside git repos. Rewind creates a new snapshot first (rewind is reversible).
- * rewind supports a path parameter for per-file restore (restores only the specified file).
+ * rewind supports a path parameter for per-file restore.
  */
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { cp, mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { configDir } from "../config.mjs"
@@ -14,6 +17,12 @@ import { configDir } from "../config.mjs"
 const CWD_HASH_LEN = 12
 
 const MAX_CHECKPOINTS = 20
+
+/** Files larger than this are NOT copied (sqlite db, bundles…) — they are recorded as skipped. */
+const MAX_FILE_BYTES = 5 * 1024 * 1024
+
+/** meta.version 2 = full-copy snapshots; 1 = legacy patch-only snapshots */
+const META_VERSION = 2
 
 function git(cwd, args, { allowFail = false } = {}) {
   try {
@@ -55,8 +64,22 @@ export function isGitRepo(cwd) {
   return git(cwd, ["rev-parse", "--is-inside-work-tree"], { allowFail: true }) === "true"
 }
 
+/** Copy a file into a snapshot directory, skipping oversized files. Returns true when copied. */
+async function copyInto(dir, rel, src, skipped) {
+  let size
+  try { size = statSync(src).size } catch { return false }
+  if (size > MAX_FILE_BYTES) {
+    skipped.push(rel)
+    return false
+  }
+  const dst = join(dir, rel)
+  await mkdir(dirname(dst), { recursive: true })
+  await copyFile(src, dst).catch((e) => console.error(`[checkpoint] skipping ${rel}: ${e.message}`))
+  return true
+}
+
 /**
- * Create a snapshot. Returns { id, time, files } or null (non-git repo).
+ * Create a snapshot. Returns { id, time, files, tracked, untracked, skipped } or null (non-git repo).
  */
 export async function createCheckpoint(cwd) {
   if (!isGitRepo(cwd)) return null
@@ -64,30 +87,38 @@ export async function createCheckpoint(cwd) {
   // Random suffix: prevents id collisions for two snapshots in the same millisecond (sorting stays ordered by timestamp prefix)
   const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6)
   const dir = join(checkpointRoot(cwd), id)
+  await mkdir(join(dir, "files"), { recursive: true })
   await mkdir(join(dir, "untracked"), { recursive: true })
 
-  // Tracked file changes → patch
+  // v2: full copies of changed tracked files (git apply of a stale patch is the v1 failure mode).
+  // The patch is still written for legacy tooling/debugging, but rewind uses the copies.
+  const head = git(cwd, ["rev-parse", "HEAD"], { allowFail: true }) ?? ""
+  const changedRaw = git(cwd, ["diff", "HEAD", "--name-only", "-z"], { allowFail: true }) ?? ""
+  const changed = changedRaw ? changedRaw.split("\0").filter(Boolean) : []
+  const trackedAllRaw = git(cwd, ["ls-files", "-z"], { allowFail: true }) ?? ""
+  const trackedAll = trackedAllRaw ? trackedAllRaw.split("\0").filter(Boolean) : []
   const patch = git(cwd, ["diff", "HEAD", "--binary"], { allowFail: true }) ?? ""
   await writeFile(join(dir, "patch.diff"), patch, "utf8")
-  const tracked = trackedFilesFromPatch(patch)
+
+  const skipped = []
+  for (const rel of changed) {
+    await copyInto(join(dir, "files"), rel, join(cwd, rel), skipped)
+  }
 
   // Untracked files (respects .gitignore) → copy as-is
   const untrackedRaw = git(cwd, ["ls-files", "--others", "--exclude-standard"], { allowFail: true }) ?? ""
   const untracked = untrackedRaw ? untrackedRaw.split("\n").filter(Boolean) : []
   for (const rel of untracked) {
-    const src = join(cwd, rel)
-    const dst = join(dir, "untracked", rel)
-    await mkdir(dirname(dst), { recursive: true })
-    // Copy failed (socket/device file etc.) — skip, but log in case it's unexpected
-    await copyFile(src, dst).catch((e) => console.error(`[checkpoint] skipping ${rel}: ${e.message}`))
+    await copyInto(join(dir, "untracked"), rel, join(cwd, rel), skipped)
   }
 
   await writeFile(join(dir, "meta.json"), JSON.stringify({
-    id, time: Date.now(), untracked, tracked,
+    version: META_VERSION, id, time: Date.now(), untracked, tracked: changed, skipped,
+    head, trackedAll,
   }, null, 2), "utf8")
 
   await pruneCheckpoints(cwd)
-  return { id, time: Date.now(), files: untracked.length + tracked.length, tracked, untracked }
+  return { id, time: Date.now(), files: changed.length + untracked.length, tracked: changed, untracked, skipped }
 }
 
 /** List checkpoints (newest→oldest), with file change summary */
@@ -108,6 +139,7 @@ export async function listCheckpoints(cwd) {
       out.push({
         id, time: meta.time,
         untracked: meta.untracked ?? [],
+        skipped: meta.skipped ?? [],
         tracked,
       })
     } catch {
@@ -119,49 +151,12 @@ export async function listCheckpoints(cwd) {
 
 // ---- restore core ----
 
-/** Full restore of tracked files from a checkpoint: reset to HEAD → apply patch */
-async function fullRestoreTracked(cwd, dir) {
-  git(cwd, ["restore", "--source=HEAD", "--staged", "--worktree", "."])
-  const patch = await readFile(join(dir, "patch.diff"), "utf8")
-  if (patch.trim()) {
-    git(cwd, ["apply", "--whitespace=nowarn", join(dir, "patch.diff")])
-  }
-  return Boolean(patch.trim())
-}
-
-/** Full restore of untracked files from a checkpoint: delete new ones → restore from snapshot */
-async function fullRestoreUntracked(cwd, dir, meta) {
-  const nowUntracked = (git(cwd, ["ls-files", "--others", "--exclude-standard"], { allowFail: true }) ?? "")
-    .split("\n")
-    .filter(Boolean)
-  const checkpointSet = new Set(meta.untracked)
-  let deleted = 0
-  for (const rel of nowUntracked) {
-    if (!checkpointSet.has(rel)) {
-      await rm(join(cwd, rel), { force: true })
-      deleted++
-    }
-  }
-
-  let restored = 0
-  for (const rel of meta.untracked) {
-    const src = join(dir, "untracked", rel)
-    if (existsSync(src)) {
-      await mkdir(dirname(join(cwd, rel)), { recursive: true })
-      await cp(src, join(cwd, rel), { force: true })
-      restored++
-    }
-  }
-  return { deleted, restored }
-}
-
-/** Restore a single tracked file: checkout HEAD → apply that file's patch hunks */
-async function partialRestoreTracked(cwd, patchContent, filePath) {
-  // Reset the file to HEAD state first
+/** v1 legacy fallback: reset file to HEAD then apply its patch hunks. */
+async function partialRestoreTrackedViaPatch(cwd, root, patchContent, filePath) {
   git(cwd, ["checkout", "HEAD", "--", filePath], { allowFail: true })
   const hunks = extractFileHunks(patchContent, filePath)
   if (!hunks) return false
-  const tmpFile = join(checkpointRoot(cwd), ".tmp_partial.patch")
+  const tmpFile = join(root, ".tmp_partial.patch")
   await writeFile(tmpFile, hunks, "utf8")
   try {
     git(cwd, ["apply", "--whitespace=nowarn", tmpFile])
@@ -171,12 +166,12 @@ async function partialRestoreTracked(cwd, patchContent, filePath) {
   }
 }
 
-/** Restore a single untracked file */
-async function partialRestoreUntracked(cwd, dir, filePath) {
-  const src = join(dir, "untracked", filePath)
+/** Restore a single file from a snapshot copy. Returns true when the copy existed. */
+async function restoreFromCopy(snapshotDir, rel, cwd) {
+  const src = join(snapshotDir, rel)
   if (!existsSync(src)) return false
-  await mkdir(dirname(join(cwd, filePath)), { recursive: true })
-  await cp(src, join(cwd, filePath), { force: true })
+  await mkdir(dirname(join(cwd, rel)), { recursive: true })
+  await cp(src, join(cwd, rel), { force: true })
   return true
 }
 
@@ -184,18 +179,21 @@ async function partialRestoreUntracked(cwd, dir, filePath) {
 
 /**
  * Rewind to a specific snapshot (saves current state as a new snapshot first, making rewind reversible).
+ * v2: tracked files are restored from FULL COPIES — works even if commits happened after the snapshot.
+ * Untracked files that appeared AFTER the snapshot are NOT deleted (restore ≠ destroy).
  *
  * Options:
  * - path: restore only this single file (tracked or untracked); other files are left untouched.
- *   Omit for a full rewind (all changes → snapshot state).
+ *   Omit for a full rewind (all snapshot files → working tree).
  *
- * Returns summary { patchApplied, deleted?, restored? }; in path mode includes { file, type }.
+ * Returns summary { restored, skipped?, patchApplied? }; in path mode includes { file, type }.
  */
 export async function rewind(cwd, id, { path } = {}) {
   const root = checkpointRoot(cwd)
   const dir = join(root, id)
   if (!existsSync(join(dir, "meta.json"))) throw new Error(`checkpoint ${id} not found`)
   const meta = JSON.parse(await readFile(join(dir, "meta.json"), "utf8"))
+  const isV2 = meta.version === META_VERSION
   const patchContent = await readFile(join(dir, "patch.diff"), "utf8")
 
   // Rewind is reversible: snapshot current state first
@@ -203,37 +201,99 @@ export async function rewind(cwd, id, { path } = {}) {
 
   // ---- per-file restore ----
   if (path) {
-    // Determine whether it's a tracked or untracked file
-    const isTracked = meta.tracked?.includes(path) ?? extractFileHunks(patchContent, path) !== ""
+    const tracked = meta.tracked ?? []
+    const trackedAll = meta.trackedAll ?? []
+    const isTracked = tracked.includes(path) || trackedAll.includes(path) || extractFileHunks(patchContent, path) !== ""
     const inUntracked = (meta.untracked ?? []).includes(path)
 
     if (!isTracked && !inUntracked) {
-      throw new Error(`file "${path}" not found in checkpoint ${id} (tracked: ${(meta.tracked ?? []).join(", ") || "none"}, untracked: ${(meta.untracked ?? []).join(", ") || "none"})`)
+      throw new Error(`file "${path}" not found in checkpoint ${id} (tracked: ${tracked.join(", ") || "none"}, untracked: ${(meta.untracked ?? []).join(", ") || "none"})`)
     }
 
     let ok = false
-    if (isTracked) {
-      ok = await partialRestoreTracked(cwd, patchContent, path)
-    }
     if (inUntracked) {
-      ok = await partialRestoreUntracked(cwd, dir, path) || ok
+      ok = await restoreFromCopy(join(dir, "untracked"), path, cwd) || ok
+    }
+    if (isTracked) {
+      if (isV2 && existsSync(join(dir, "files", path))) {
+        ok = await restoreFromCopy(join(dir, "files"), path, cwd) || ok
+      } else if (isV2 && meta.head) {
+        // Untouched at snapshot time (content = snapshot HEAD) → checkout that commit's version.
+        // Works even if HEAD moved since — the commit object is immutable.
+        git(cwd, ["checkout", meta.head, "--", path], { allowFail: true })
+        ok = true
+      } else {
+        // v1 snapshot or skipped (oversized) file → patch fallback
+        ok = await partialRestoreTrackedViaPatch(cwd, root, patchContent, path) || ok
+      }
     }
 
-    return { path, type: isTracked ? "tracked" : "untracked", restored: ok, patchApplied: false }
+    return { path, type: isTracked ? "tracked" : "untracked", restored: ok, patchApplied: !ok }
   }
 
   // ---- full rewind ----
+  let restored = 0
+  let patchApplied = false
+  const restoredSkipped = []
+
   try {
-    const patchApplied = await fullRestoreTracked(cwd, dir)
-    const { deleted, restored } = await fullRestoreUntracked(cwd, dir, meta)
-    return { deleted, restored, patchApplied }
+    if (isV2) {
+      // 1. Untouched tracked files: reset the whole tree to the SNAPSHOT HEAD commit
+      //    (content = snapshot state for every tracked file unchanged at snapshot time).
+      //    Works even if commits happened after the snapshot — the commit object is immutable.
+      if (meta.head) {
+        git(cwd, ["checkout", meta.head, "--", "."], { allowFail: true })
+        restored += (meta.trackedAll ?? []).filter((f) => !(meta.tracked ?? []).includes(f)).length
+      }
+      // 2. Changed tracked files: restore from full copies (files deleted since the snapshot come back too)
+      for (const rel of meta.tracked ?? []) {
+        const src = join(dir, "files", rel)
+        if (existsSync(src)) {
+          await restoreFromCopy(join(dir, "files"), rel, cwd)
+          restored++
+        } else if ((meta.skipped ?? []).includes(rel)) {
+          restoredSkipped.push(rel)
+        } else if (extractFileHunks(patchContent, rel) && await partialRestoreTrackedViaPatch(cwd, root, patchContent, rel)) {
+          restored++
+          patchApplied = true
+        }
+      }
+      // 3. Untracked: restore snapshot copies (new files created after the snapshot are KEPT — restore ≠ destroy)
+      for (const rel of meta.untracked ?? []) {
+        if (await restoreFromCopy(join(dir, "untracked"), rel, cwd)) restored++
+        else if ((meta.skipped ?? []).includes(rel)) restoredSkipped.push(rel)
+      }
+    } else {
+      // v1 legacy snapshot: reset to HEAD → apply patch (best effort)
+      git(cwd, ["restore", "--source=HEAD", "--staged", "--worktree", "."])
+      if (patchContent.trim()) {
+        git(cwd, ["apply", "--whitespace=nowarn", join(dir, "patch.diff")])
+        patchApplied = true
+      }
+      restored = (meta.tracked ?? []).length
+    }
+
+    const skippedNote = restoredSkipped.length > 0
+      ? `\nSkipped (oversized, not snapshotted): ${restoredSkipped.join(", ")}`
+      : ""
+    return { restored, deleted: 0, patchApplied, skipped: restoredSkipped, skippedNote }
   } catch (e) {
-    // git apply failed: working tree may have been reset to HEAD by restore.
-    // Restore from pre-rewind snapshot to ensure no data is lost on rewind failure
+    // Restore failed: revert to the pre-rewind snapshot so no work is lost.
     const preDir = join(root, preRewindCp.id)
     try {
-      await fullRestoreTracked(cwd, preDir)
-      await fullRestoreUntracked(cwd, preDir, JSON.parse(await readFile(join(preDir, "meta.json"), "utf8")))
+      const preMeta = JSON.parse(await readFile(join(preDir, "meta.json"), "utf8"))
+      if (preMeta.version === META_VERSION) {
+        for (const rel of preMeta.tracked ?? []) {
+          if (existsSync(join(preDir, "files", rel))) await restoreFromCopy(join(preDir, "files"), rel, cwd)
+        }
+        for (const rel of preMeta.untracked ?? []) {
+          if (existsSync(join(preDir, "untracked", rel))) await restoreFromCopy(join(preDir, "untracked"), rel, cwd)
+        }
+      } else {
+        git(cwd, ["restore", "--source=HEAD", "--staged", "--worktree", "."])
+        const prePatch = await readFile(join(preDir, "patch.diff"), "utf8")
+        if (prePatch.trim()) git(cwd, ["apply", "--whitespace=nowarn", join(preDir, "patch.diff")])
+      }
     } catch {
       // Double failure: pre-rewind may also be corrupt, stop trying
     }
@@ -248,8 +308,7 @@ export async function rewind(cwd, id, { path } = {}) {
 
 /**
  * View a file's content from a checkpoint (does not modify the working tree).
- * Tracked files: temporarily restore via checkout HEAD + apply patch hunks, read, then restore original.
- * Untracked files: read the copy directly from the checkpoint directory.
+ * v2: read the snapshot copy directly. Legacy snapshots fall back to the temporary-restore path.
  * Returns the file content string.
  */
 export async function catFile(cwd, id, filePath) {
@@ -257,23 +316,31 @@ export async function catFile(cwd, id, filePath) {
   const dir = join(root, id)
   if (!existsSync(join(dir, "meta.json"))) throw new Error(`checkpoint ${id} not found`)
   const meta = JSON.parse(await readFile(join(dir, "meta.json"), "utf8"))
+  const isV2 = meta.version === META_VERSION
   const patchContent = await readFile(join(dir, "patch.diff"), "utf8")
 
-  const isTracked = meta.tracked?.includes(filePath) ?? extractFileHunks(patchContent, filePath) !== ""
+  const tracked = meta.tracked ?? []
+  const isTracked = tracked.includes(filePath) || extractFileHunks(patchContent, filePath) !== ""
   const inUntracked = (meta.untracked ?? []).includes(filePath)
 
   if (!isTracked && !inUntracked) {
     throw new Error(`file "${filePath}" not in checkpoint ${id}`)
   }
 
-  // Untracked file: read the copy directly
+  // v2: read the snapshot copy directly
+  const copy = join(inUntracked ? join(dir, "untracked") : join(dir, "files"), filePath)
+  if (isV2 && existsSync(copy)) {
+    return await readFile(copy, "utf8")
+  }
+
+  // Untracked legacy: read the copy if present
   if (inUntracked && !isTracked) {
     const src = join(dir, "untracked", filePath)
     if (!existsSync(src)) throw new Error(`untracked file "${filePath}" copy missing in checkpoint`)
     return await readFile(src, "utf8")
   }
 
-  // Tracked file: temporarily restore → read → restore working tree
+  // Tracked legacy: temporarily restore → read → restore working tree
   const abs = join(cwd, filePath)
   const existed = existsSync(abs)
   let saved = null

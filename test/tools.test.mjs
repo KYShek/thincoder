@@ -299,7 +299,7 @@ test("bash: 流式输出实时透传（onOutput 分块到达）", async () => {
 
 // ---------------------------------------------------------------- checkpoint 快照与回滚
 
-test("checkpoint: 快照 → 改坏 → 回滚完全恢复", async () => {
+test("checkpoint: 快照 → 改坏 → 回滚完全恢复（v2 全量副本）", async () => {
   const { execFileSync } = await import("node:child_process")
   const { createCheckpoint, rewind, listCheckpoints } = await import("../src/git/checkpoint.mjs")
   const { writeFile, readFile: rf, mkdir: mk, rm: del, access } = await import("node:fs/promises")
@@ -329,13 +329,79 @@ test("checkpoint: 快照 → 改坏 → 回滚完全恢复", async () => {
     // 回滚
     const summary = await rewind(dir, cp.id)
     const restored = (await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n")
-    assert.equal(restored, "const v = 1\n") // 跟踪文件还原（autocrlf 归一化后比较）
+    assert.equal(restored, "const v = 1\n") // 跟踪文件还原
     assert.equal(await rf(join(dir, "note.md"), "utf8"), "原始笔记\n") // 未跟踪文件还原
-    await assert.rejects(access(join(dir, "src", "junk.js"))) // 新建文件被删
-    assert.equal(summary.deleted, 1)
+    // v2 语义：快照后新建的文件保留（restore ≠ destroy）
+    assert.equal(await rf(join(dir, "src", "junk.js"), "utf8"), "agent 新建的文件\n")
+    assert.equal(summary.deleted, 0)
 
     const cps2 = await listCheckpoints(dir)
     assert.ok(cps2.length >= 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("checkpoint: 快照后 commit 再回滚仍然恢复（v2 副本与 HEAD 无关）", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { createCheckpoint, rewind } = await import("../src/git/checkpoint.mjs")
+  const { writeFile, readFile: rf } = await import("node:fs/promises")
+
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cp2-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    await writeFile(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 快照（工作区修改 app.js）
+    await writeFile(join(dir, "app.js"), "const v = 2 // snapshot state\n")
+    const cp = await createCheckpoint(dir)
+    assert.ok(cp?.id)
+
+    // 快照后：commit 该修改 + 再改坏（v1 的 patch 基准在此失效）
+    git("add", ".")
+    git("commit", "-qm", "snapshot state")
+    await writeFile(join(dir, "app.js"), "const v = 999 // 改坏了\n")
+
+    // v2 回滚：副本覆盖，与 HEAD 无关
+    const summary = await rewind(dir, cp.id)
+    const restored = (await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n")
+    assert.equal(restored, "const v = 2 // snapshot state\n", "commit 后回滚仍恢复快照状态")
+    assert.ok(summary.restored >= 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("checkpoint: 超大文件跳过副本并提示（skipped 列表）", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { createCheckpoint, rewind } = await import("../src/git/checkpoint.mjs")
+  const { writeFile, readFile: rf } = await import("node:fs/promises")
+
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cp3-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    await writeFile(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 大文件（>5MB 模拟：直接写 6MB）—— tracked
+    await writeFile(join(dir, "big.bin"), Buffer.alloc(6 * 1024 * 1024, 1))
+    const cp = await createCheckpoint(dir)
+    assert.ok(cp.skipped.includes("big.bin"), "大文件进 skipped 列表: " + cp.skipped.join(","))
+
+    // 改坏大文件后 rewind：skipped 文件不恢复，但返回提示
+    await writeFile(join(dir, "big.bin"), Buffer.alloc(6 * 1024 * 1024, 2))
+    const summary = await rewind(dir, cp.id)
+    assert.ok(summary.skipped.includes("big.bin"), "rewind 报告 skipped 文件")
+    assert.ok((await rf(join(dir, "big.bin"))).length === 6 * 1024 * 1024, "文件仍在（未恢复/未删除）")
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

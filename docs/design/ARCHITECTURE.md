@@ -53,7 +53,7 @@ thincoder/
 │   │   ├── index.mjs     # builtinTools 注册
 │   │   ├── file.mjs      # read / write / edit / insert_after / read_image
 │   │   ├── system.mjs    # bash / glob / grep / ls
-│   │   ├── git.mjs       # git_diff / git_status / git_log / question / checkpoint
+│   │   ├── git.mjs       # git 综合工具（diff / status / log / checkpoint 子命令）+ question
 │   │   ├── web.mjs       # websearch / fetch
 │   │   ├── patch.mjs     # apply_patch / syntax_check / delete
 │   │   ├── shared.mjs    # 工具共享工具函数
@@ -73,7 +73,7 @@ thincoder/
 │   ├── mcp/              # MCP 客户端（stdio / HTTP / WebSocket）
 │   ├── mcp.mjs           # MCP 入口
 │   ├── config.mjs        # 配置加载 + provider 预设管理
-│   ├── git/              # checkpoint.mjs（git 存档点）+ gitmem.mjs（Team 层同步）
+│   ├── git/              # checkpoint.mjs（v2 全量副本快照，HEAD 无关可回滚）+ gitmem.mjs（Team 层同步）
 │   ├── skills.mjs        # 项目技能加载
 │   ├── markdown.mjs      # frontmatter 解析（零依赖）
 │   ├── distill.mjs       # 会话知识提取

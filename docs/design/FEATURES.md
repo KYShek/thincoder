@@ -74,10 +74,8 @@
 
 | 工具 | 说明 |
 |------|------|
-| `checkpoint` | 快照：list/create/rewind/cat，每次用户任务前自动快照 |
-| `git_diff` | 查看未提交变更 |
-| `git_status` | 结构化 git 状态 |
-| `git_log` | 提交历史 |
+| `git` | 综合工具：diff / status / log / checkpoint（list/create/rewind/cat），每次用户任务前自动快照；快照为全量副本（v2），commit 后仍可回滚 |
+| `hashline_edit` | 按行内容哈希寻址编辑（抗空白/编码漂移） |
 
 ## 九、Slash 命令（17 个）
 
