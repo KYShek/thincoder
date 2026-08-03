@@ -80,7 +80,7 @@ test("formatTables: 超宽表格按列收缩到可用宽度", async () => {
 function tuiState(overrides = {}) {
   return {
     lines: [], streaming: "", input: [], cursor: 0,
-    history: [], historyIndex: -1, scroll: 0,
+    history: [], historyIndex: -1, _draft: null, scroll: 0,
     processing: false, controller: null,
     permission: null, permissionPreview: [], question: null,
     picker: null, wizard: null, tasks: [],
@@ -356,18 +356,91 @@ test("keyHandler: cursor movement left/right", () => {
   assert.equal(state.cursor, 2)
 })
 
-test("keyHandler: up/down cycle through input history (down past end clears input)", () => {
+test("keyHandler: up/down cycle through input history (down past end restores the stashed draft)", () => {
   const state = tuiState({ history: [[..."first"], [..."second"]], historyIndex: -1, input: [..."current"] })
   const handler = createKeyHandler(keyCtx(state))
   handler("", { name: "up" })
   assert.equal(state.input.join(""), "second", "first up loads last history entry")
+  assert.deepEqual(state._draft, [..."current"], "unsent input stashed as draft")
   handler("", { name: "up" })
   assert.equal(state.input.join(""), "first", "second up loads earlier entry")
   handler("", { name: "down" })
   assert.equal(state.input.join(""), "second", "first down goes forward in history")
   handler("", { name: "down" })
+  assert.equal(state.input.join(""), "current", "down past newest restores the draft (not blank)")
+  assert.equal(state.historyIndex, -1)
+  assert.equal(state._draft, null, "draft cleared after restore")
+})
+
+test("keyHandler: up with empty input leaves no draft; down past end goes to blank", () => {
+  const state = tuiState({ history: [[..."only"]], historyIndex: -1, input: [] })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("", { name: "up" })
+  assert.equal(state._draft, null, "no draft when input was empty")
+  handler("", { name: "down" })
   assert.equal(state.input.join(""), "")
   assert.equal(state.historyIndex, -1)
+})
+
+// ====================================================================
+// search mode regressions (79fc3df audit, docs/design/TUI-INPUT-BOX.md)
+// ====================================================================
+
+test("keyHandler: search mode — bare n/p type into the query (regression: they hijacked navigation)", () => {
+  const state = tuiState({ search: { query: "", matches: [], index: 0 } })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("n", { name: "n" })
+  handler("p", { name: "p" })
+  assert.equal(state.search.query, "np", "n and p land in the query, not navigation")
+  assert.equal(state.search.index, 0)
+})
+
+test("keyHandler: search mode — Ctrl+N/Ctrl+P navigate matches", () => {
+  const state = tuiState({ search: { query: "x", matches: [{ lineIndex: 0, charIndex: 0 }, { lineIndex: 2, charIndex: 0 }], index: 0 } })
+  const handler = createKeyHandler(keyCtx(state))
+  handler(null, { name: "n", ctrl: true })
+  assert.equal(state.search.index, 1)
+  handler(null, { name: "p", ctrl: true })
+  assert.equal(state.search.index, 0)
+})
+
+test("keyHandler: search mode — unhandled keys do NOT fall through to hidden input", () => {
+  const state = tuiState({ search: { query: "abc", matches: [], index: 0 }, input: [..."protected"], cursor: 3 })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("", { name: "left" })
+  handler("", { name: "tab" })
+  handler("", { name: "home" })
+  handler(null, { name: "delete" })
+  assert.equal(state.input.join(""), "protected", "hidden input untouched in search mode")
+  assert.equal(state.cursor, 3)
+})
+
+test("keyHandler: search mode — Esc exits search", () => {
+  const state = tuiState({ search: { query: "q", matches: [], index: 0 } })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("", { name: "escape" })
+  assert.equal(state.search, null)
+})
+
+// ====================================================================
+// multiline input key (Shift+Enter removed, Alt+Enter added)
+// ====================================================================
+
+test("keyHandler: Alt+Enter (meta+return) inserts newline for multiline input", () => {
+  const state = tuiState({ input: [..."ab"], cursor: 2 })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("", { name: "return", meta: true })
+  assert.equal(state.input.join(""), "ab\n")
+  assert.equal(state.cursor, 3)
+})
+
+test("keyHandler: bare Enter submits (does not insert newline)", () => {
+  const state = tuiState({ input: [..."ab"], cursor: 2 })
+  let submitted = false
+  const handler = createKeyHandler({ ...keyCtx(state), submit: async () => { submitted = true } })
+  handler("", { name: "return" })
+  assert.equal(submitted, true)
+  assert.equal(state.input.join(""), "ab", "input untouched until submit clears it")
 })
 
 test("keyHandler: permission y/n/a resolution", () => {
@@ -396,6 +469,9 @@ test("keyHandler: permission 'a' sets AUTO and approves", () => {
   assert.equal(approved, true)
   assert.equal(agent.autoApprove, true)
   assert.equal(state.permission, null)
+  // Regression guard (b0bcab4 removed this): the model must be told AUTO is on
+  assert.ok(agent._pendingReminders?.some((r) => r.includes("AUTO mode is now ON")),
+    "AUTO reminder injected for the model")
 })
 
 test("keyHandler: question free-text submit resolves answer", () => {

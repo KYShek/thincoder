@@ -196,6 +196,7 @@ export function renderInputBox(state, W, boxLines, cols, inputLayout, inputOffse
     if (title === " Input " || title === " Processing... ") parts.push(" Ctrl+U clear ")
     if (title === " Question ") parts.push(" Enter submit ")
     if (title === " Inject Message ") parts.push(" Enter send, Esc cancel ")
+    parts.push(" Alt+Enter newline ")
     parts.push(" Ctrl+V paste ")
     parts.push(" Ctrl+I inject ")
     const hint = parts.join("")

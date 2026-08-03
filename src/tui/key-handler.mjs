@@ -69,6 +69,8 @@ export function createKeyHandler(ctx) {
         state.status = "Processing..."
         if (answer === "a" && !isContinue) {
           agent.autoApprove = true
+          agent._pendingReminders = agent._pendingReminders ?? []
+          agent._pendingReminders.push("[System reminder: AUTO mode is now ON. All tool calls are automatically approved. Use /auto to disable.]")
           pushLine(`  [auto] AUTO ON: tool calls no longer prompt for approval (/auto to disable)`, C.warn)
         }
         const approved = answer === "y" || (answer === "a" && !isContinue)
@@ -147,7 +149,7 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // Search mode: Ctrl+F to enter, Esc/n/N to navigate/exit
+    // Search mode: Ctrl+F to enter, Ctrl+N/Ctrl+P (or Ctrl+G/Ctrl+R) navigate, Esc exit
   if (key.ctrl && key.name === "f" && !state.permission && !state.question) {
     if (!state.search) {
       state.search = { query: "", matches: [], index: 0 }
@@ -157,12 +159,14 @@ export function createKeyHandler(ctx) {
   }
 
   if (state.search) {
-    if (key.name === "escape") {
+    if (key.name === "escape" || (key.ctrl && key.name === "c")) {
       state.search = null
       render()
       return
     }
-    if (key.name === "n" || (key.ctrl && key.name === "g")) {
+    // Navigation requires Ctrl — bare n/p are query characters (regression fix: bare n/p
+    // used to hijack typing, making it impossible to type those letters into the query)
+    if ((key.ctrl && key.name === "n") || (key.ctrl && key.name === "g")) {
       // Next match
       if (state.search.matches.length > 0) {
         state.search.index = (state.search.index + 1) % state.search.matches.length
@@ -171,7 +175,7 @@ export function createKeyHandler(ctx) {
       render()
       return
     }
-    if (key.name === "p" || (key.ctrl && key.name === "r")) {
+    if ((key.ctrl && key.name === "p") || (key.ctrl && key.name === "r")) {
       // Previous match
       if (state.search.matches.length > 0) {
         state.search.index = (state.search.index - 1 + state.search.matches.length) % state.search.matches.length
@@ -204,6 +208,9 @@ export function createKeyHandler(ctx) {
       render()
       return
     }
+    // Swallow every other key (arrows/Tab/Delete/…) — without this they fall through
+    // to normal input handling and edit the HIDDEN state.input instead of the search box
+    return
   }
 
   if (key.ctrl && key.name === "c") {
@@ -230,7 +237,7 @@ export function createKeyHandler(ctx) {
         { type: "item", text: "Ctrl+C — Cancel/Abort current operation" },
         { type: "item", text: "Ctrl+I — Interrupt and inject message" },
         { type: "item", text: "Ctrl+F — Search conversation history" },
-        { type: "item", text: "Ctrl+L — Clear screen" },
+        { type: "item", text: "Alt+Enter — Insert newline (multiline input)" },
         { type: "item", text: "Ctrl+U — Clear input line" },
         { type: "item", text: "Esc — Cancel current input/picker" },
         { type: "item", text: "↑/↓ — Navigate input history" },
@@ -395,6 +402,11 @@ export function createKeyHandler(ctx) {
     // input history
     if (key.name === "up") {
       if (state.history.length) {
+        // Draft protection: entering history navigation with unsent input stashes it,
+        // so navigating back down past the newest entry restores what was being typed.
+        if (state.historyIndex === -1 && state.input.length > 0) {
+          state._draft = [...state.input]
+        }
         state.historyIndex = state.historyIndex === -1 ? state.history.length - 1 : Math.max(0, state.historyIndex - 1)
         state.input = [...state.history[state.historyIndex]]
         state.cursor = state.input.length
@@ -407,7 +419,9 @@ export function createKeyHandler(ctx) {
         state.historyIndex++
         if (state.historyIndex >= state.history.length) {
           state.historyIndex = -1
-          state.input = []
+          // Restore the stashed draft instead of wiping back to blank
+          state.input = state._draft ? [...state._draft] : []
+          state._draft = null
         } else {
           state.input = [...state.history[state.historyIndex]]
         }
@@ -456,9 +470,12 @@ export function createKeyHandler(ctx) {
       return
     }
     if (key.name === "return" || key.name === "enter" || str === "\r") {
-      if (key.shift) {
-        // Shift+Enter: insert newline for multiline input
-        state.input.splice(state.cursor, 0, '\n')
+      if (key.meta && key.name === "return") {
+        // Alt+Enter: insert newline for multiline input. readline parses \x1b\r reliably
+        // as meta+return. Shift+Enter is NOT a viable multiline key: most terminals send
+        // plain \r (indistinguishable from Enter) and the CSI-u/modifyOtherKeys variants
+        // are either unparsed or split into garbage characters.
+        state.input.splice(state.cursor, 0, "\n")
         state.cursor++
         render()
       } else {

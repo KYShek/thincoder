@@ -57,37 +57,37 @@
 | `99fecb4` | Shift+Enter 多行 | **回归 BUG-5**（实测不可用，还会污染输入） |
 | `68a0620` / `e1f5bbf` | advisor 输出面板 / engineering 门禁 | 不影响输入框 |
 
-## 3. 已确认回归与修复方案（逐项）
+## 3. 已确认回归与修复方案（逐项，已全部修复 @ post-aac53d9）
 
-### BUG-1（P0）搜索框打不出字母 n/p
+### BUG-1（P0）搜索框打不出字母 n/p — **已修**
 `key-handler.mjs` 搜索块：`key.name === "n"` 匹配普通按键（缺 `key.ctrl`），按 n 变成"下一个匹配"。
-**修**：改为 `(key.ctrl && key.name === "n")` / `(key.ctrl && key.name === "p")`，或直接只留 Ctrl+G/Ctrl+R 并允许裸 n/p 输入。
+**修法**：导航改为 `key.ctrl && name === "n"/"p"`（Ctrl+G/Ctrl+R 兼容保留）；裸 n/p 作为 query 字符输入。
 
-### BUG-2（P0）搜索模式按键穿透
+### BUG-2（P0）搜索模式按键穿透 — **已修**
 搜索块末尾无兜底 `return`，↑↓←→/Tab/Delete/PgUp 等穿透到隐藏的 `state.input`。
-**修**：搜索块末尾加 `return`。
+**修法**：搜索块末尾加兜底 `return`（含 Esc 与 Ctrl+C 退出分支）。
 
-### BUG-3（P2）F1 帮助写了 Ctrl+L 清屏但未实现
-`/clear` 命令存在但无 Ctrl+L 快捷键。
-**修**：F1 帮助文本删掉 Ctrl+L 一行（不新增快捷键，避免与终端自身 Ctrl+L 冲突）。
+### BUG-3（P2）F1 帮助写了 Ctrl+L 清屏但未实现 — **已修**
+**修法**：F1 帮助删掉 Ctrl+L 一行，替换为 "Alt+Enter — Insert newline"（不新增快捷键，避免与终端自身 Ctrl+L 冲突）。
 
-### BUG-4（P1）权限按 'a' 开 AUTO 后模型收不到提醒
-`b0bcab4` 删了 `agent._pendingReminders.push("[System reminder: AUTO mode is now ON...]")`，只留 TUI pushLine。
-**修**：恢复这 2 行（v0.11.1 原样）。
+### BUG-4（P1）权限按 'a' 开 AUTO 后模型收不到提醒 — **已修**
+`b0bcab4` 删了 `agent._pendingReminders.push(...)`。
+**修法**：恢复 v0.11.1 的 2 行注入。测试断言 `_pendingReminders` 含 AUTO reminder。
 
-### BUG-5（P0）Shift+Enter 多行不可用且污染输入
+### BUG-5（P0）Shift+Enter 多行不可用且污染输入 — **已修**
 `99fecb4` 的 `if (key.shift)` 分支在真实终端不触发或触发垃圾字符（见 §1.4 实测）。
-**修**：删除 `key.shift` 分支；Enter 处理改为：`key.meta`（Alt+Enter）→ 插 `\n`，否则提交。同步更新 F1 帮助与输入框边框提示。
+**修法**：删除 Shift 分支；Enter 处理改为 `key.meta`（Alt+Enter，readline 稳定解析）插 `\n`，否则提交。F1 帮助与输入框边框提示同步更新。
 
 ## 4. 新增需求（用户报告"↓ 回不到当前输入"）
 
-### FIX-5（P1）历史导航草稿保护
+### FIX-5（P1）历史导航草稿保护 — **已实现**
 现状：正在打字时按 ↑，草稿被覆盖且无法找回。
-**方案**（对齐常见 shell 行为）：
-- 进入历史导航前（`historyIndex === -1` 且 `input.length > 0` 时首次按 ↑），把当前 input 存入 `state._draft`
-- ↓ 走到头（`historyIndex` 超出）时，从 `_draft` 恢复输入而非清空
-- 提交或 Esc 时清除 `_draft`
-- 改动点：key-handler.mjs 的 up/down 两个分支 + state 初始化加 `_draft: null`
+**实现**（对齐常见 shell 行为）：
+- 进入历史导航前（`historyIndex === -1` 且 `input.length > 0` 时首次按 ↑），当前 input 存入 `state._draft`
+- ↓ 走到头时从 `_draft` 恢复（不再清空为空白），恢复后清 `_draft`
+- 空输入进入历史不存草稿（↓ 到头仍回空白）
+- `submit()` 时清除 `_draft`
+- 改动：key-handler.mjs up/down 分支、index.mjs state 初始化 `_draft: null` + submit 清除
 
 ## 5. 测试要求（修复必须带测试，test/tui.test.mjs）
 

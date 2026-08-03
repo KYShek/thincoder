@@ -64,6 +64,7 @@ export async function startTUI(agent, opts = {}) {
     cursor: 0,
     history: [],
     historyIndex: -1,
+    _draft: null, // stashed unsent input while navigating history (restored on down past newest)
     scroll: 0, // scroll lines from bottom upward
     processing: false,
     controller: null, // AbortController for current agent run
@@ -260,6 +261,7 @@ export async function startTUI(agent, opts = {}) {
     state.cursor = 0
     state.history.push(text)
     state.historyIndex = -1
+    state._draft = null // submitted — the draft is now history
     state.scroll = 0
 
     // Slash commands: handled locally, don't enter agent loop
