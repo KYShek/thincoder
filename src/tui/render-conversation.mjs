@@ -10,7 +10,9 @@ let _convCache = { key: "", cols: 0, lines: [] }
 
 export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
-  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state._advisorThink?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}`
+  // expandedBlocks participates: expanding/folding a block must invalidate the cache
+  const exp = state.expandedBlocks ? [...state.expandedBlocks].sort().join(",") : ""
+  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state._advisorThink?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}|${exp}`
 }
 
 function highlightSearchMatches(text, query, matchesInLine, globalCurrentIndex, allMatches, lineIndex) {
@@ -50,12 +52,27 @@ function buildConvLines(state, cols) {
       text = highlightSearchMatches(text, state.search.query, l._searchMatches, state.search.index, state.search.matches, i)
     }
 
+    // Long-message folding: a single line that wraps beyond LONG_FOLD_LINES display rows
+    // collapses to [first, "… N more — click/Enter to expand", last]. Keyed by the
+    // source-line index (`long-${i}`) so the toggle survives re-renders. This is the
+    // folding users actually see — tool outputs, long replies, big error blocks.
+    const LONG_FOLD_LINES = 12
+    const longKey = `long-${i}`
+    const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey)
+    const block = []
     for (const line of formatTables(sanitizeDisplay(text), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
         // Lightweight markdown display (IK5VW3): headings bold + inline markers styled.
         // Runs AFTER wrapping so the ANSI it inserts never skews width math.
-        convLines.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: l.color, _foldId: l._foldId, _src: i })
+        block.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: l.color, _foldId: l._foldId, _src: i })
       }
+    }
+    if (folded && block.length > LONG_FOLD_LINES) {
+      convLines.push(block[0])
+      convLines.push({ text: `  … ${block.length - 2} more lines — click to expand`, color: C.fold, _foldToggle: longKey, _src: i })
+      convLines.push(block[block.length - 1])
+    } else {
+      convLines.push(...block)
     }
   }
   if (state.reasoning) {
@@ -101,7 +118,7 @@ function buildConvLines(state, cols) {
         if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
           folded.push(convLines[i])
           if (blockLen > 2) folded.push(convLines[i + 1])
-          folded.push({ text: `  … ${blockLen - 2} more lines — Enter to expand`, color: C.fold, _foldToggle: foldKey })
+          folded.push({ text: `  … ${blockLen - 2} more lines — click to expand`, color: C.fold, _foldToggle: foldKey })
           i = j
           continue
         }

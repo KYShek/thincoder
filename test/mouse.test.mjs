@@ -150,6 +150,45 @@ describe("handleMouseClick — conversation line actions", () => {
       assert.ok(menu.entries.some((e) => e.action === "copy"))
       assert.ok(menu.entries.some((e) => e.action === "edit"))
     } finally {
+
+describe("long-message folding (render-conversation)", () => {
+  it("a single long line folds to [first, hint, last] and expands via click key", async () => {
+    const { buildConvLines, convCacheKey } = await import("../src/tui/render-conversation.mjs")
+    const state = {
+      lines: [{ text: "L1\n" + "line2\n".repeat(15) + "last", color: "" }],
+      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
+    }
+    const cols = 80
+    const folded = buildConvLines(state, cols)
+    // 12-line threshold: full block = 1 + 15 + 1 = 17 lines → folded to 3
+    assert.equal(folded.length, 3, "long message folded to [first, hint, last]")
+    assert.equal(folded[0].text, "L1")
+    assert.match(folded[1].text, /more lines — click to expand/)
+    assert.equal(folded[2].text, "last")
+    const toggleKey = folded[1]._foldToggle
+    assert.ok(toggleKey?.startsWith("long-"), "fold key is long-<srcIndex>")
+
+    // Expand: add the key → full block renders; cache key must change
+    const keyBefore = convCacheKey(state)
+    state.expandedBlocks.add(toggleKey)
+    const keyAfter = convCacheKey(state)
+    assert.notEqual(keyBefore, keyAfter, "expandedBlocks participates in the cache key")
+    const expanded = buildConvLines(state, cols)
+    assert.equal(expanded.length, 17, "expanded to full content")
+  })
+
+  it("short lines are not folded", async () => {
+    const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
+    const state = {
+      lines: [{ text: "short", color: "" }, { text: "another", color: "" }],
+      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
+    }
+    assert.equal(buildConvLines(state, 80).length, 2)
+  })
+})
+
       Object.defineProperty(process.stdout, "columns", { value: orig.cols, configurable: true })
       Object.defineProperty(process.stdout, "rows", { value: orig.rows, configurable: true })
     }
