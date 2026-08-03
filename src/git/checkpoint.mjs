@@ -10,7 +10,7 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync, readFileSync, statSync } from "node:fs"
-import { cp, mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises"
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { configDir } from "../config.mjs"
 
@@ -64,22 +64,29 @@ export function isGitRepo(cwd) {
   return git(cwd, ["rev-parse", "--is-inside-work-tree"], { allowFail: true }) === "true"
 }
 
-/** Copy a file into a snapshot directory, skipping oversized files. Returns true when copied. */
+/**
+ * Copy a file into a snapshot directory, skipping oversized files.
+ * Returns { size, sha } (sha = SHA256 hex, 12 chars) or null when skipped/failed.
+ */
 async function copyInto(dir, rel, src, skipped) {
   let size
-  try { size = statSync(src).size } catch { return false }
+  try { size = statSync(src).size } catch { return null }
   if (size > MAX_FILE_BYTES) {
     skipped.push(rel)
-    return false
+    return null
   }
+  const buf = await readFile(src).catch((e) => { console.error(`[checkpoint] skipping ${rel}: ${e.message}`); return null })
+  if (!buf) return null
   const dst = join(dir, rel)
   await mkdir(dirname(dst), { recursive: true })
-  await copyFile(src, dst).catch((e) => console.error(`[checkpoint] skipping ${rel}: ${e.message}`))
-  return true
+  await writeFile(dst, buf)
+  return { size: buf.length, sha: createHash("sha256").update(buf).digest("hex").slice(0, 12) }
 }
 
 /**
  * Create a snapshot. Returns { id, time, files, tracked, untracked, skipped } or null (non-git repo).
+ * Per-file metadata ({ size, sha } per copied file) is stored in meta.json — this powers
+ * listFileVersions (per-file history across snapshots) without rescanning copies.
  */
 export async function createCheckpoint(cwd) {
   if (!isGitRepo(cwd)) return null
@@ -101,20 +108,24 @@ export async function createCheckpoint(cwd) {
   await writeFile(join(dir, "patch.diff"), patch, "utf8")
 
   const skipped = []
+  const fileMeta = {}
   for (const rel of changed) {
-    await copyInto(join(dir, "files"), rel, join(cwd, rel), skipped)
+    const m = await copyInto(join(dir, "files"), rel, join(cwd, rel), skipped)
+    if (m) fileMeta[rel] = m
   }
 
   // Untracked files (respects .gitignore) → copy as-is
   const untrackedRaw = git(cwd, ["ls-files", "--others", "--exclude-standard"], { allowFail: true }) ?? ""
   const untracked = untrackedRaw ? untrackedRaw.split("\n").filter(Boolean) : []
+  const untrackedMeta = {}
   for (const rel of untracked) {
-    await copyInto(join(dir, "untracked"), rel, join(cwd, rel), skipped)
+    const m = await copyInto(join(dir, "untracked"), rel, join(cwd, rel), skipped)
+    if (m) untrackedMeta[rel] = m
   }
 
   await writeFile(join(dir, "meta.json"), JSON.stringify({
     version: META_VERSION, id, time: Date.now(), untracked, tracked: changed, skipped,
-    head, trackedAll,
+    head, trackedAll, fileMeta, untrackedMeta,
   }, null, 2), "utf8")
 
   await pruneCheckpoints(cwd)
@@ -303,6 +314,57 @@ export async function rewind(cwd, id, { path } = {}) {
     )
   }
 }
+
+// ---- per-file history ----
+
+/**
+ * List every historical version of a file across all snapshots (newest first).
+ * Distinguishing copies: each entry carries its snapshot id, time, byte size and
+ * content sha — the same file in different snapshots is a different version.
+ * @param {string} cwd
+ * @param {string} filePath — relative path as stored in snapshots
+ * @returns {Promise<Array<{snapshotId: string, time: number, size: number, sha: string, source: "tracked"|"untracked"}>>}
+ */
+export async function listFileVersions(cwd, filePath) {
+  const root = checkpointRoot(cwd)
+  if (!existsSync(root)) return []
+  const ids = (await readdir(root)).sort().reverse() // newest → oldest
+  const out = []
+  for (const id of ids) {
+    let meta
+    try { meta = JSON.parse(await readFile(join(root, id, "meta.json"), "utf8")) } catch { continue }
+    const trackedMeta = meta.fileMeta ?? {}
+    const untrackedMeta = meta.untrackedMeta ?? {}
+    let entry = null
+    if (trackedMeta[filePath]) {
+      entry = { snapshotId: id, time: meta.time, ...trackedMeta[filePath], source: "tracked" }
+    } else if (untrackedMeta[filePath]) {
+      entry = { snapshotId: id, time: meta.time, ...untrackedMeta[filePath], source: "untracked" }
+    } else if ((meta.tracked ?? []).includes(filePath) || (meta.untracked ?? []).includes(filePath)) {
+      // Legacy snapshot (no per-file meta): fall back to stat-ing the copy
+      const src = join((meta.tracked ?? []).includes(filePath) ? join(root, id, "files") : join(root, id, "untracked"), filePath)
+      let size = null, sha = null
+      try {
+        const buf = await readFile(src)
+        size = buf.length
+        sha = createHash("sha256").update(buf).digest("hex").slice(0, 12)
+      } catch { continue }
+      entry = { snapshotId: id, time: meta.time, size, sha, source: (meta.tracked ?? []).includes(filePath) ? "tracked" : "untracked" }
+    }
+    if (entry) out.push(entry)
+  }
+  return out
+}
+
+/**
+ * Restore a single file's content from a specific snapshot (per-file restore —
+ * other files are left untouched). Thin wrapper over rewind path mode with clearer intent.
+ * @returns {Promise<{path: string, type: "tracked"|"untracked", restored: boolean}>}
+ */
+export async function restoreFile(cwd, filePath, snapshotId) {
+  return rewind(cwd, snapshotId, { path: filePath })
+}
+
 
 // ---- view ----
 

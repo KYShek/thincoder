@@ -74,7 +74,7 @@
 
 | 工具 | 说明 |
 |------|------|
-| `git` | 综合工具：diff / status / log / checkpoint（list/create/rewind/cat）；快照为全量副本（v2），commit 后仍可回滚。触发点：模型手动 + rewind 前 pre-rewind + **git 破坏命令 guard**（bash 检测到 checkout/restore/reset/clean 前自动快照未提交工作，命令放行不拦截） |
+| `git` | 综合工具：diff / status / log / checkpoint（list/create/rewind/cat/**versions**）；快照为全量副本（v2），commit 后仍可回滚。**versions**：列出某文件在所有快照中的历史版本（时间/size/hash），`rewind + path` 恢复指定版本。触发点：模型手动 + rewind 前 pre-rewind + **git 破坏命令 guard**（bash 检测到 checkout/restore/reset/clean 前自动快照未提交工作，命令放行不拦截） |
 | `hashline_edit` | 按行内容哈希寻址编辑（抗空白/编码漂移） |
 
 ## 九、Slash 命令（17 个）

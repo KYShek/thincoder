@@ -409,6 +409,96 @@ test("checkpoint: 超大文件跳过副本并提示（skipped 列表）", async 
 
 test("checkpoint 工具：list / create / rewind 走工具入口", async () => {
   const { execFileSync } = await import("node:child_process")
+
+test("checkpoint: listFileVersions 区分同一文件的多个历史副本", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const { createCheckpoint, listFileVersions, restoreFile } = await import("../src/git/checkpoint.mjs")
+  const { writeFile, readFile: rf } = await import("node:fs/promises")
+
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cpv-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    await writeFile(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    // 三个快照，app.js 三个不同版本 + 一个 untracked 文件
+    await writeFile(join(dir, "app.js"), "const v = 2\n")
+    await writeFile(join(dir, "note.md"), "v1-note\n")
+    const cp1 = await createCheckpoint(dir)
+
+    await writeFile(join(dir, "app.js"), "const v = 3\n")
+    await writeFile(join(dir, "note.md"), "v2-note\n")
+    const cp2 = await createCheckpoint(dir)
+
+    // 同一内容（v3 不变）再快照一次
+    const cp3 = await createCheckpoint(dir)
+
+    // tracked 文件：3 个版本，按时间倒序，sha 可区分，相同内容标注
+    const versions = await listFileVersions(dir, "app.js")
+    assert.equal(versions.length, 3)
+    assert.equal(versions[0].snapshotId, cp3.id, "最新在前")
+    assert.equal(versions[1].snapshotId, cp2.id)
+    assert.equal(versions[2].snapshotId, cp1.id)
+    assert.equal(versions[0].sha, versions[1].sha, "cp3 与 cp2 内容相同")
+    assert.notEqual(versions[1].sha, versions[2].sha, "cp2 与 cp1 内容不同")
+    assert.equal(versions[0].source, "tracked")
+    assert.ok(versions[0].size > 0)
+
+    // untracked 文件：3 个版本（cp3 时 note.md 未变但仍被快照），内容相同可识别
+    const noteVersions = await listFileVersions(dir, "note.md")
+    assert.equal(noteVersions.length, 3)
+    assert.ok(noteVersions.every((v) => v.source === "untracked"))
+    assert.equal(noteVersions[0].sha, noteVersions[1].sha, "cp3/cp2 内容相同")
+    assert.notEqual(noteVersions[1].sha, noteVersions[2].sha, "cp2/cp1 内容不同")
+
+    // 恢复指定版本：把 app.js 改坏后恢复到 cp1 的版本（v=2）
+    await writeFile(join(dir, "app.js"), "const v = 999 // broken\n")
+    const r = await restoreFile(dir, "app.js", cp1.id)
+    assert.equal(r.restored, true)
+    assert.equal((await rf(join(dir, "app.js"), "utf8")).replace(/\r\n/g, "\n"), "const v = 2\n", "恢复到 cp1 版本")
+
+    // 未在快照中的文件 → 空列表
+    assert.equal((await listFileVersions(dir, "never-existed.js")).length, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("checkpoint 工具：versions 子命令列出文件历史版本", async () => {
+  const { execFileSync } = await import("node:child_process")
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-cpver-"))
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  const ctx = { cwd: dir }
+  try {
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "t@t.dev")
+    writeFileSync(join(dir, "app.js"), "const v = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "init")
+    writeFileSync(join(dir, "app.js"), "const v = 2\n")
+    const created = await byName.git.execute({ action: "checkpoint", checkpointAction: "create" }, ctx)
+    const id = created.match(/Checkpoint (\S+) created/)[1]
+
+    const out = await byName.git.execute({ action: "checkpoint", checkpointAction: "versions", path: "app.js" }, ctx)
+    assert.ok(out.includes(id), `versions 应包含快照 id: ${out}`)
+    assert.ok(out.includes("sha:"), "包含内容 hash")
+    assert.match(out, /checkpointAction=rewind checkpointId=/, "提示恢复方式")
+
+    // versions 缺 path 报错
+    await assert.rejects(
+      () => byName.git.execute({ action: "checkpoint", checkpointAction: "versions" }, ctx),
+      /path is required for versions/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
   const dir = mkdtempSync(join(tmpdir(), "thincoder-cptool-"))
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" })
   const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))

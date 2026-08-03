@@ -16,12 +16,12 @@ export const gitTool = {
       action: { type: "string", enum: ["diff", "status", "log", "checkpoint"], description: "diff / status / log / checkpoint" },
       // diff/log params
       staged: { type: "boolean", description: "(diff) Show staged changes instead of working tree" },
-      path: { type: "string", description: "(diff/log/checkpoint:cat/checkpoint:rewind) File or directory to scope to" },
+      path: { type: "string", description: "(diff/log/checkpoint:cat/versions/rewind) File or directory to scope to" },
       ref: { type: "string", description: "(diff) Compare against this ref (default HEAD)" },
       count: { type: "number", description: "(log) Number of commits (default 10)" },
       oneline: { type: "boolean", description: "(log) One-line-per-commit format" },
       // checkpoint params
-      checkpointAction: { type: "string", enum: ["list", "create", "rewind", "cat"], description: "(checkpoint) list snapshots / create one / restore by id / read file from snapshot" },
+      checkpointAction: { type: "string", enum: ["list", "create", "rewind", "cat", "versions"], description: "(checkpoint) list snapshots / create one / restore by id / read file from snapshot / list a file's historical versions" },
       checkpointId: { type: "string", description: "(checkpoint) Snapshot id — required for rewind and cat; optional for list (shows file tree)" },
     },
     required: ["action"],
@@ -81,15 +81,28 @@ export const gitTool = {
         return truncate(out || "(no commits)")
       }
       case "checkpoint": {
-        const { createCheckpoint, listCheckpoints, rewind, isGitRepo } = await import("../git/checkpoint.mjs")
+        const { createCheckpoint, listCheckpoints, rewind, listFileVersions, isGitRepo } = await import("../git/checkpoint.mjs")
         if (!isGitRepo(ctx.cwd)) throw new Error("Not a git repository — checkpoints unavailable")
 
         const sub = args.checkpointAction
-        if (!sub) return "checkpoint: missing checkpointAction — use: list | create | rewind | cat"
+        if (!sub) return "checkpoint: missing checkpointAction — use: list | create | rewind | cat | versions"
 
         if (sub === "create") {
           const cp = await createCheckpoint(ctx.cwd)
           return `Checkpoint ${cp.id} created (${cp.files} file(s): ${cp.tracked.length} tracked, ${cp.untracked.length} untracked)`
+        }
+        if (sub === "versions") {
+          if (!args.path) throw new Error("path is required for versions — the file whose history you want")
+          const versions = await listFileVersions(ctx.cwd, args.path)
+          if (versions.length === 0) return `No snapshot copies of "${args.path}" found (it was never part of an auto/protection snapshot).`
+          return (
+            `Historical versions of "${args.path}" (${versions.length}, newest first):\n` +
+            versions.map((v) =>
+              `  ${v.snapshotId}  ${new Date(v.time).toISOString()}  ${v.size}B  sha:${v.sha}  (${v.source})` +
+              (v.sha === versions[versions.indexOf(v) - 1]?.sha ? "  ← same content as previous" : "")
+            ).join("\n") +
+            `\nRestore a version: checkpointAction=rewind checkpointId=<snapshotId> path="${args.path}"`
+          )
         }
         if (sub === "rewind") {
           if (!args.checkpointId) throw new Error("checkpointId is required for rewind — use checkpointAction=list to see snapshot ids")
@@ -107,7 +120,7 @@ export const gitTool = {
         }
         if (sub === "list") {
           const cps = await listCheckpoints(ctx.cwd)
-          if (cps.length === 0) return "(no checkpoints yet — one is auto-created before each user task)"
+          if (cps.length === 0) return "(no checkpoints yet)"
 
           // Specific id: show the file tree within that snapshot
           if (args.checkpointId) {
@@ -125,7 +138,7 @@ export const gitTool = {
             return parts.join("  ")
           }).join("\n")
         }
-        throw new Error(`Unknown checkpoint action: ${sub}. Use: list | create | rewind | cat`)
+        throw new Error(`Unknown checkpoint action: ${sub}. Use: list | create | rewind | cat | versions`)
       }
       default:
         return `Unknown action '${args.action}'. Use: diff | status | log | checkpoint`
