@@ -208,6 +208,9 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.5 (2026-08)
+- **Fix: inline code styling** — markdown code spans now render with underline instead of reverse video (less harsh on the eyes)
+
 ### 0.12.4 (2026-08)
 - **Context compaction unified spec** — CLI/VS Code now share one compaction semantics (`docs/design/CONTEXT-COMPACTION.md`): window-adaptive tail size (`max(10, ctx/100K×30)`, ≤40% of history), measured prompt-token baseline preferred, pure-estimation path includes system+tools overhead, head/tail tool-call pairing protection on both sides, 3-tier fallback (LLM summary → deterministic truncation after 3 failures → per-message shrink), compaction summaries are silent to the frontend (no streaming into the conversation), task re-injection deduplicated. Unknown model names now warn once instead of silently degrading to the 128K default
 - **Kimi For Coding support** — new `kimi-code` preset (`api.kimi.com/coding/v1`, model `k3`, platform.kimi.com, `sk-kimi-` keys — NOT interchangeable with Moonshot); `MODEL_SPECS` gains the `k3` alias (1M context / multimodal / partialMode / reasoningEcho); 401 errors hint at the two-platform key mismatch; README documents the split
