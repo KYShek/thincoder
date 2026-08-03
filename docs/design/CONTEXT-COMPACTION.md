@@ -76,10 +76,10 @@
 - **统一**：`task（去重：先滤掉历史中 TASK_REINJECT_PREFIX 旧注入，再注入 pending 全量 + done 最多 3）` + `plan mode` + `AUTO/permission`。
 - 理由：done 只列 3 条省 token 且信息足够；去重保证单源真值（CLI 已实现，VS Code 补）。
 
-### D8 压缩前 checkpoint —— 非核心，允许差异
+### D8 压缩前 checkpoint —— 已移除
 
-- 现状：CLI 压缩前 git checkpoint + 注入引用（失败不阻塞）；VS Code 无。
-- **统一**：核心压缩语义**不包含** checkpoint。两端各自保留：CLI 维持现状；VS Code 有模型级 checkpoint 工具但无程序化基建，落地时若复用 git 命令成本低则带上，否则明确标注差异允许。
+- 原设计：压缩前 git checkpoint + 注入引用（失败不阻塞）。
+- **2026-08 决策：移除**（用户拍板）。理由：双线历史（机读 `history` + 人读 `_fullHistory`）已保证压缩后可恢复完整上下文（resume 走人读线）；压缩前快照白占磁盘。checkpoint 仅保留：模型手动调用、rewind 前 pre-rewind 快照、git 破坏命令 guard 快照。
 
 ### D9 压缩过程文案与形状 —— 统一
 

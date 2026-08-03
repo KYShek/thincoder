@@ -211,24 +211,7 @@ export async function compressIfNeeded(agent, threshold, callbacks, extras = {})
     messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
   })
 
-  // Auto-checkpoint before compaction: snapshot current state so the model can
-  // reconstruct context from git diff + recent messages + task progress later.
-  let cpId = null
-  try {
-    const { createCheckpoint } = await import("../git/checkpoint.mjs")
-    const cp = await createCheckpoint(agent.cwd)
-    cpId = cp?.id
-  } catch { /* checkpoint might fail — compaction itself should not be blocked */ }
-
   applyCompression(agent, split.headEnd, split.tailStart, COMPACTION_PREFIX + summary.content)
-
-  // Inject checkpoint reference after compaction so the model knows it can use /restore
-  if (cpId) {
-    agent.history.splice(split.headEnd, 0, {
-      role: "user",
-      content: `[System: context compacted. A checkpoint (id: ${cpId}) was auto-created before compaction. Use the checkpoint tool to review pre-compaction state if needed. File changes since then are tracked in git diff.]`,
-    })
-  }
 
   return true
 }

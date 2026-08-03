@@ -523,7 +523,8 @@ test("bash 工具：非破坏性 git 命令不触发保护；非 git 仓库静�
     git("add", ".")
     git("commit", "-qm", "init")
 
-    for (const cmd of ["git status", "git log --oneline", "git diff", "git checkout --help", "git branch"]) {
+    // 注意：不用 git checkout --help 验证——git 的 --help 会打开系统浏览器（Windows），测试不得触发
+    for (const cmd of ["git status", "git log --oneline", "git diff", "git checkout -b tmp-branch", "git branch"]) {
       const r = await bashTool.execute({ command: cmd }, { cwd: dir })
       assert.ok(!r.includes("[auto-protection]"), `${cmd} 不应触发保护: ${r.slice(0, 80)}`)
     }

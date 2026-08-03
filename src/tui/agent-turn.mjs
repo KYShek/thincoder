@@ -32,14 +32,6 @@ export async function runAgentTurn(ctx, text) {
   pushLabel(`❯ You:`, ansi.bold + C.user)
   pushLine(text, C.text)
 
-  // Auto-checkpoint before task (git repo only; failure is silent, doesn't block the task)
-  try {
-    const { createCheckpoint } = await import("../git/checkpoint.mjs")
-    await createCheckpoint(agent.cwd)
-  } catch {
-    // Checkpoint failure doesn't block the task
-  }
-
   ctx.assistantLabeled = false
   state.processing = true
   state.status = "Processing..."

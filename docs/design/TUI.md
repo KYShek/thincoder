@@ -91,7 +91,7 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
 ## 6. 回合驱动（agent-turn.mjs）
 
 `runAgentTurn(ctx, text)`：
-1. pushLabel "❯ You:" + 输入文本；**auto-checkpoint**（git 仓库内，失败静默）
+1. pushLabel "❯ You:" + 输入文本
 2. 置 processing、新建 AbortController、1s ticker
 3. callbacks 构造（onToken/onReasoning 流式进 streaming/reasoning 缓冲；子代理 `role#id/` 前缀分流到 subTasks 面板；onToolCall/onToolResult 工具摘要行；onUsage 累计 token；onCompress 提示 "[context] Context too long, auto-compacted"）
 4. runAgent 循环：正常完成 → flushStream；AbortError（Ctrl+I）→ 重开 controller 续跑；ContinueError → permission 询问 "Continue after N turns?"；其他错误 → "[error] …" 一行
