@@ -4,6 +4,7 @@
  */
 import { ansi, C } from "./ansi.mjs"
 import { formatTables, sanitizeDisplay, wrapText } from "./render.mjs"
+import { renderMarkdownInline, renderMarkdownHeading } from "./markdown.mjs"
 
 let _convCache = { key: "", cols: 0, lines: [] }
 
@@ -51,7 +52,9 @@ function buildConvLines(state, cols) {
 
     for (const line of formatTables(sanitizeDisplay(text), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
-        convLines.push({ text: wrapped, color: l.color, _foldId: l._foldId })
+        // Lightweight markdown display (IK5VW3): headings bold + inline markers styled.
+        // Runs AFTER wrapping so the ANSI it inserts never skews width math.
+        convLines.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: l.color, _foldId: l._foldId })
       }
     }
   }
@@ -78,7 +81,7 @@ function buildConvLines(state, cols) {
   if (state.streaming) {
     for (const line of formatTables(sanitizeDisplay(state.streaming), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
-        convLines.push({ text: wrapped, color: C.text })
+        convLines.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: C.text })
       }
     }
   }

@@ -14,6 +14,7 @@ import {
   renderInputBox, renderStatus,
 } from "../src/tui/render-frame.mjs"
 import { createKeyHandler } from "../src/tui/key-handler.mjs"
+import { renderMarkdownInline, renderMarkdownHeading } from "../src/tui/markdown.mjs"
 import { C } from "../src/tui/ansi.mjs"
 
 // ====================================================================
@@ -859,6 +860,50 @@ test("streaming simulation: only last line changes during token append", () => {
   // then only 1 (the streaming line) on subsequent tokens within the same turn.
   assert.ok(diffCount <= 2, `expected ≤2 diffs, got ${diffCount}`)
 })
+
+// ---------------------------------------------------------------- markdown 轻量渲染（IK5VW3）
+
+test("markdown: 行内标记渲染为 ANSI（** 粗体 / ` 反色 / ~~ 删除线 / 标题去 #）", () => {
+  // **bold** → 粗体，剥离 ANSI 后只剩文字
+  const bold = renderMarkdownInline("这是 **重点** 内容")
+  assert.ok(bold.includes("\x1b[1m"), "粗体开启序列")
+  assert.ok(bold.includes("\x1b[22m"), "粗体关闭序列（不清颜色）")
+  assert.equal(stripAnsi(bold), "这是 重点 内容", "标记符号消失")
+  // `code` → 反色
+  const code = renderMarkdownInline("运行 `npm test` 即可")
+  assert.ok(code.includes("\x1b[7m"), "反色开启")
+  assert.equal(stripAnsi(code), "运行 npm test 即可")
+  // ~~删除线~~
+  const strike = renderMarkdownInline("~~废弃~~的方案")
+  assert.ok(strike.includes("\x1b[9m"), "删除线开启")
+  assert.equal(stripAnsi(strike), "废弃的方案")
+  // 反引号内的 ** 不解释（markdown 语义）
+  const nested = renderMarkdownInline("示例 `a**b` 保持原样")
+  assert.equal(stripAnsi(nested), "示例 a**b 保持原样", "code span 内的标记不处理")
+  // 标题行：去 # 前缀 + 整行粗体
+  const heading = renderMarkdownHeading("## 设计决策")
+  assert.equal(stripAnsi(heading), "设计决策")
+  assert.ok(heading.includes("\x1b[1m"))
+  // 未闭合标记（流式半截）保持原样，不吞字
+  assert.equal(stripAnsi(renderMarkdownInline("正在生成 **bo")), "正在生成 **bo")
+  // 普通文本不受影响
+  assert.equal(renderMarkdownInline("hello world"), "hello world")
+})
+
+test("markdown: renderConversation 输出无裸标记符号", () => {
+  const cols = 80, visibleH = 20
+  const out = renderConversation(tuiState({
+    lines: [{ text: "## 结论\n这是 **加粗** 和 `代码` 混排", color: C.text }],
+  }), cols, visibleH, 0)
+  const joined = out.join("\n")
+  const clean = stripAnsi(joined)
+  assert.ok(!clean.includes("**"), "粗体标记不再裸显")
+  assert.ok(!clean.includes("##"), "标题标记不再裸显")
+  assert.ok(clean.includes("结论"), "标题文字保留")
+  assert.ok(clean.includes("加粗"), "粗体内文保留")
+  assert.ok(clean.includes("代码"), "代码内文保留")
+})
+
 
 test("streaming simulation: no diff when streaming content unchanged", () => {
   const cols = 80, visibleH = 5
