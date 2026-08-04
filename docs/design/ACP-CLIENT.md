@@ -33,7 +33,7 @@ Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补�
 
 | Method | 做 | 说明 |
 |---|---|---|
-| `initialize` | ✅ | 版本协商（protocolVersion 1）；返回 agentInfo、能力矩阵、authMethods（terminal） |
+| `initialize` | ✅ | 版本协商（protocolVersion 1）；响应示例：`{ protocolVersion: 1, agentInfo: { name: "thincoder", version: "0.13.0" }, authMethods: ["terminal"], capabilities: { fs: { read: true, write: true }, terminal: false } }` |
 | `authenticate` | ✅ | 校验 `~/.thincoder/config.json` 存在已配置 provider；缺失 → `authRequired` 错误码 -32000 |
 | `session/new` | ✅ | 接受 `cwd` / `mcpServers`；返回 configOptions（model/thinking/mode） |
 | `session/load` | ✅ | 恢复 thincoder 会话存档（双线历史 JSON），经 session/update 重放历史 |
@@ -44,7 +44,7 @@ Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补�
 | `session/cancel` | ✅ | 中断当前轮（复用 signal 中断机制） |
 | `session/set_mode` | ✅ | plan/normal 模式切换（映射 configOption mode） |
 | `session/set_config_option` | ✅ | model / thinking 统一分发（映射 thincoder /model、/think 语义） |
-| `session/close`、`logout` | ❌ | close 由进程生命周期兜底；logout 不支持（无账号体系） |
+| `session/close`、`logout` | ❌ | `session/close` → **返回成功空响应（no-op）**，进程由客户端负责终止；`logout` 不支持（无账号体系）。进程退出时 pipe 自然关闭，客户端据此判定会话结束 |
 
 ### 3.2 Client-side reverse-RPC（agent → IDE）—— 5/9
 
@@ -85,9 +85,8 @@ bin/thincoder.mjs  ── "acp" 子命令 ──▶ src/acp.mjs
 | 文件 | 改动点 |
 |---|---|
 | `bin/thincoder.mjs` | 注册 `"acp"` 子命令（`thincoder acp` → `src/acp.mjs`） |
-| `src/agent.mjs` | 工具循环注入两个可插拔点（见 4.3），默认行为不变（TUI/CLI 零影响） |
-| `src/cli/permission.mjs` | `askPermission` 增加"有 ACP 通道即用通道"判定（非 TTY 不再直接 deny） |
-| `src/session.mjs` | 导出会话枚举/删除辅助（session/list、session/delete 复用存档逻辑） |
+| `src/agent/dispatch.mjs` | 工具循环注入 `toolRouter`（`runOne` 内 `item.tool.execute(...)` 调用前拦截）；**权限无需改**——`callbacks.onPermissionRequest` 通道已存在（113 行），ACP bridge 直接提供即可 |
+| `src/session.mjs` | 新增 `deleteSlot(cwd, slot)` 导出（删除槽位文件 + manifest 条目）——**新能力，现有代码无删除函数**；会话枚举复用现有 `listSessions()` |
 
 ### 4.1 传输层（自写，零依赖）
 
@@ -102,8 +101,14 @@ ACP 官方 SDK（`@agentclientprotocol/sdk`）是 npm 依赖——违反零依�
 
 每个 `session/new` 创建独立 agent 实例（复用 `createAgent`）：
 - `cwd` → agent 工作目录（文件工具边界随之迁移）
-- `mcpServers`（client 提供）→ 转发进 MCP 工具集
-- configOptions：model（映射 `selectProviderModel`）/ mode（plan ⇄ normal）/ thinking
+- `mcpServers`（client 提供）→ 交给现有 MCP 子系统（本地 spawn stdio/http/sse 配置；**M2 范围**，M1 忽略并 warn）
+- `configOptions` 映射表（`session/new` 返回 + `set_config_option` 接收，key 名与值类型对齐 schema v1）：
+
+| configOption key | 值类型 | thincoder 映射 |
+|---|---|---|
+| `model` | string（provider:model / provider / model） | `selectProviderModel(...)`（与 /model 同语义） |
+| `thinking` | boolean | thinking 开关 |
+| `mode` | enum: `plan` / `normal` | plan mode 切换（`current_mode_update` 通知） |
 
 ### 4.3 事件桥（bridge.mjs）
 
@@ -120,22 +125,17 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 模型/模式变更 | `config_option_update` / `current_mode_update` |
 | `callbacks.onCompress` | 压缩提示（保持透明） |
 
-**工具执行钩子**：agent.mjs 工具循环当前直接调 toolByName——需在 ACP 模式下注入两个可插拔点（**默认导出空实现，TUI/CLI 路径行为不变**）：
+**工具执行钩子**：`src/agent/dispatch.mjs` 工具循环注入可插拔点（**默认空实现，TUI/CLI 路径行为不变**）：
 
-1. **fs 读写路由**（钩子签名）：
-   ```js
-   // agent.mjs: 工具执行前调用（仅 ACP 模式装配非空实现）
-   toolRouter(toolName, args) → { routed: true, result } | { routed: false }
-   ```
-   - read/glob/grep/ls：不路由（本地读，性能优先）
-   - write/edit/apply_patch/delete：路由 → **先 `fs/read_text_file` 反查 client 当前内容 → 本地计算新内容 → `fs/write_text_file` 全量写回**（IDE 呈现 diff，无 diff 由 IDE 能力决定）→ 工具结果返回客户端确认的写入结果
-2. **审批钩子**（钩子签名）：
-   ```js
-   // agent.mjs: 副作用工具执行前调用（AUTO 关闭时）
-   permissionGate(toolName, args, context) → boolean | Promise<boolean>
-   ```
-   - ACP 模式：`session/request_permission`（请求带工具名+格式化参数，等待 `allow_once`/`deny_once` 响应）
-   - 非 ACP 模式：回退 TTY `askPermission`（现状不变）
+1. **fs 读写路由**——`toolRouter(toolName, args)` 在 `runOne` 的 `item.tool.execute(...)` 调用前拦截：
+   - read/glob/grep/ls：**不路由**（本地读，性能优先）
+   - write：`fs/write_text_file` 全量写（构造新内容直接写，无需读回）
+   - edit/apply_patch：**先 `fs/read_text_file` 读回 client 当前全文 → 本地应用现有 diff 逻辑（复用 tool 实现）→ `fs/write_text_file` 全量写回**——读回保证与 IDE buffer 一致（防止客户端已改过文件），IDE 呈现 diff
+   - delete：`fs/write_text_file` 空内容（或由客户端删除语义决定）
+   - 工具结果返回客户端确认后的写入结果
+2. **审批**——**复用现有 `callbacks.onPermissionRequest` 通道**（dispatch.mjs:113 已存在，不存在→deny）：
+   - ACP 模式：bridge 提供 `onPermissionRequest = (name, args) → session/request_permission`（请求带工具名+格式化参数，等待 `allow_once`/`deny_once` 响应）
+   - 非 ACP 模式：TUI/CLI 各自现有实现（askPermission 等，**完全不动**——`src/cli/permission.mjs` 零耦合）
 
 ### 4.4 鉴权与配置
 
@@ -147,8 +147,8 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 - `session/load`/`resume` 读 thincoder 会话存档（src/session.mjs，双线历史 JSON）
 - **重放范围**（session/load）：人读线（`_fullHistory`）全量消息按序重放为 `user_message_chunk` / `agent_message_chunk`（含工具调用摘要卡片）；机读注入（reminder/interrupt/transient）**不重放**——客户端只应看到真实对话
 - `session/resume`：不重放历史，仅恢复 cwd + configOptions（model/thinking/mode）+ 当前会话上下文
-- `session/list` 枚举存档槽位（**5 槽位 = thincoder 现有 src/session.mjs 限制**，非 ACP 协议规定）
-- `session/delete` 删除指定槽位存档
+- `session/list` 枚举存档槽位——**槽位数量 unlimited（src/session.mjs 现有语义："Each project keeps unlimited session slots"），按实际存档全量返回**（更正早期"5 槽位"错误说法）
+- `session/delete`：新增 `deleteSlot(cwd, slot)` 导出（删槽位文件 + manifest 条目）——**新能力**，现有 session.mjs 无删除函数
 - ACP 会话本身**不写存档**（由客户端管理生命周期）——最小侵入
 
 ### 4.6 非功能性需求
@@ -176,8 +176,9 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 3 | 工具审批回环 | prompt 触发 bash → mock 收到 `session/request_permission`（含工具名+参数）→ 回 `allow_once` | 审批通过后收到 `tool_call`/`tool_call_update` → 工具结果 → `agent_message_chunk` 继续 |
 | 4 | fs 反向 RPC | write 工具触发 | mock 收到 `fs/read_text_file`（旧内容）→ 回内容 → 收到 `fs/write_text_file`（新内容）→ 回确认 → write 工具结果 = 客户端确认值 |
 | 5 | cancel 中断 | prompt 进行中发 `session/cancel` | 当前轮停止，后续无事件 |
-| 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` | list 返回槽位；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现 |
-| 7 | 错误映射 | 非法 JSON / 未知方法 / 未鉴权 prompt | -32600 / -32601 / -32000（错误码符合 JSON-RPC） |
+| 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` | list 返回全部槽位（unlimited）；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现 |
+| 7 | resume 与配置 | `session/resume {id}`（跳过重放）→ `session/set_config_option {configId:"mode", value:"plan"}` → `session/set_mode {mode:"normal"}` | resume 恢复 cwd+configOptions 无历史事件；set_config_option/set_mode 生效并发出 `current_mode_update` / `config_option_update` |
+| 8 | 错误映射 | 非法 JSON / 未知方法 / 未鉴权 prompt / 畸形 mcpServers / 活跃回合中再发 prompt | -32600 / -32601 / -32000 / mcpServers 忽略+warn 不报错 / 并发 prompt 排队或 -32602 |
 
 ## 7. 不做项（明确裁剪）
 
