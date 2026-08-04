@@ -123,9 +123,9 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | runAgent 内部 | ACP 通知（session/update 事件块，schema v1） |
 |---|---|
 | `callbacks.onToken(text)` | `agent_message_chunk` |
-| `callbacks.onReasoning` | **`agent_thought_chunk`**（schema v1 已实证——schema.json const 枚举含 `agent_thought_chunk`，评审 #7 已核实） |
+| `callbacks.onReasoning` | **`agent_thought_chunk`**（schema v1 已实证——schema.json 的 const 枚举含 `agent_thought_chunk`；`callbacks.onReasoning` 已在 agent.mjs 使用中，非新增） |
 | 工具开始/结果（tool loop 内） | `tool_call` / `tool_call_update` |
-| plan mode 切换 | `plan` 事件块（schema v1 const 枚举已实证含 `plan`；payload 形状实现时对照 schema，与 `current_mode_update` 区分） |
+| plan mode 切换 | `plan` 事件块（schema v1 const 枚举含 `plan`——**M2 编码前对照 schema.json 定稿 payload 形状并注释**，与 `current_mode_update` 区分） |
 | `callbacks.onUsage` | `usage_update`（token 统计） |
 | 回合结束 | `end_turn` |
 | 模型/模式变更 | `config_option_update` / `current_mode_update` |
@@ -168,9 +168,10 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
   - **字段名**：运行时用 `agent._fullHistory`；从磁盘读用 `data.history`（saveSession 写入源为 `_fullHistory ?? history`）
 - `session/resume`：不重放历史，仅恢复 cwd + configOptions（model/thinking/mode）+ 当前会话上下文
 - `session/list` 枚举存档槽位——**槽位数量 unlimited（src/session.mjs 现有语义："Each project keeps unlimited session slots"），按实际存档全量返回**（更正早期"5 槽位"错误说法）。**sessionId ↔ 槽位映射**：ACP sessionId = 槽位号（数字字符串，如 `"3"`），list 返回 `{ id: "3", cwd, updatedAt }`；load/resume/delete 按 id 解析槽位
-- `session/delete`：新增 `deleteSlot(cwd, slot)` 导出（删槽位文件 + manifest 条目）——**新能力**，现有 session.mjs 无删除函数
+- **cwd 解析（session/list、load、resume）**：thincoder 单 cwd 模型——ACP 进程由 IDE 在项目目录启动，**进程 cwd = 默认工作目录**；`session/new` 带 cwd 参数则尊重之（会话首次建立时固定，之后该进程内所有会话共用同一 cwd）。跨进程/多 cwd 会话不在 v1 范围
+- `session/delete`：新增 `deleteSlot(cwd, slot)` 导出（删槽位文件 + manifest 条目）——**新能力**，现有 session.mjs 无删除函数。**删除活跃会话语义**：仅删持久化存档；活跃 in-memory 会话不受影响（客户端如需停止应另行 close/terminate）
 - **重放性能**：逐块发送（客户端异步消费，协议本身无批量通道）；超长会话（数千消息）加载会有可见延迟——M3 视实测决定是否批量压缩，v1 接受
-- ACP 会话本身**不写存档**（由客户端管理生命周期）——最小侵入
+- **会话资源**：每 `session/new` 一个 agent 实例——客户端可用 `session/delete`（清存档）+ close/terminate（释放进程）管理资源；v1 不设上限，未来如需可加（记录）
 
 ### 4.6 非功能性需求
 
@@ -202,18 +203,20 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` → `session/load {deleted-id}` | list 返回全部槽位（unlimited）；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现；**再 load 已删/不存在 id → 错误**（-32602） |
 | 7 | resume 与配置 | `session/resume {id}`（跳过重放）→ `session/set_config_option {configId:"mode", value:"plan"}` → `session/set_mode {mode:"normal"}` | resume 恢复 cwd+configOptions 无历史事件；set_config_option/set_mode 生效并发出 `current_mode_update` / `config_option_update`；**resume 不存在 id → 错误** |
 | 8 | 错误映射 | ① 非法 JSON → -32600；② 未知方法 → -32601；③ 未鉴权 prompt → -32000（session 级 authenticated 门控）；④ 畸形 mcpServers → 忽略+warn（不报错）；⑤ 活跃回合中再发 prompt → **排队串行**（per-session FIFO 链）；⑥ `session/close` → 成功 `{}` + stderr 日志 | 每项独立断言，错误码符合 JSON-RPC |
-| 9 | 边界（M4 补全） | ⑦ 损坏会话文件 load → 错误而非崩溃；⑧ `fs/write_text_file` 客户端返回错误 → 工具结果透传错误；⑨ delete **活跃**会话 → 拒绝或仅删磁盘存档（定：仅删存档，活跃会话继续）；⑩ 单轮多工具并发 → 各自 tool_call 事件齐全 | M4 补全测试 |
+| 9 | 边界 | ⑦ 损坏会话文件 load → 错误而非崩溃；⑧ `fs/write_text_file` 客户端返回错误 → 工具结果透传错误；⑨ delete **活跃**会话 → 仅删存档，活跃会话继续（见 4.5 语义）；⑩ 单轮多工具并发 → 各自 tool_call 事件齐全 | **⑦⑧ 在 M3 完成**（基础可靠性）；⑨⑩ 在 M4 |
 
 ## 7. 不做项（明确裁剪）
 
 | 不做 | 理由 |
 |---|---|
-| `session/close`、`logout` | 进程生命周期兜底；无账号体系 |
+| `logout` | 无账号体系 |
 | terminal 反向 RPC | shell 本地执行（kimi 同取舍） |
 | unstable 扩展（elicitation/*、auth/configuration、buffer sync、inline-edit 预测等） | 正常客户端流程不依赖 |
 | audio prompt | 无音频输入通道 |
 | ACP 会话写存档 | 客户端管生命周期 |
 | 依赖官方 SDK（TS/Rust/Kotlin 等） | 零依赖哲学；自写层 ~100 行可测（schema v1 是唯一权威） |
+
+> 注：`session/close` **不在不做项**——它是 ✅ no-op stub（见 3.1）：返回 `{}` + stderr 日志，资源由进程退出释放。
 
 ## 8. 决策记录
 
