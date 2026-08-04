@@ -73,12 +73,15 @@ function buildConvLines(state, cols) {
       convLines.push(block[0])
       convLines.push({ text: `  … ${block.length - 2} more lines — click to expand`, color: C.fold, _foldToggle: longKey, _src: i })
       convLines.push(block[block.length - 1])
+    } else if (l.color === C.dim && block.length > LONG_FOLD_LINES) {
+      // EXPANDED long-DIM block: full content + a collapse marker at the tail
+      // (bidirectional folding — click the marker to fold it back). The block's
+      // lines must not re-trigger the consecutive-dim folding below (folding
+      // stacked on folding — reported regression), so they carry _skipDimFold.
+      for (const line of block) line._skipDimFold = true
+      convLines.push(...block)
+      convLines.push({ text: `  … ${block.length} lines — click to collapse`, color: C.fold, _foldToggle: longKey, _src: i })
     } else {
-      // Expanded long-DIM blocks must not re-trigger the consecutive-dim folding below
-      // (folding stacked on folding — reported regression). Only long blocks get the marker.
-      if (block.length > LONG_FOLD_LINES) {
-        for (const line of block) line._skipDimFold = true
-      }
       convLines.push(...block)
     }
   }
@@ -131,6 +134,11 @@ function buildConvLines(state, cols) {
           i = j
           continue
         }
+        // EXPANDED consecutive-dim block: keep every line + a collapse marker at the tail
+        for (let k = i; k < j; k++) folded.push(convLines[k])
+        folded.push({ text: `  … ${blockLen} lines — click to collapse`, color: C.fold, _foldToggle: foldKey })
+        i = j
+        continue
       }
     }
     folded.push(line)

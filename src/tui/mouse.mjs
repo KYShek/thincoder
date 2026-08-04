@@ -66,7 +66,7 @@ export function handleMouseClick(ctx, col, row) {
     return true
   }
 
-  // ── Conversation: click a folded-block hint to expand it ──
+  // ── Conversation: click a fold marker (expand hint or collapse marker) toggles it ──
   if (r >= P.conversation.y && r < P.conversation.y + P.conversation.h) {
     const convLines = buildConvLines(state, dims.cols)
     const gIdx = convGlobalIndex(convLines.length, P.conversation.h, state.scroll ?? 0)(r - P.conversation.y)
@@ -74,7 +74,9 @@ export function handleMouseClick(ctx, col, row) {
     const lineEl = convLines[gIdx]
     if (!lineEl?._foldToggle) return false
     state.expandedBlocks ??= new Set()
-    state.expandedBlocks.add(lineEl._foldToggle)
+    // Bidirectional: click expands a folded block, collapses an expanded one
+    if (state.expandedBlocks.has(lineEl._foldToggle)) state.expandedBlocks.delete(lineEl._foldToggle)
+    else state.expandedBlocks.add(lineEl._foldToggle)
     render()
     return true
   }

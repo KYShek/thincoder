@@ -172,13 +172,20 @@ describe("long-message folding (render-conversation)", () => {
     const toggleKey = folded[1]._foldToggle
     assert.ok(toggleKey?.startsWith("long-"), "fold key is long-<srcIndex>")
 
-    // Expand: add the key → full block renders; cache key must change
+    // Expand: add the key → full block + a COLLAPSE marker; cache key must change
     const keyBefore = convCacheKey(state)
     state.expandedBlocks.add(toggleKey)
     const keyAfter = convCacheKey(state)
     assert.notEqual(keyBefore, keyAfter, "expandedBlocks participates in the cache key")
     const expanded = buildConvLines(state, cols)
-    assert.equal(expanded.length, 17, "expanded to full content")
+    assert.equal(expanded.length, 18, "expanded to full content + collapse marker")
+    assert.equal(expanded[17].text, `  … 17 lines — click to collapse`, "collapse marker at the tail")
+    assert.equal(expanded[17]._foldToggle, toggleKey, "collapse marker shares the fold key")
+
+    // Collapse again: delete the key → back to 3 lines (bidirectional)
+    state.expandedBlocks.delete(toggleKey)
+    const reFolded = buildConvLines(state, cols)
+    assert.equal(reFolded.length, 3, "collapsed back")
   })
 
   it("MAIN OUTPUT (C.text) and THINKING (C.reason) are never folded — readability regression", async () => {
@@ -195,6 +202,29 @@ describe("long-message folding (render-conversation)", () => {
       assert.equal(out.length, 22, `${JSON.stringify(color)} main output must render in full`)
       assert.ok(!out.some((l) => l._foldToggle), "no fold hint for main output")
     }
+  })
+
+  it("expanded consecutive-dim block gets a collapse marker; clicking toggles both ways", async () => {
+    const { C } = await import("../src/tui/ansi.mjs")
+    const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
+    const state = {
+      lines: Array.from({ length: 9 }, (_, i) => ({ text: `dim${i}`, color: C.dim })),
+      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
+    }
+    // Folded: [dim0, dim1, hint]
+    const folded = buildConvLines(state, 80)
+    assert.equal(folded.length, 3)
+    assert.match(folded[2].text, /click to expand/)
+    const foldKey = folded[2]._foldToggle
+    assert.ok(foldKey?.startsWith("fold-"))
+
+    // Expanded: all 9 lines + collapse marker
+    state.expandedBlocks.add(foldKey)
+    const expanded = buildConvLines(state, 80)
+    assert.equal(expanded.length, 10, "9 lines + collapse marker")
+    assert.match(expanded[9].text, /click to collapse/)
+    assert.equal(expanded[9]._foldToggle, foldKey)
   })
 
   it("short lines are not folded", async () => {
