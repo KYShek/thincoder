@@ -52,7 +52,7 @@ thincoder/
 │   ├── tools/            # 工具系统（20+ 文件/网络/git 工具）
 │   │   ├── index.mjs     # builtinTools 注册
 │   │   ├── file.mjs      # read / write / edit / insert_after / read_image
-│   │   ├── system.mjs    # bash / glob / grep / ls
+│   │   ├── system.mjs    # bash / glob / grep / ls（bash 支持 config.shell 自定义 shell，win32 默认 cmd 前缀 chcp 65001 强制 UTF-8）
 │   │   ├── git.mjs       # git 综合工具（diff / status / log / checkpoint 子命令）+ question
 │   │   ├── web.mjs       # websearch / fetch
 │   │   ├── patch.mjs     # apply_patch / syntax_check / delete
