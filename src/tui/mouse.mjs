@@ -1,5 +1,5 @@
 /**
- * mouse.mjs — SGR mouse support: click parsing + hit-testing + line actions.
+ * mouse.mjs — SGR mouse support: click parsing + hit-testing.
  *
  * Protocol (enabled at startup via \x1b[?1000h\x1b[?1006h):
  *   press:    \x1b[<b;col;rowM   (b=0 left, 64/65 wheel up/down — wheel handled upstream)
@@ -8,10 +8,14 @@
  *
  * Only left-click (button 0) is consumed. Everything else stays stripped
  * upstream (sequence fragments must never leak into the input box).
+ *
+ * Click actions (deliberately minimal — a line-action menu was removed as
+ * over-engineering: terminals already copy via drag-select):
+ *   - picker option click = select it
+ *   - folded-block hint click = expand it
  */
 import { computeLayout } from "./layout.mjs"
 import { buildConvLines } from "./render-conversation.mjs"
-import { sanitizeDisplay } from "./render.mjs"
 
 /** Extract left-click presses from a chunk. Returns [{ col, row }] (1-based). */
 export function parseMouseClicks(text) {
@@ -37,7 +41,7 @@ export function convGlobalIndex(convLen, convH, scroll) {
 
 /**
  * Handle a left-click at SGR (col, row) — 1-based terminal coordinates.
- * ctx: { state, render, showPicker, popPicker, pushLine }
+ * ctx: { state, render, popPicker }
  * Returns true when the click was consumed.
  */
 export function handleMouseClick(ctx, col, row) {
@@ -62,56 +66,18 @@ export function handleMouseClick(ctx, col, row) {
     return true
   }
 
-  // ── Conversation: fold-toggle line expands; a message line opens the action menu ──
+  // ── Conversation: click a folded-block hint to expand it ──
   if (r >= P.conversation.y && r < P.conversation.y + P.conversation.h) {
     const convLines = buildConvLines(state, dims.cols)
     const gIdx = convGlobalIndex(convLines.length, P.conversation.h, state.scroll ?? 0)(r - P.conversation.y)
     if (gIdx === null) return false
     const lineEl = convLines[gIdx]
-    if (!lineEl) return false
-
-    // Click on a folded-block hint → expand it
-    if (lineEl._foldToggle) {
-      state.expandedBlocks ??= new Set()
-      state.expandedBlocks.add(lineEl._foldToggle)
-      render()
-      return true
-    }
-    // Click on a message line → action menu
-    if (lineEl._src !== undefined) {
-      const src = state.lines[lineEl._src]
-      if (src) {
-        openLineMenu(ctx, src)
-        return true
-      }
-    }
+    if (!lineEl?._foldToggle) return false
+    state.expandedBlocks ??= new Set()
+    state.expandedBlocks.add(lineEl._foldToggle)
+    render()
+    return true
   }
 
   return false
-}
-
-/** Line action menu: copy / edit in input / (fold toggle if the source line folds). */
-async function openLineMenu(ctx, srcLine) {
-  const { state, render, showPicker, pushLine } = ctx
-  const text = sanitizeDisplay(srcLine.text)
-  const entries = [
-    { type: "item", text: `📋 Copy line (${text.length} chars)`, action: "copy" },
-    { type: "item", text: "✏️ Edit in input box", action: "edit" },
-  ]
-  const picked = await showPicker("Line actions", entries)
-  if (!picked) return
-  if (picked.action === "copy") {
-    try {
-      const { copyToClipboard } = await import("./clipboard.mjs")
-      await copyToClipboard(text)
-      pushLine(`[clipboard] copied ${text.length} chars`, (await import("./ansi.mjs")).C.dim)
-    } catch (e) {
-      pushLine(`[clipboard] copy failed: ${e.message}`, (await import("./ansi.mjs")).C.error)
-    }
-    render()
-  } else if (picked.action === "edit") {
-    state.input = [...text]
-    state.cursor = state.input.length
-    render()
-  }
 }

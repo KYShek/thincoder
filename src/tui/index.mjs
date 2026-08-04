@@ -386,8 +386,8 @@ export async function startTUI(agent, opts = {}) {
     }
   })
 
-  // Mouse clicks (SGR \x1b[<0;col;rowM) — picker selection + line action menu.
-  const onMouseClick = (col, row) => handleMouseClick({ state, render, showPicker, popPicker, pushLine }, col, row)
+  // Mouse clicks (SGR \x1b[<0;col;rowM) — picker selection + fold expansion.
+  const onMouseClick = (col, row) => handleMouseClick({ state, render, popPicker }, col, row)
 
   // ---------------------------------------------------------- Startup screen + background indexing
 

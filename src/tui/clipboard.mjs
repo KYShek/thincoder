@@ -18,26 +18,6 @@ export async function readClipboardText() {
   }
 }
 
-/** Write text to the system clipboard (Set-Clipboard / pbcopy / xclip). Throws on failure. */
-export async function copyToClipboard(text) {
-  const { execFile } = await import("node:child_process")
-  const isWin = process.platform === "win32"
-  const isMac = process.platform === "darwin"
-  await new Promise((resolve, reject) => {
-    if (isWin) {
-      const child = execFile("powershell", ["-NoProfile", "-Command", "[Console]::In.ReadToEnd() | Set-Clipboard"], { timeout: 5000 }, (err) => err ? reject(err) : resolve())
-      child.stdin?.end(text)
-    } else if (isMac) {
-      const child = execFile("pbcopy", [], { timeout: 5000 }, (err) => err ? reject(err) : resolve())
-      child.stdin?.end(text)
-    } else {
-      const child = execFile("xclip", ["-selection", "clipboard"], { timeout: 5000 }, (err) => err ? reject(err) : resolve())
-      child.stdin?.end(text)
-    }
-  })
-}
-
-
 /** Insert pasted text into the active text target.
  *  Free-text question active → append to its answer (single-line field: newlines stripped).
  *  Options question active → ignore (no text field; must not leak into the input box).

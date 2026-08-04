@@ -128,7 +128,7 @@ describe("handleMouseClick — conversation line actions", () => {
     }
   })
 
-  it("clicking a message line opens the action menu", async () => {
+  it("clicking a message line is inert (line-action menu removed — drag-select copies natively)", async () => {
     const state = mockState({
       lines: [{ text: "hello world", color: "" }],
     })
@@ -144,12 +144,14 @@ describe("handleMouseClick — conversation line actions", () => {
     Object.defineProperty(process.stdout, "rows", { value: 24, configurable: true })
     try {
       const consumed = handleMouseClick(ctx, 10, 2)
-      assert.equal(consumed, true)
-      await new Promise((r) => setTimeout(r, 10)) // let the async menu open
-      assert.equal(menu?.title, "Line actions")
-      assert.ok(menu.entries.some((e) => e.action === "copy"))
-      assert.ok(menu.entries.some((e) => e.action === "edit"))
+      assert.equal(consumed, false, "plain message line click is not consumed")
+      await new Promise((r) => setTimeout(r, 10))
+      assert.equal(menu, null, "no menu opens")
     } finally {
+      Object.defineProperty(process.stdout, "columns", { value: orig.cols, configurable: true })
+      Object.defineProperty(process.stdout, "rows", { value: orig.rows, configurable: true })
+    }
+  })
 
 describe("long-message folding (render-conversation)", () => {
   it("a single long DIM line folds to [first, hint, last] and expands via click key", async () => {
@@ -206,11 +208,6 @@ describe("long-message folding (render-conversation)", () => {
     assert.equal(buildConvLines(state, 80).length, 2)
   })
 })
-
-      Object.defineProperty(process.stdout, "columns", { value: orig.cols, configurable: true })
-      Object.defineProperty(process.stdout, "rows", { value: orig.rows, configurable: true })
-    }
-  })
 
   it("clicks outside panels are ignored", () => {
     const state = mockState()
