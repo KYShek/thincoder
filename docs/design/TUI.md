@@ -124,6 +124,7 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
 
 - **interaction.mjs**：`askPermission(name, args)`（y/n/a；a = 批准并开启 AUTO）、`askQuestion(text, options)`（选项列表 ↑↓ 或自由文本）——agent 工具（permission/question）与 TUI 的桥。
 - **slash-commands.mjs**：`SLASH_COMMANDS` 表 + `SLASH_ALIASES`（/h /x /m /p /t /c /n）+ `HANDLERS` 分派；`completions(input)` 按命令/参数补全；Tab 循环候选。命令分两类：**即时反馈**（/plan /auto /fold 等本地状态切换）与 **菜单循环**（/config /think /mcp /provider 等 picker 驱动）。
+- **/submodel 命令**（cmd-submodel.mjs）：子 agent 模型设置入口——与 `/model`（主会话模型）对称。无参显示当前值（未设置提示"继承父 provider"）；参数三态与 subagent 工具 `model` 参数同构：`provider:model`（跨 provider）/ `provider` 名（其配置模型）/ `model` 名（父 provider 换模型）；`reset` 清除。持久化到 `config.agent.subagentModel`，立即生效（子 agent spawn 时由 `resolveChildProvider` 解析，单一解析源）。Tab 补全 provider 名。设计决策：**独立命令而非扩展 /model**——/model 语义是主会话 provider 切换，混入子模型会混淆；子 agent 模型是高频习惯性操作，一步直达优于 /config 菜单两步。不做 picker（参数直设够用，图形选择留 P2）。
 - **wizard.mjs**：首启无 key 时进入——provider 选择（含自定义端点）→ API key → embedding key（可跳过）→ 模型；Esc 可随时跳过。
 - **pickers.mjs**：通用选择器（标题/条目/filter 输入/位置指示/↑ more ↓ more/栈式嵌套）；模型选择器两级（provider → model，可 fetch `/models` 拉取真实列表，失败回退预设）；`/provider` 添加/删除/设 key 的问答流程。
 
@@ -135,6 +136,7 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
 | stdin 双层（keyStream + paste 累积） | 粘贴与按键保序，bracketed paste 大文本不丢 |
 | Ctrl+C 永不直接杀进程 | 防误触（双确认）+ picker/生成语义分层（IK61BI） |
 | markdown 渲染放 wrap 后 | ANSI 不干扰宽度数学；窄复位不清行色（IK5VW3） |
+| /submodel 独立命令而非扩展现有 /model | /model 语义是主会话 provider 切换；子 agent 模型是高频操作，一步直达（参数三态与 subagent 工具 model 参数同构，单一解析源） |
 | 恢复优先 display 快照 | WYSIWYG 保真；history 重建是降级路径 |
 | 恢复过滤 [System reminder: | 机读消息不显示（与 VS Code 渲染契约一致） |
 | 增量渲染 + 缓存键 | 1M 行会话不卡：只重绘变化行 |
