@@ -209,6 +209,13 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.9 (2026-08)
+- **Prompt-system quality pass (both CLI and VS Code extension, byte-identical sync):**
+  - **Advisor-after-code rule moved from system.md to discipline.md** — engineering mode no longer receives the conflicting "call advisor after changing code" instruction (its review-timing rules say do not call unprompted). Standard mode behavior unchanged.
+  - **engineering.md delivery-review semantics unified** — the mandatory-flow step and the state table now both say: eng-coder self-reviews inside the subagent; the architect verifies against acceptance criteria and re-reviews only when asked or when the delivery looks wrong. (Previously the step forced a parent-side advisor code review that the hard rules contradicted.)
+  - **checkpoint description aligned with actual auto-snapshot triggers** (task-list deletion + context compaction; manual checkpoint for the rest).
+  - **advisor round budget wording fixed** — prompts advertise a 30-round budget; the mechanical hard cap is 100 rounds (loop guard). Both layers are now named explicitly.
+
 ### 0.12.8 (2026-08)
 - **Fix: pending-task pushback fires at most once** — the completion guard that reminds the model to update pending tasks before finishing could loop forever when a pending item could not be resolved. Now each task-list state earns exactly one reminder; if the model insists on finishing anyway, it is allowed to (updating the list via the task tool resets the budget). VS Code extension synced.
 
