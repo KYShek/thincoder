@@ -29,7 +29,7 @@
 - `emitKeypressEvents(keyStream)`（node:readline）把原始字节转成 keypress 事件；`keyStream` 是 `process.stdin` 的 PassThrough 副本——**paste 多块数据先写入 keyStream 再交给 readline 解析**，保证按键与粘贴按序到达。
 - **分块解码**：`utf8Decoder.decode(chunk, { stream: true })`——CJK 字符跨 chunk 边界时正确拼装（有专门测试）。鼠标序列可能跨 chunk 截断：`mousePending` 保存不完整尾部，下个 chunk 拼接。
 - **鼠标滚轮**：SGR 序列 `\x1b[<64;…M`（上 3 行）/`<65`（下 3 行），处理后剥离。
-- **鼠标点击**（`mouse.mjs`）：左键按下 `\x1b[<0;col;rowM` → picker 选项点击选中（跳过标题行，按 `_row` 映射 filteredItems）；对话区点击**折叠提示行直接展开**（`_foldToggle`）。消息行点击无动作——行菜单已移除（终端拖选复制是原生能力，菜单是多余中间层）。坐标 1-based、col 在前；release/滚轮不消费。点击映射与渲染共用同一套布局数学（`convGlobalIndex` 与 renderConversation 同式）。
+- **鼠标点击**（`mouse.mjs`）：左键按下 `\x1b[<0;col;rowM` → picker 选项点击选中（跳过标题行，按 `_row` 映射 filteredItems）；对话区点击带 `_foldToggle` 的行**折叠/收起切换**（`expandedBlocks` toggle）。消息行点击无动作——行菜单已移除（终端拖选复制是原生能力，菜单是多余中间层）。坐标 1-based、col 在前；release/滚轮不消费。点击映射与渲染共用同一套布局数学（`convGlobalIndex` 与 renderConversation 同式）。
 - **粘贴协议**（bracketed paste）：`\x1b[200~` 进入 pasteMode，`\x1b[201~` 退出；跨多 chunk 的粘贴先写前缀 + 进入 paste 模式累积，退出时一次性写入。粘贴文本**跳过按键分发**直接进输入缓冲（`insertPastedText`）。
 - **Shift+Enter**（多行输入第一协议，键盘增强终端）：stdin 层 `translateShiftEnter` 把 CSI-u 的 Shift+Enter 序列翻译为 `\x1b\r`（meta+return）→ key-handler 的 `key.alt && key.name === "return"` 分支插入 `\n`。Ctrl+J（`\n` 字节）是第二协议（全终端兜底）；Alt+Enter 是后备（旧控制台可能被系统截走）。
 - **state 对象**（渲染全部数据源）：lines / streaming / reasoning / advisorStreaming / input（codepoint 数组）/ cursor / history / scroll / processing / controller / permission / question / picker + pickerStack / wizard / tasks / tokens / search / expandedBlocks / foldEnabled / **exitArmed（Ctrl+C 双确认，IK61BI）** 等。
@@ -77,9 +77,27 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
   → formatTables（markdown 表格按显示宽度重排，CJK 对齐）
   → wrapText（按 stringWidth 换行，宽度 = cols-1）
   → renderMarkdownHeading + renderMarkdownInline（**粗体**/`下划线代码`/~~删除线~~/标题，IK5VW3）
-  → 折叠（连续 dim 行 >8 折成 "… N more lines — Enter to expand"）
+  → 折叠（连续 dim 行 >8 折成 "… N more lines — click to expand"）
 ```
-关键约束：**markdown ANSI 在 wrap 之后插入**——插入的转义序列不再参与宽度计算，不破坏对齐。窄作用域复位（`22`/`24`/`29` 而非 `0`）保证不冲掉行底色。缓存：`convCacheKey`（lines 长度/最后一行长度/streaming/reasoning 长度）命中则跳过重建。
+关键约束：**markdown ANSI 在 wrap 之后插入**——插入的转义序列不再参与宽度计算，不破坏对齐。窄作用域复位（`22`/`24`/`29` 而非 `0`）保证不冲掉行底色。缓存：`convCacheKey`（lines 长度/最后一行长度/streaming/reasoning 长度 + expandedBlocks 摘要）命中则跳过重建。
+
+## 4. 折叠交互（双向：展开 ↔ 收起）
+
+**折叠对象**（两类，均要求 `foldEnabled !== false` 且 key 不在 `expandedBlocks`）：
+1. **长消息折叠**：单条 dim 行（工具摘要/状态输出等次要内容）wrap 后 >12 行 → 折叠为 `[首行, hint, 末行]`；key = `long-{lines 索引}`（稳定，跨重渲染）
+2. **连续 dim 块折叠**：连续 dim 行 >8 → 折叠为 `[首行, 次行, hint]`；key = `fold-{n}`
+
+**标志（哪里可折叠一眼可见）**：
+- **折叠态**：hint 行 `  … N more lines — click to expand`（C.fold 色）——表示可展开
+- **展开态**：块尾追加收起提示行 `  … N lines — click to collapse`（C.fold 色）——表示可收起（与 hint 同 key `_foldToggle`）
+
+**动作（点击即切换）**：点击任意带 `_foldToggle` 的行（hint 或收起提示）→ `expandedBlocks` **toggle**（有则删=收起、无则加=展开）→ 重渲染。展开/收起对称，一键往返。
+
+**约束**：
+- 展开的长 dim 块行带 `_skipDimFold` 标记，不再参与连续 dim 折叠（防折叠套折叠——0.12.7 回归修复）
+- 主输出（C.text）/ 思考（C.reason）**永不折叠**（0.12.7 回归修复）
+- `/fold off` 时两类折叠与全部提示行不出现；`/fold on` 恢复
+- 展开态与折叠态切换由 `convCacheKey` 的 expandedBlocks 摘要驱动缓存失效
 
 **渲染调度**（render-loop.mjs）：`scheduleRender()`（setImmediate 合并）+ 处理中 1s ticker（耗时刷新）+ `write()` 增量写（比较上一帧，只重绘变化行 + 光标定位），防闪烁。
 
