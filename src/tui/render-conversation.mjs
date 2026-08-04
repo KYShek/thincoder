@@ -29,6 +29,12 @@ function blankLine() {
   return { text: "", color: "" }
 }
 
+/** Ellipsis marker between the kept head lines and the kept last line — signals hidden content.
+ *  Uncolored on purpose: a C.dim ellipsis would be swallowed by the consecutive-dim folding scan. */
+function ellipsisLine() {
+  return { text: "…", color: "" }
+}
+
 function highlightSearchMatches(text, query, matchesInLine, globalCurrentIndex, allMatches, lineIndex) {
   if (!matchesInLine || matchesInLine.length === 0 || !query) return text
 
@@ -90,10 +96,11 @@ function buildConvLines(state, cols) {
     }
     if (folded && block.length > LONG_FOLD_LINES) {
       // Folded state: blank line, ▶ control line at the HEAD (flush with content),
-      // then 5 content lines — first 4 + last 1 (reported: 2 lines was too little).
+      // then first 4 + "…" ellipsis + last line (5 content lines; the ellipsis
+      // makes the hidden middle obvious — reported UX).
       convLines.push(blankLine())
       convLines.push(foldHintLine(`▶ … ${block.length - FOLD_KEEP} more lines — click to expand`, longKey, i))
-      convLines.push(...block.slice(0, FOLD_KEEP - 1), block[block.length - 1])
+      convLines.push(...block.slice(0, FOLD_KEEP - 1), ellipsisLine(), block[block.length - 1])
     } else if (block.length > LONG_FOLD_LINES) {
       // EXPANDED long block: blank line + ▼ control line at the HEAD, directly
       // before the content. DIM blocks must not re-trigger the consecutive-dim
@@ -151,10 +158,11 @@ function buildConvLines(state, cols) {
       if (blockLen > FOLD_LINES && !hasExpandedLong) {
         const foldKey = `fold-${foldCounter++}`
         if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
-          // Blank + ▶ control line at the HEAD (flush with content), then 5 content lines
+          // Blank + ▶ control line at the HEAD (flush with content), then first 4 +
+          // "…" ellipsis + last line
           folded.push(blankLine())
           folded.push(foldHintLine(`▶ … ${blockLen - FOLD_KEEP} more lines — click to expand`, foldKey))
-          folded.push(...convLines.slice(i, i + FOLD_KEEP - 1), convLines[j - 1])
+          folded.push(...convLines.slice(i, i + FOLD_KEEP - 1), ellipsisLine(), convLines[j - 1])
           i = j
           continue
         }
