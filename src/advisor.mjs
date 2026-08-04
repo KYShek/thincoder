@@ -2,11 +2,13 @@
  * advisor.mjs — advisor system-prompt selection, follow-up building, session assembly.
  * User-message building lives in advisor/messages.mjs; execution (tool loop, provider
  * resolution, review entry) in advisor/run.mjs; git discovery/collection in
- * advisor/repos.mjs; history extraction in advisor/history.mjs.
+ * advisor/repos.mjs (design-review diffs only — code-review follow-ups deliberately
+ * inject NO git information); history extraction in advisor/history.mjs.
  *
  * The advisor runs as a read-only exploration sub-agent with tools
- * (read, glob, grep, ls, git, lsp, code_search). It discovers changes
- * via git diff, reads files for context, and traces callers via grep/lsp.
+ * (read, glob, grep, ls, git, lsp, code_search). Round 1 discovers changes
+ * via git diff and reads files for context; convergence rounds (2+) verify
+ * fix status with `read` only — no git output is injected or trusted.
  *
  * Config:
  *   { advisor: { enabled: true, provider: "deepseek", model: "deepseek-chat" } }
@@ -37,7 +39,6 @@
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { findReviewRepos } from "./advisor/repos.mjs"
 import { extractPriorIssueTable, extractAgentResponseTable } from "./advisor/history.mjs"
 import { buildAdvisorUserMessage } from "./advisor/messages.mjs"
 // Re-export for run.mjs and tests (keeps their imports from "../advisor.mjs" stable)
@@ -87,7 +88,10 @@ export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
 
 /**
  * Build a follow-up user message for round 2+ — the agent's response table +
- * the refreshed diff, without re-sending the full round-1 context.
+ * round-aware instructions, without re-sending the full round-1 context.
+ * Deliberately NO git information injected (no diff snapshot, no git context):
+ * git output misled re-reviews — committed fixes never show in `git diff HEAD`,
+ * so the model read "no changes" as "no fixes". Verification is `read`-only.
  */
 export function buildAdvisorFollowUp(agent, _prior) {
   const prior = _prior ?? extractPriorIssueTable(agent.history)
@@ -119,9 +123,6 @@ export function buildAdvisorFollowUp(agent, _prior) {
     "Do NOT re-read AGENTS.md / design docs. Verify fix status with `read` only — do not rely on git output: a clean working tree does not mean fixes are absent (they may be committed).",
     "",
   ]
-  // Deliberately NO git information injected here (no diff snapshot, no git context):
-  // git output misled re-reviews — committed fixes never show in `git diff HEAD`, so
-  // the model read "no changes" as "no fixes". Verification is `read`-only by design.
   return parts.join("\n")
 }
 
