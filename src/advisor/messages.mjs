@@ -165,7 +165,7 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   parts.push("1. IMPORTANT: the review scope lists the files under review — always verify current file state with `read` before judging. The prior issue table (if any) is HISTORY — never decide based on it alone.")
   if (isReReview) {
     parts.push("2. STALE-CONTEXT WARNING: any diff or file content embedded in earlier messages is a historical snapshot — treat it as expired. Only fresh `read` results describe the current state. Never quote a `-` line from an earlier diff as if it were live code.")
-    parts.push("3. Verify the prior issue table against the CURRENT FILE STATE — use `read`, never `git diff` alone. You have no git tool this round; git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).")
+    parts.push("3. Verify the prior issue table against the CURRENT FILE STATE — use `read` only. You have no git tool; the review scope is defined by the file list above, not by git inspection. Git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).")
     parts.push("4. `read` the files in the Review Scope in full — ALWAYS, regardless of what `git diff` shows. Batch reads/greps in a single reply.")
     parts.push("5. Evidence rule: every 'Unfixed'/'New' finding MUST quote the exact line content from THIS round's `read` output (e.g. `run.mjs:180: timeoutId = setTimeout(...)`). Line numbers alone are NOT evidence — they may come from the stale prior table. Findings without a fresh quoted line are treated as unverified and will not be accepted.")
     parts.push("6. Produce your verification table. Do not re-read content you already have.")

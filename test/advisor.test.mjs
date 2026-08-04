@@ -743,14 +743,18 @@ test("runAdvisorReview: convergence cap blocks a 6th review call", async () => {
 })
 
 
-test("advisorToolsFor: ZERO git tools on every round (full decoupling)", async () => {
+test("advisorToolsFor: ZERO git tools; read-only set (code_search replaces execute)", async () => {
   const mod = await import("../src/advisor/run.mjs")
-  const tools = mod._advisorToolsFor()
-  assert.ok(!tools.byName.has("git"), "no git tool — advisor never touches git")
-  assert.equal(tools.schemas.length, 6, "read/glob/grep/ls/lsp/code_search only")
-  for (const t of ["read", "grep", "lsp", "glob", "ls", "execute"]) {
-    assert.ok(tools.byName.has(t), `tool set keeps ${t}`)
+  const withMemory = mod._advisorToolsFor({ memory: { db: null } })
+  assert.ok(!withMemory.byName.has("git"), "no git tool — advisor never touches git")
+  assert.ok(!withMemory.byName.has("execute"), "no execute tool — CodeMode can write files, violates the read-only mandate")
+  assert.ok(withMemory.byName.has("code_search"), "semantic code_search included when memory exists")
+  for (const t of ["read", "grep", "lsp", "glob", "ls"]) {
+    assert.ok(withMemory.byName.has(t), `tool set keeps ${t}`)
   }
+  const withoutMemory = mod._advisorToolsFor({})
+  assert.ok(!withoutMemory.byName.has("code_search"), "no memory → code_search omitted (5 tools)")
+  assert.equal(withoutMemory.schemas.length, 5)
 })
 
 test("prepareAdvisorMessages: all-clear review resets the round — prompt and tool set agree", () => {

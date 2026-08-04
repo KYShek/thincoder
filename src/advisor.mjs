@@ -1,14 +1,13 @@
 /**
  * advisor.mjs — advisor system-prompt selection, follow-up building, session assembly.
  * User-message building lives in advisor/messages.mjs; execution (tool loop, provider
- * resolution, review entry) in advisor/run.mjs; git discovery/collection in
- * advisor/repos.mjs (design-review diffs only — code-review follow-ups deliberately
- * inject NO git information); history extraction in advisor/history.mjs.
+ * resolution, review entry) in advisor/run.mjs; history extraction in advisor/history.mjs.
+ * repos.mjs still hosts the doc-file classifier (isDocFile) used by mutation tracking.
  *
  * The advisor runs as a read-only exploration sub-agent with tools
- * (read, glob, grep, ls, git, lsp, code_search). Round 1 discovers changes
- * via git diff and reads files for context; convergence rounds (2+) verify
- * fix status with `read` only — no git output is injected or trusted.
+ * (read, glob, grep, ls, lsp, code_search) — ZERO git, every round. The change
+ * surface comes from the review scope (paths / _touchedFiles), never from git;
+ * verification is `read`-only with quoted-line evidence (7d49a52, d3be613).
  *
  * Config:
  *   { advisor: { enabled: true, provider: "deepseek", model: "deepseek-chat" } }
@@ -163,10 +162,8 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     if (!prior) {
       agent._advisorSession = null
       // ALWAYS reset the round counter: no prior table means the next review is
-      // a NEW cycle — round 1 (full scope + git tool). Keeping _advisorRound > 0
-      // here would make buildAdvisorSystemPrompt still pick ROUND1 while
-      // advisorToolsFor strips git (its predicate is _advisorRound === 0),
-      // giving the model a full-scope prompt without the change-discovery tool.
+      // a NEW cycle — round 1 (full scope). The tool set is git-free on every
+      // round, so prompt and tools stay consistent regardless.
       // A new review cycle also deserves its own 5-round budget.
       agent._advisorRound = 0
     } else {
@@ -186,7 +183,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   ]
   if (!prior) {
     // No prior table = new review cycle: reset the round so the prompt (ROUND1)
-    // and the tool set (git when _advisorRound === 0) agree. With a prior table
+    // and the tool set (constant, git-free) stay consistent. With a prior table
     // (failed-review retry after session loss) the round is PRESERVED — the
     // next prompt must be the convergence round the attempt count implies.
     agent._advisorRound = 0

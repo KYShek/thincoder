@@ -57,21 +57,27 @@ async function compactMessages(messages, provider) {
 
 const { readTool, globTool, grepTool, lsTool } = await import("../tools/index.mjs")
 const { lspTool } = await import("../tools/lsp.mjs")
-const { codeModeTool: codeSearchTool } = await import("../tools/codemode.mjs")
-
-const ADVISOR_TOOLS = [readTool, globTool, grepTool, lsTool, lspTool, codeSearchTool]
+const { codeSearchTool } = await import("../memory/code-sync.mjs")
 
 /**
- * Advisor tool set — ZERO git, every round. The change surface comes from the
- * review scope (paths / _touchedFiles injected by the caller), never from git:
- * git output misled reviews (committed fixes never show in `git diff HEAD`, so
- * "no changes" was read as "not fixed") and the user mandate is full decoupling
- * (7d49a52). The advisor reads files; it never touches git.
+ * Advisor tool set — ZERO git, read-only ONLY, every round. The change surface
+ * comes from the review scope (paths / _touchedFiles injected by the caller),
+ * never from git: git output misled reviews (committed fixes never show in
+ * `git diff HEAD`, so "no changes" was read as "not fixed") and the user
+ * mandate is full decoupling (7d49a52 + d3be613). The reviewer reads files
+ * and searches code; it never touches git and never writes.
+ * No round parameter — the set is constant across all rounds.
+ * @param {Object} agent — only used for the code index (agent.memory); the
+ *   semantic code_search tool needs it. Without a memory, the set is 5 tools.
  */
-function advisorToolsFor() {
-  return { schemas: ADVISOR_TOOLS.map(toOpenAISchema), byName: new Map(ADVISOR_TOOLS.map((t) => [t.name, t])) }
+function advisorToolsFor(agent) {
+  const search = agent?.memory ? codeSearchTool(agent.memory) : null
+  const tools = search
+    ? [readTool, globTool, grepTool, lsTool, lspTool, search]
+    : [readTool, globTool, grepTool, lsTool, lspTool]
+  return { schemas: tools.map(toOpenAISchema), byName: new Map(tools.map((t) => [t.name, t])) }
 }
-// Test seam: the tool set is pure and constant.
+// Test seam: the tool set is pure (agent.memory → code_search inclusion).
 export { advisorToolsFor as _advisorToolsFor }
 
 /** Compact one-line summary of tool args for panel progress lines.
@@ -97,7 +103,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
   const emit = (kind) => (onOutput ? (text) => onOutput({ kind, text }) : undefined)
   const onThink = emit("think")
   const onText = emit("text")
-  const { schemas: toolSchemas, byName: toolByName } = advisorToolsFor()
+  const { schemas: toolSchemas, byName: toolByName } = advisorToolsFor(agent)
   let turns = 0
   const startTime = Date.now()
   
