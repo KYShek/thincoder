@@ -8,10 +8,14 @@
  */
 import { describe, it, beforeEach } from "node:test"
 import assert from "node:assert/strict"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createAcpServer, ACP_ERRORS } from "../src/acp/transport.mjs"
 import { buildAcpCallbacks } from "../src/acp/bridge.mjs"
 import { createAcpSession } from "../src/acp/session.mjs"
 import { buildAcpHandlers } from "../src/acp.mjs"
+import { saveSession, loadSession } from "../src/session.mjs"
 
 describe("M2 — tools, permissions, fs routing (bridge callbacks)", () => {
   it("onToolCall/onToolResult emit tool_call + tool_call_update with matching ids", () => {
@@ -214,6 +218,120 @@ describe("session — FIFO queue + cancel", () => {
     // The session's internal signal is exposed via the fake run capture below.
   })
 })
+
+describe("M3 — persisted slots (list/load/resume/delete) + config options", () => {
+  let c
+  let deps
+  let tmpCwd
+  beforeEach(() => {
+    tmpCwd = mkdtempSync(join(tmpdir(), "acp-m3-"))
+    const events = []
+    deps = {
+      notify: (m, p) => events.push({ method: m, params: p }),
+      log: () => {},
+      isConfigured: () => true,
+      cwd: () => tmpCwd, // handlers operate on the sandbox dir, not process.cwd()
+      createSession: async ({ id, notify }) => createAcpSession({
+        id, agent: { history: [], _fullHistory: [], config: {}, provider: { name: "deepseek", model: "deepseek-v4-pro" } },
+        notify, run: async (a, input, cb) => { cb.onToken(`echo:${input}`); return "ok" },
+      }),
+    }
+    c = mockClient(buildAcpHandlers(deps).handlers, events)
+  })
+
+  function seedSlot(history) {
+    // Write a slot file directly in the sandbox (slot 1 = active).
+    const agent = { history: [...history], _fullHistory: [...history], cwd: tmpCwd, config: {}, title: "seed", tasks: [], planMode: false, autoApprove: false, goal: null }
+    saveSession(agent, [])
+    return loadSession(tmpCwd)
+  }
+
+  it("list returns seeded slots; empty when none", async () => {
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/list" })
+    assert.deepEqual(c.next().result.sessions, [])
+    seedSlot([{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }])
+    await c.send({ jsonrpc: "2.0", id: 3, method: "session/list" })
+    const sessions = c.next().result.sessions
+    assert.equal(sessions.length, 1)
+    assert.equal(sessions[0].id, "1")
+    assert.equal(sessions[0].messageCount, 2)
+  })
+
+  it("load replays the human line as chunk events and creates a live session", async () => {
+    seedSlot([
+      { role: "user", content: "fix the bug" },
+      { role: "assistant", content: "I will" },
+    ])
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "1" } })
+    // Out order: replay notifications first, then the load response.
+    const kinds = []
+    let loaded = null
+    for (let msg = c.next(); msg; msg = c.next()) {
+      if (msg.params?.update) kinds.push(msg.params.update.sessionUpdate)
+      if (msg.id === 2) loaded = msg.result
+    }
+    assert.ok(loaded, "load response received")
+    assert.ok(loaded.id, "live session id returned")
+    assert.deepEqual(kinds, ["user_message_chunk", "agent_message_chunk"], "history replayed in order")
+    // The live session accepts prompts.
+    await c.send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: loaded.id, content: [{ type: "text", text: "go" }] } })
+    await c.waitIdle()
+    const msgs = c.all()
+    assert.ok(msgs.some((m) => m.params?.update?.sessionUpdate === "agent_message_chunk"))
+    assert.ok(msgs.some((m) => m.id === 3 && m.result?.stopReason === "end_turn"))
+  })
+
+  it("resume restores state without replaying events", async () => {
+    seedSlot([{ role: "user", content: "hi" }])
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/resume", params: { sessionId: "1" } })
+    assert.ok(c.next().result.id)
+    assert.equal(c.next(), undefined, "no replay events after resume")
+  })
+
+  it("load/resume/delete on missing slot → -32602; delete removes the archive", async () => {
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "99" } })
+    assert.equal(c.next().error.code, -32602)
+    await c.send({ jsonrpc: "2.0", id: 3, method: "session/resume", params: { sessionId: "99" } })
+    assert.equal(c.next().error.code, -32602)
+    await c.send({ jsonrpc: "2.0", id: 4, method: "session/delete", params: { sessionId: "99" } })
+    assert.equal(c.next().error.code, -32602)
+    seedSlot([{ role: "user", content: "x" }])
+    await c.send({ jsonrpc: "2.0", id: 5, method: "session/delete", params: { sessionId: "1" } })
+    assert.deepEqual(c.next().result, {})
+    await c.send({ jsonrpc: "2.0", id: 6, method: "session/list" })
+    assert.deepEqual(c.next().result.sessions, [], "archive gone after delete")
+  })
+
+  it("set_config_option applies model/thinking/mode (last-write-wins) + notifies", async () => {
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: tmpCwd } })
+    const id = c.next().result.id
+    // Out order per call: config_option_update notification first, then the response.
+    await c.send({ jsonrpc: "2.0", id: 3, method: "session/set_config_option", params: { sessionId: id, configId: "model", value: "glm:glm-5.2" } })
+    assert.equal(c.next().params.update.sessionUpdate, "config_option_update")
+    assert.deepEqual(c.next().result, {})
+    await c.send({ jsonrpc: "2.0", id: 4, method: "session/set_config_option", params: { sessionId: id, configId: "thinking", value: false } })
+    c.next(); assert.deepEqual(c.next().result, {})
+    await c.send({ jsonrpc: "2.0", id: 5, method: "session/set_mode", params: { sessionId: id, mode: "plan" } })
+    const modeUpdate = c.next()
+    assert.equal(modeUpdate.params.update.sessionUpdate, "current_mode_update")
+    assert.equal(modeUpdate.params.update.mode, "plan")
+    assert.deepEqual(c.next().result, {})
+    // Unknown configId → -32602
+    await c.send({ jsonrpc: "2.0", id: 6, method: "session/set_config_option", params: { sessionId: id, configId: "nope", value: 1 } })
+    assert.equal(c.next().error.code, -32602)
+  })
+})
+
 
 describe("acp handlers — handshake + session lifecycle (injected deps)", () => {
   let c

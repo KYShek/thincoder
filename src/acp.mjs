@@ -18,8 +18,54 @@ import { loadConfig } from "./config.mjs"
 import { assembleAgent } from "./cli/make-agent.mjs"
 import { createAcpServer, ACP_ERRORS } from "./acp/transport.mjs"
 import { createAcpSession } from "./acp/session.mjs"
+import { replayHistory } from "./acp/bridge.mjs"
+import { listSlots, loadSession, applySession, deleteSlot, sessionPath } from "./session.mjs"
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
+
+/** Load a specific slot file (not the active one) — session/load by id. */
+function loadSlotFile(cwd, slot) {
+  const path = `${sessionPath(cwd)}.${slot}`
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8"))
+    if (!Array.isArray(data?.history)) return null
+    return data
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Apply a session-level config option to the agent instance (memory only —
+ * the session's own runtime state, last-write-wins; not persisted to config.json).
+ * Returns true when the configId is known.
+ */
+function applyConfigOption(agent, configId, value) {
+  switch (configId) {
+    case "model": {
+      if (typeof value !== "string" || !value.trim()) return false
+      const [provider, model] = value.includes(":") ? value.split(":", 2) : [null, value]
+      if (provider && provider !== agent.provider?.name) {
+        // Cross-provider switch: update the runtime provider identity too.
+        if (agent.provider) agent.provider.name = provider
+      }
+      if (agent.provider) agent.provider.model = model.trim()
+      return true
+    }
+    case "thinking": {
+      if (typeof value !== "boolean") return false
+      if (agent.provider) agent.provider.thinking = value ? { type: "enabled" } : { type: "disabled" }
+      return true
+    }
+    case "mode": {
+      if (value !== "plan" && value !== "normal") return false
+      agent.planMode = value === "plan"
+      return true
+    }
+    default:
+      return false
+  }
+}
 
 /** Config is "configured" when the active provider has a resolvable API key (env fallback included). */
 export function defaultIsConfigured() {
@@ -52,7 +98,9 @@ export function buildAcpHandlers({
   log = () => {},
   isConfigured = defaultIsConfigured,
   createSession = defaultCreateSession,
+  cwd = () => process.cwd(),
 }) {
+  const getCwd = cwd
   const notifyRef = { current: notify }
   const requestRef = { current: async () => { throw new Error("no request channel") } }
   const sessions = new Map()
@@ -85,9 +133,9 @@ export function buildAcpHandlers({
           return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: "cwd must be a string" } }
         }
         // Normalized comparison (case-insensitive drives on win32; trailing slashes).
-        const requested = params.cwd ? resolve(params.cwd) : process.cwd()
-        if (requested !== process.cwd()) {
-          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `v1: cwd must equal the process working directory (${process.cwd()})` } }
+        const requested = params.cwd ? resolve(params.cwd) : getCwd()
+        if (requested !== getCwd()) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `v1: cwd must equal the process working directory (${getCwd()})` } }
         }
         if (params.mcpServers?.length) {
           log(`[acp] MCP forwarding is M2 scope — ignoring ${params.mcpServers.length} server(s)`)
@@ -136,6 +184,120 @@ export function buildAcpHandlers({
           sessions.delete(String(params.sessionId))
           log(`session ${params.sessionId} closed by client`)
         }
+        return {}
+      },
+
+      // ─── M3: persisted slots (thincoder session archive) + config options ───
+
+      "session/list": () => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const slots = listSlots(getCwd())
+        return {
+          sessions: slots.map((s) => ({
+            id: String(s.slot),
+            cwd: getCwd(), // single-cwd model (design §4.5)
+            updatedAt: s.updatedAt ?? s.timestamp ?? 0,
+            title: s.title ?? "",
+            messageCount: s.messageCount ?? 0,
+          })),
+        }
+      },
+
+      "session/load": async (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const slot = Number(params.sessionId)
+        if (!Number.isInteger(slot) || slot < 1) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `invalid session id: ${params.sessionId}` } }
+        }
+        const data = loadSlotFile(getCwd(), slot)
+        if (!data) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `session ${slot} not found (corrupt or deleted)` } }
+        }
+        try {
+          const id = String(nextId++)
+          const session = await createSession({ id, notify: notifyRef.current, request: requestRef.current, log })
+          applySession(session.agent, data)
+          sessions.set(id, session)
+          // Replay the human line (role → chunk mapping, design §4.5) so the
+          // client renders the restored conversation.
+          replayHistory({ sessionId: id, notify: notifyRef.current, history: data.history, log })
+          log(`session ${slot} loaded as session ${id} (${data.history?.length ?? 0} messages replayed)`)
+          return { id, cwd: getCwd(), configOptions: [{ configId: "model" }, { configId: "thinking" }, { configId: "mode" }] }
+        } catch (e) {
+          return { error: { code: ACP_ERRORS.INTERNAL.code, message: `failed to load session ${slot}: ${e.message}` } }
+        }
+      },
+
+      "session/resume": async (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const slot = Number(params.sessionId)
+        if (!Number.isInteger(slot) || slot < 1) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `invalid session id: ${params.sessionId}` } }
+        }
+        const data = loadSlotFile(getCwd(), slot)
+        if (!data) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `session ${slot} not found (corrupt or deleted)` } }
+        }
+        try {
+          const id = String(nextId++)
+          const session = await createSession({ id, notify: notifyRef.current, request: requestRef.current, log })
+          applySession(session.agent, data)
+          sessions.set(id, session)
+          // resume: no history replay — the client keeps its own rendering.
+          log(`session ${slot} resumed as session ${id} (no replay)`)
+          return { id, cwd: getCwd(), configOptions: [{ configId: "model" }, { configId: "thinking" }, { configId: "mode" }] }
+        } catch (e) {
+          return { error: { code: ACP_ERRORS.INTERNAL.code, message: `failed to resume session ${slot}: ${e.message}` } }
+        }
+      },
+
+      "session/delete": (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const slot = Number(params.sessionId)
+        if (!Number.isInteger(slot) || slot < 1) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `invalid session id: ${params.sessionId}` } }
+        }
+        // Only the persisted archive is removed; an active in-memory session
+        // with the same id keeps running (design §4.5).
+        if (!deleteSlot(getCwd(), slot)) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `session ${slot} not found` } }
+        }
+        log(`session ${slot} archive deleted`)
+        return {}
+      },
+
+      "session/set_config_option": (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const found = findSession(params)
+        if (found.error) return found
+        const { configId, value } = params
+        if (!configId || value === undefined) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: "set_config_option requires configId and value" } }
+        }
+        const applied = applyConfigOption(found.session.agent, configId, value)
+        if (!applied) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `unknown configId: ${configId}` } }
+        }
+        // Last-write-wins on the internal state; notify the client of the change.
+        notifyRef.current("session/update", {
+          sessionId: String(params.sessionId),
+          update: { sessionUpdate: "config_option_update", configId, value },
+        })
+        return {}
+      },
+
+      "session/set_mode": (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const found = findSession(params)
+        if (found.error) return found
+        if (params.mode !== "plan" && params.mode !== "normal") {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: "mode must be plan or normal" } }
+        }
+        found.session.agent.planMode = params.mode === "plan"
+        notifyRef.current("session/update", {
+          sessionId: String(params.sessionId),
+          update: { sessionUpdate: "current_mode_update", mode: params.mode },
+        })
         return {}
       },
     },

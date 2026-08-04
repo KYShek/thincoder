@@ -282,6 +282,21 @@ export function switchToSlot(cwd, slot) {
   return loadSession(cwd)
 }
 
+/** Delete a slot: remove its file and manifest entry. Deleting the active slot
+ *  resets the manifest active pointer (the next claim re-creates one). */
+export function deleteSlot(cwd, slot) {
+  const n = Number(slot)
+  if (!Number.isInteger(n) || n < 1) return false
+  const m = loadManifest(cwd)
+  if (!m.slots[n]) return false
+  delete m.slots[n]
+  try { unlinkSync(slotPath(cwd, n)) } catch { /* missing file is fine */ }
+  if (m.active === n) delete m.active
+  saveManifest(cwd, m)
+  return true
+}
+
+
 // ========== legacy transient prefix cleanup ==========
 
 const LEGACY_TRANSIENT_PREFIXES = [

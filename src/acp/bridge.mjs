@@ -156,3 +156,69 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
   callbacks._toolIds = new Map()
   return callbacks
 }
+
+
+/**
+ * Replay a stored human-line history as session/update notifications (session/load).
+ * role → event mapping (design §4.5):
+ *   user      → user_message_chunk
+ *   assistant → agent_message_chunk (no tool_calls) | tool_call cards (with tool_calls)
+ *   tool      → tool_call_update following its assistant message
+ * Machine-only lines ([System reminder:/[User interrupt:, transient) are never stored
+ * in the human line (saveSession filters them), so nothing to skip here.
+ */
+export function replayHistory({ sessionId, notify, history, log = () => {} }) {
+  const update = (sessionUpdate, extra = {}) =>
+    notify("session/update", { sessionId, update: { sessionUpdate, ...extra } })
+  const textOf = (m) => {
+    if (typeof m?.content === "string") return m.content
+    if (Array.isArray(m?.content)) {
+      return m.content.map((b) => (typeof b === "string" ? b : b?.text ?? "")).filter(Boolean).join("\n")
+    }
+    return ""
+  }
+  const blocks = (m) => {
+    const items = []
+    if (typeof m?.content === "string") items.push({ type: "text", text: m.content })
+    else if (Array.isArray(m?.content)) {
+      for (const b of m.content) {
+        if (typeof b === "string") items.push({ type: "text", text: b })
+        else if (b?.type === "text") items.push({ type: "text", text: b.text })
+        else if (b?.type === "image") log(`[acp] replay: image block skipped (${sessionId})`)
+      }
+    }
+    return items
+  }
+
+  let pendingToolCalls = [] // { id, title } of the current assistant tool_calls batch
+  let toolSeq = 0
+  for (const m of history ?? []) {
+    if (m?.role === "user") {
+      pendingToolCalls = []
+      for (const b of blocks(m)) update("user_message_chunk", { content: b })
+    } else if (m?.role === "assistant") {
+      const calls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0 ? m.tool_calls : null
+      if (calls) {
+        pendingToolCalls = calls.map((tc, i) => ({ id: `t${++toolSeq}`, title: tc?.name ?? "tool" }))
+        update("tool_call", {
+          toolCallId: pendingToolCalls[0].id,
+          title: pendingToolCalls[0].title,
+          kind: "other",
+          status: "in_progress",
+          content: blocks(m).map((b) => ({ type: "content", content: b })),
+        })
+      } else {
+        const items = blocks(m)
+        if (items.length > 0) update("agent_message_chunk", { content: items[0] })
+        pendingToolCalls = []
+      }
+    } else if (m?.role === "tool" && pendingToolCalls.length > 0) {
+      const call = pendingToolCalls.shift()
+      update("tool_call_update", {
+        toolCallId: call.id,
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: textOf(m).slice(0, 2000) } }],
+      })
+    }
+  }
+}
