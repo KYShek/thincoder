@@ -57,7 +57,6 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
       }
 
       // Pre-collected changes — the design doc diff.
-      // _advisorLastSnapshot is only consumed by code-review convergence — skip the write here.
       const snapshots = collectRepoSnapshots(repos, agent.cwd)
       if (snapshots.length > 0) {
         parts.push("## Design Document (git diff)")

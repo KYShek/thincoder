@@ -133,7 +133,6 @@ export const advisorTool = {
     if (reviewType === "design") {
       agent._advisorRound = 0
       agent._advisorSession = null
-      agent._advisorLastSnapshotHash = null // stale diff dedup baseline must not leak into the next code review
     }
 
     // Generate the design token BEFORE the review and inject it into the advisor's prompt.

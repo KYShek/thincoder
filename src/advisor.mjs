@@ -116,7 +116,7 @@ export function buildAdvisorFollowUp(agent, _prior) {
     // Round-aware evidence rule: "New" entries only exist in round 2 (round 3+ forbids them).
     `STALE-CONTEXT WARNING: only fresh \`read\` results describe the current state — never judge from earlier snapshots or from \`git diff\` (committed fixes never show in \`git diff HEAD\`). Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may come from the stale prior table). Uncited findings are unverified and will be ignored.`,
     "",
-    "Do NOT re-read AGENTS.md / design docs. Verify fix status with \`read\` only — no git information is injected on purpose: a clean working tree does NOT mean nothing changed, fixes may already be committed.",
+    "Do NOT re-read AGENTS.md / design docs. Verify fix status with \`read\` only — do not rely on git output: a clean working tree does not mean fixes are absent (they may be committed).",
     "",
   ]
   // Deliberately NO git information injected here (no diff snapshot, no git context):
@@ -151,8 +151,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     // a follow-up "Verify Prior Table" would be meaningless; start a fresh full review
     if (!prior) {
       agent._advisorSession = null
-      agent._advisorLastSnapshotHash = null
-      session = null
+          session = null
       // Only reset the round counter on a truly fresh start (no prior reviews at all).
       // If _advisorRound > 0, there WAS a prior review — it just passed (all-clear).
       if (!agent._advisorRound) agent._advisorRound = 0
@@ -174,7 +173,6 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // Fresh session. Only reset round if this is truly the first review.
   // If _advisorRound > 0, there was a prior review that passed (all-clear).
   if (!agent._advisorRound) agent._advisorRound = 0
-  agent._advisorLastSnapshot = null
   if (!prior) {
     // Tell the advisor why no prior issue table is present
     session[1] = {

@@ -601,7 +601,7 @@ test("buildAdvisorFollowUp: includes agent response table when present", () => {
     cwd: tmpdir(),
     _touchedFiles: [],
     history: [
-      { role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" },
+      { role: "tool", tool_call_id: "tc1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" },
       { role: "assistant", content: "| # | Action | Detail |\n| 1 | fixed | added null check |" },
     ],
   }
@@ -614,7 +614,7 @@ test("buildAdvisorFollowUp: tolerates missing response table", () => {
     _advisorRound: 1,
     cwd: tmpdir(),
     _touchedFiles: [],
-    history: [{ role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
+    history: [{ role: "tool", tool_call_id: "tc1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
   }
   const msg = buildAdvisorFollowUp(agent)
   assert.ok(msg.includes("did not provide a response table"))
@@ -629,7 +629,7 @@ test("buildAdvisorFollowUp: injects NO git information (read-only verification b
       _advisorRound: 1,
       cwd: tmp,
       _touchedFiles: [join(tmp, "app.js")],
-      history: [{ role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
+      history: [{ role: "tool", tool_call_id: "tc1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
     }
     const followUp = buildAdvisorFollowUp(agent)
     assert.ok(followUp.includes("Prior Issue Table"), "prior table present")

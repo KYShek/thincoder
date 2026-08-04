@@ -100,7 +100,7 @@ export function createAgent({
     _mutatedThisRun: false, _verifiedThisRun: false, _verifyPassed: undefined, _calledAdvisorThisRun: false,
     _engDesignReviewed: false, // eng-coder: design review gate passed (hard gate in dispatch.mjs)
     _engDesignToken: null, // issued by advisor(type="design"); required to spawn eng-coder
-    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null, _advisorLastSnapshotHash: null,
+    _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null,
     _lastEngState: false,
     _pendingReminders: [],
     _pendingTimers: [],
@@ -131,7 +131,6 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     agent._verifyRetries = 0
     agent._advisorRound = 0
     agent._advisorSession = null // advisor session is per-run: discard when the task ends, next task starts fresh
-    agent._advisorLastSnapshotHash = null // dedup baseline is per-run too — stale snapshot could wrongly suppress a diff refresh
     agent._emptyRetries = 0 // empty-response retry budget is per-run: a fresh user turn restarts from zero
     agent._compressFailures = 0 // compaction summary-failure counter is per-run: a fresh user turn restarts from zero
   }

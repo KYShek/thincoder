@@ -180,11 +180,10 @@ export function mergeChildMutations(parent, child) {
     parent._verifiedThisRun = false
     parent._verifyPassed = undefined
   }
-  // Fresh code → fresh convergence budget + stale session/diff cleanup.
+  // Fresh code → fresh convergence budget + stale session cleanup.
   // _advisorRound reset ensures new code gets a full round-1 review;
-  // _advisorSession + _advisorLastSnapshotHash prevent cross-contamination.
+  // _advisorSession prevents cross-contamination between reviews.
   parent._advisorRound = 0
   parent._advisorSession = null
-  parent._advisorLastSnapshotHash = null
   return true
 }
