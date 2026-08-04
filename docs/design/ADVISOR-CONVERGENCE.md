@@ -41,10 +41,23 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 
 ### 4. 会话生命周期
 
-- 同一次 run 内所有 advisor 调用共享一个会话（`agent._advisorSession`），round 2+ 只追加 follow-up（agent 响应表 + 刷新 diff + 轮次规则），保留探索上下文。
-- run 结束（`runAgent`）重置 `_advisorRound`、`_advisorSession`、`_advisorLastSnapshot`（diff 去重基线）。
-- 审查失败清空会话（防止半成品上下文泄漏），下次调用按 `_advisorRound` 重建并选择正确轮次 prompt。
+- **收敛轮 fresh session（2026-08-04 决策变更）**：round 2+ **不复用** round 1 的会话数组——每轮构建全新 `[system(ROUND2/3 提示词), user(prior 表 + Review Scope + follow-up 指令)]`。**旧 read 输出（上一轮读到的文件全文）从物理上不在上下文里**——它是复评误报的最大锚定源（模型引用旧文件内容而非重新 read），也是 token 浪费源（大文件全文滞留触发频繁压缩）。"保留探索上下文"与证据规则（"只有本轮 read 才算数"）天然冲突，已废除。
+- prior 表与 agent 响应表照常注入（`extractPriorIssueTable` / `extractAgentResponseTable`），`buildAdvisorFollowUp` 的输出作为 fresh session 的 user 消息复用。
+- `agent._advisorSession` 字段保留（初始化兼容）但**不再作为会话延续读取**；run.mjs 不再写它。
+- run 结束（`runAgent`）重置 `_advisorRound`。
+- 审查失败不产生可泄漏的半成品上下文（每轮 fresh，天然免疫）。
 - prior 表为空（上次 all-clear 或首次）时重置为 round 1 全新全量审查。
+
+### 5. 证据机械校验（host-verified citations）
+
+提示词的证据规则（"引用必须来自本轮 read"）无法被 LLM 自我强制——模型可以声称读过而实际复述 prior 表（三轮误报实证：引用行号为修复前旧状态）。**宿主侧机械校验**作为最后防线：
+
+- `runAdvisorReview` 拿到评审结果文本后，解析其中的 `file:line: content` 引用（正则：`([\w./\\-]+\.\w+):(\d+):\s*(.+)`）
+- 逐条 `readFileSync` 磁盘比对：该文件该行的实际内容是否包含引用内容
+- 输出验证报告追加到结果（或独立输出）：`[host-verified] N/M citations match current file state` + 不匹配清单
+- 父 agent（决策方）与用户看到验证报告后，对不匹配的 "Unfixed" 判定自动降权——**未通过校验的引用不能支撑打回**
+
+效果：模型编造/复述旧证据的成本从"零"变为"必然被标记"；即便提示词失效，机械层仍能拦截。
 
 ## 配置
 
