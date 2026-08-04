@@ -78,7 +78,7 @@ export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
   if (reviewType === "design") {
     const prior = _prior ?? extractPriorIssueTable(agent.history)
     if (!prior || (agent._advisorRound || 0) === 0) {
-      return ADVISOR_DESIGN || `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
+      return ADVISOR_DESIGN || ADVISOR_DESIGN_FALLBACK
     }
     const round = (agent._advisorRound || 0) + 1
     if (round === 2) return ADVISOR_ROUND2
