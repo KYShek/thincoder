@@ -52,13 +52,15 @@ function buildConvLines(state, cols) {
       text = highlightSearchMatches(text, state.search.query, l._searchMatches, state.search.index, state.search.matches, i)
     }
 
-    // Long-message folding: a single line that wraps beyond LONG_FOLD_LINES display rows
-    // collapses to [first, "… N more — click/Enter to expand", last]. Keyed by the
-    // source-line index (`long-${i}`) so the toggle survives re-renders. This is the
-    // folding users actually see — tool outputs, long replies, big error blocks.
+    // Long-message folding: a single DIM line (tool summaries / status output — secondary
+    // content) that wraps beyond LONG_FOLD_LINES display rows collapses to
+    // [first, "… N more — click/expand", last]. MAIN OUTPUT (C.text replies) and
+    // THINKING (C.reason) are NEVER folded — folding them hurt readability (reported
+    // regression: long replies and thinking collapsed behind a click). Keyed by the
+    // source-line index (`long-${i}`) so the toggle survives re-renders.
     const LONG_FOLD_LINES = 12
     const longKey = `long-${i}`
-    const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey)
+    const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey) && l.color === C.dim
     const block = []
     for (const line of formatTables(sanitizeDisplay(text), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
@@ -72,6 +74,11 @@ function buildConvLines(state, cols) {
       convLines.push({ text: `  … ${block.length - 2} more lines — click to expand`, color: C.fold, _foldToggle: longKey, _src: i })
       convLines.push(block[block.length - 1])
     } else {
+      // Expanded long-DIM blocks must not re-trigger the consecutive-dim folding below
+      // (folding stacked on folding — reported regression). Only long blocks get the marker.
+      if (block.length > LONG_FOLD_LINES) {
+        for (const line of block) line._skipDimFold = true
+      }
       convLines.push(...block)
     }
   }
@@ -113,7 +120,9 @@ function buildConvLines(state, cols) {
       let j = i
       while (j < convLines.length && convLines[j].color === C.dim) j++
       const blockLen = j - i
-      if (blockLen > FOLD_LINES) {
+      // Expanded long-fold blocks are exempt — otherwise folding stacks on folding
+      const hasExpandedLong = convLines.slice(i, j).some((l) => l._skipDimFold)
+      if (blockLen > FOLD_LINES && !hasExpandedLong) {
         const foldKey = `fold-${foldCounter++}`
         if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
           folded.push(convLines[i])

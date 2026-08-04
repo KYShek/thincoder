@@ -152,17 +152,18 @@ describe("handleMouseClick — conversation line actions", () => {
     } finally {
 
 describe("long-message folding (render-conversation)", () => {
-  it("a single long line folds to [first, hint, last] and expands via click key", async () => {
+  it("a single long DIM line folds to [first, hint, last] and expands via click key", async () => {
+    const { C } = await import("../src/tui/ansi.mjs")
     const { buildConvLines, convCacheKey } = await import("../src/tui/render-conversation.mjs")
     const state = {
-      lines: [{ text: "L1\n" + "line2\n".repeat(15) + "last", color: "" }],
+      lines: [{ text: "L1\n" + "line2\n".repeat(15) + "last", color: C.dim }],
       streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
       foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
     }
     const cols = 80
     const folded = buildConvLines(state, cols)
     // 12-line threshold: full block = 1 + 15 + 1 = 17 lines → folded to 3
-    assert.equal(folded.length, 3, "long message folded to [first, hint, last]")
+    assert.equal(folded.length, 3, "long dim message folded to [first, hint, last]")
     assert.equal(folded[0].text, "L1")
     assert.match(folded[1].text, /more lines — click to expand/)
     assert.equal(folded[2].text, "last")
@@ -178,10 +179,27 @@ describe("long-message folding (render-conversation)", () => {
     assert.equal(expanded.length, 17, "expanded to full content")
   })
 
+  it("MAIN OUTPUT (C.text) and THINKING (C.reason) are never folded — readability regression", async () => {
+    const { C } = await import("../src/tui/ansi.mjs")
+    const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
+    const longText = "line0\n" + "content\n".repeat(20) + "end"
+    for (const color of [C.text, C.reason]) {
+      const state = {
+        lines: [{ text: longText, color }],
+        streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+        foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
+      }
+      const out = buildConvLines(state, 80)
+      assert.equal(out.length, 22, `${JSON.stringify(color)} main output must render in full`)
+      assert.ok(!out.some((l) => l._foldToggle), "no fold hint for main output")
+    }
+  })
+
   it("short lines are not folded", async () => {
+    const { C } = await import("../src/tui/ansi.mjs")
     const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
     const state = {
-      lines: [{ text: "short", color: "" }, { text: "another", color: "" }],
+      lines: [{ text: "short", color: C.dim }, { text: "another", color: C.dim }],
       streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
       foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
     }
