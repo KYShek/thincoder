@@ -95,8 +95,10 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     return parts.join("\n")
   }
 
-  // Convergence data (round 2+). Design reviews round 1 returned above — rounds
-  // 2+ of both types reach here.
+  // Convergence data (round 2+). LEGACY COMPATIBILITY PATH: the normal advisor
+  // flow routes convergence rounds through buildAdvisorFollowUp (fresh session,
+  // decision d698434); this block only fires for direct external callers of
+  // buildAdvisorUserMessage with a prior table. Kept to avoid breaking those.
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
       || "(Agent did not provide a response table — re-evaluate each issue)"

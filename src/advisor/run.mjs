@@ -265,7 +265,9 @@ function extractUnfixedIssues(priorText) {
   return lines
     .filter((line) => /\|\s*\d+\s*\|/.test(line)) // 匹配表格行
     .filter((line) => !/fixed|resolved|done|✓|✔/i.test(line))
-    .map((line) => line.replace(/\|/g, "").trim())
+    // Strip only the leading/trailing table pipes — inner pipes (escaped or
+    // in-cell content) stay intact instead of garbling the cap message.
+    .map((line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").trim())
     .filter(Boolean)
     .slice(0, 10) // 最多显示 10 个
 }
@@ -354,7 +356,7 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
           ? "Reduce the scope (fewer files/paths) or use a model with larger context window."
           : "You may retry or proceed to verify manually."
     
-    agent._advisorSession = null // failed review: don't keep a half-built conversation
+    agent._advisorSession = null // legacy field (never read since d698434 — fresh sessions every round)
     return `Advisor: review failed (${errorType}) — ${e.message || "unknown error"}. ${retryAdvice}`
   }
 }
@@ -363,7 +365,10 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
 // Host-verified citations (decision d698434)
 // ────────────────────────────────────────
 
-const CITATION_RE = /([\w./\\-]+\.\w+):(\d+):\s*([^`\n]{4,})/g
+// `file:line: content` citations — the file group is narrowed to source/config
+// extensions so URLs (`example.com:8080: …`) don't become false-positive
+// citations that fail as "file unreadable" in the verification report.
+const CITATION_RE = /([\w./\\-]+\.(?:mjs|cjs|js|ts|jsx|tsx|mts|cts|py|rs|go|c|h|cpp|hpp|java|rb|php|sh|bash|json|md|markdown|mdx|yaml|yml|toml|css|html|mjs)):(\d+):\s*([^`\n]{4,})/g
 
 /** Extract `file:line: content` citations from a review text. */
 export function extractCitations(text) {

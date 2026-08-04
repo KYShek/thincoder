@@ -25,13 +25,12 @@
  *   file:line evidence for any unfixed/new finding — see docs/design/ADVISOR-CONVERGENCE.md.
  *
  * Session memory (agent._advisorSession):
- *   All advisor calls within one run share a single conversation — round 2+
- *   just appends a follow-up (agent response + refreshed diff + round rules),
- *   so the advisor keeps its exploration context instead of re-discovering
- *   everything. The session is discarded when the run ends (runAgent resets it);
- *   the next task starts a fresh advisor session. After an app restart the
- *   in-memory session is gone — falls back to a fresh session seeded from the
- *   issue/response tables in the main history.
+ *   RETAINED for initialization compatibility but NEVER read (decision d698434):
+ *   every review round builds a fresh [system, user] session — round 2+ must not
+ *   reuse round 1's messages, because the old read outputs are the anchoring
+ *   source of re-review false reports and a token sink. Convergence data (prior
+ *   issue table + agent response table) travels via buildAdvisorFollowUp.
+ *   The field is reset by runAgent; the write sites are harmless leftovers.
  *
  * Project customisation: .thincoder/advisor.md in the project root.
  */
@@ -57,8 +56,10 @@ const ADVISOR_ROUND1 = readFileSync(join(__dirname, "prompts", "advisor-round1.m
 // buildAdvisorSystemPrompt when _advisorRound > 0.
 const ADVISOR_ROUND2 = readFileSync(join(__dirname, "prompts", "advisor-round2.md"), "utf8")
 const ADVISOR_ROUND3 = readFileSync(join(__dirname, "prompts", "advisor-round3.md"), "utf8")
+// Fallback when advisor-design.md is missing — keep in sync with the real file.
+const ADVISOR_DESIGN_FALLBACK = `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
 let ADVISOR_DESIGN = ""
-try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.md"), "utf8") } catch { /* design review unavailable */ }
+try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.md"), "utf8") } catch { /* fallback below */ }
 
 // ────────────────────────────────────────
 // System prompt building
@@ -135,11 +136,10 @@ export function buildAdvisorFollowUp(agent, _prior) {
 }
 
 /**
- * Build or continue the advisor conversation for this run.
- * First call in a run: fresh [system, user] session. Later calls: append a
- * follow-up to the existing session so the advisor keeps its context.
- * After an app restart (session lost), starts a fresh round-1 full review —
- * exploration context is gone, so prior tables from history are not injected.
+ * Build the advisor conversation for this run.
+ * EVERY call builds a fresh [system, user] session (decision d698434) — no
+ * session reuse across rounds: round 1 = full scope (ROUND1 prompt), rounds
+ * 2+ = convergence (ROUND2/ROUND3 prompt + prior-table follow-up).
  * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review
  * @param {string} [reviewType] — "design" or "code" (default)
  * @param {string|null} [designToken] — design-review approval token (design only)
@@ -164,7 +164,12 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // re-reading) and a token sink. The prior table + agent response table are
   // injected through buildAdvisorFollowUp instead; the system prompt carries
   // the round (ROUND2/ROUND3) via buildAdvisorSystemPrompt.
-  if (!prior) {
+  // Guard matches buildAdvisorSystemPrompt's ROUND1 condition
+  // (`!prior || _advisorRound === 0`): a stale prior table with _advisorRound 0
+  // (history persists across runAgent calls) must yield a fresh round-1 review —
+  // ROUND1 system prompt + full-scope user message, never the verify-prior
+  // follow-up (which would contradict the ROUND1 system prompt).
+  if (!prior || (agent._advisorRound || 0) === 0) {
     // No prior table = new review cycle (first review, all-clear, or session
     // clear): reset the round so the prompt (ROUND1) and tool set stay
     // consistent, and the cycle gets its own 5-round budget.
