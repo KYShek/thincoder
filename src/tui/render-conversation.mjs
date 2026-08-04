@@ -52,15 +52,16 @@ function buildConvLines(state, cols) {
       text = highlightSearchMatches(text, state.search.query, l._searchMatches, state.search.index, state.search.matches, i)
     }
 
-    // Long-message folding: a single DIM line (tool summaries / status output — secondary
-    // content) that wraps beyond LONG_FOLD_LINES display rows collapses to
-    // [first, "… N more — click/expand", last]. MAIN OUTPUT (C.text replies) and
-    // THINKING (C.reason) are NEVER folded — folding them hurt readability (reported
-    // regression: long replies and thinking collapsed behind a click). Keyed by the
+    // Long-message folding: ANY single line (main output C.text, thinking C.reason,
+    // tool summaries C.dim — whatever wraps beyond LONG_FOLD_LINES display rows)
+    // collapses to [first, "… N more — click/expand", last]. Main output and
+    // thinking are the REAL long content; bidirectional folding (collapse markers
+    // + click toggle) keeps them readable — the 0.12.7 dim-only restriction was a
+    // temporary fix for the single-direction era and is now reverted. Keyed by the
     // source-line index (`long-${i}`) so the toggle survives re-renders.
     const LONG_FOLD_LINES = 12
     const longKey = `long-${i}`
-    const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey) && l.color === C.dim
+    const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey)
     const block = []
     for (const line of formatTables(sanitizeDisplay(text), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
@@ -73,12 +74,14 @@ function buildConvLines(state, cols) {
       convLines.push(block[0])
       convLines.push({ text: `  … ${block.length - 2} more lines — click to expand`, color: C.fold, _foldToggle: longKey, _src: i })
       convLines.push(block[block.length - 1])
-    } else if (l.color === C.dim && block.length > LONG_FOLD_LINES) {
-      // EXPANDED long-DIM block: full content + a collapse marker at the tail
-      // (bidirectional folding — click the marker to fold it back). The block's
-      // lines must not re-trigger the consecutive-dim folding below (folding
-      // stacked on folding — reported regression), so they carry _skipDimFold.
-      for (const line of block) line._skipDimFold = true
+    } else if (block.length > LONG_FOLD_LINES) {
+      // EXPANDED long block: full content + a collapse marker at the tail
+      // (bidirectional folding — click the marker to fold it back). DIM blocks
+      // must not re-trigger the consecutive-dim folding below (folding stacked on
+      // folding — reported regression), so their lines carry _skipDimFold.
+      if (l.color === C.dim) {
+        for (const line of block) line._skipDimFold = true
+      }
       convLines.push(...block)
       convLines.push({ text: `  … ${block.length} lines — click to collapse`, color: C.fold, _foldToggle: longKey, _src: i })
     } else {

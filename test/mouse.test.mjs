@@ -188,19 +188,31 @@ describe("long-message folding (render-conversation)", () => {
     assert.equal(reFolded.length, 3, "collapsed back")
   })
 
-  it("MAIN OUTPUT (C.text) and THINKING (C.reason) are never folded — readability regression", async () => {
+  it("MAIN OUTPUT and THINKING fold bidirectionally — they are the real long content", async () => {
     const { C } = await import("../src/tui/ansi.mjs")
     const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
-    const longText = "line0\n" + "content\n".repeat(20) + "end"
+    const longText = "line0\n" + "content\n".repeat(20) + "end" // 22 wrapped lines > 12
     for (const color of [C.text, C.reason]) {
       const state = {
         lines: [{ text: longText, color }],
         streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
         foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
       }
-      const out = buildConvLines(state, 80)
-      assert.equal(out.length, 22, `${JSON.stringify(color)} main output must render in full`)
-      assert.ok(!out.some((l) => l._foldToggle), "no fold hint for main output")
+      // Folded: [first, hint, last]
+      const folded = buildConvLines(state, 80)
+      assert.equal(folded.length, 3, `${JSON.stringify(color)} folds to 3`)
+      assert.match(folded[1].text, /click to expand/)
+      const key = folded[1]._foldToggle
+
+      // Expanded: full + collapse marker
+      state.expandedBlocks.add(key)
+      const expanded = buildConvLines(state, 80)
+      assert.equal(expanded.length, 23, `${JSON.stringify(color)} expands to 22 + collapse marker`)
+      assert.match(expanded[22].text, /click to collapse/)
+
+      // Collapsed back
+      state.expandedBlocks.delete(key)
+      assert.equal(buildConvLines(state, 80).length, 3, `${JSON.stringify(color)} collapses back`)
     }
   })
 
