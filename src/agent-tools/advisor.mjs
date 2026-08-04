@@ -94,7 +94,7 @@ export const advisorTool = {
       paths: {
         type: "array",
         items: { type: "string" },
-        description: "Code files or directories to review (for code review). Required unless documents is provided. The advisor reviews git diff filtered to these paths.",
+        description: "Code files or directories to review (for code review). Required unless documents is provided. The advisor reads the files/directories listed here — it has no git tool and never inspects diffs.",
       },
       documents: {
         type: "array",
@@ -110,11 +110,13 @@ export const advisorTool = {
     const agent = ctx.agent
     const reviewType = args.type || "code"
     const documents = args.documents || null
-    const paths = args.paths || null
+    // Scope fallback: the runtime mutation record (zero git) covers guard-triggered
+    // reviews where the model did not pass explicit paths.
+    const paths = args.paths || (agent._touchedFiles?.length ? [...agent._touchedFiles] : null)
 
     // Code review must have a scope — no implicit fallback.
     if (reviewType !== "design" && !paths && !documents) {
-      return "Advisor: no review scope specified. Provide paths (files/directories to review) or documents (acceptance criteria — code diff is still used)."
+      return "Advisor: no review scope specified. Provide paths (files/directories to review) or documents (acceptance criteria context)."
     }
 
     // Design review: validate that documents are in docs/ or are recognized doc files

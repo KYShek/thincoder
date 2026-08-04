@@ -55,47 +55,23 @@ async function compactMessages(messages, provider) {
   return [system, { role: "user", content: `[Context compacted] ${summary}` }, ...recent]
 }
 
-const { gitTool, readTool, globTool, grepTool, lsTool } = await import("../tools/index.mjs")
+const { readTool, globTool, grepTool, lsTool } = await import("../tools/index.mjs")
 const { lspTool } = await import("../tools/lsp.mjs")
 const { codeModeTool: codeSearchTool } = await import("../tools/codemode.mjs")
 
-/** Restricted git tool: diff / status / log only.
- *  Checkpoint create/rewind are blocked — the advisor must not mutate state. */
-const advisorGitTool = {
-  ...gitTool,
-  readonly: true,
-  async execute(args, ctx) {
-    if (args.action === "checkpoint") {
-      if (args.checkpointAction === "create" || args.checkpointAction === "rewind") {
-        return "Error: checkpoint create/rewind is disabled in advisor mode. Use diff/status/log only."
-      }
-    }
-    return gitTool.execute(args, ctx)
-  },
-}
-
-const ADVISOR_TOOLS = [readTool, globTool, grepTool, lsTool, advisorGitTool, lspTool, codeSearchTool]
+const ADVISOR_TOOLS = [readTool, globTool, grepTool, lsTool, lspTool, codeSearchTool]
 
 /**
- * Round-aware advisor tool set.
- * - Round 1: full set incl. git (diff/status/log) — the reviewer discovers the
- *   change surface with `git diff` since no diff is injected into the message.
- * - Rounds 2+ (convergence): NO git tool. A stale diff misled re-reviews —
- *   committed fixes never show in `git diff HEAD`, so "no changes" was read as
- *   "not fixed" (decision 7d49a52: verification is `read`-only). Removing the
- *   tool closes the loop the prompt could not.
- * Predicate `_advisorRound === 0` is kept in sync with buildAdvisorSystemPrompt's
- * ROUND1 selection (`!prior || _advisorRound === 0`): prepareAdvisorMessages
- * resets the round to 0 whenever a review starts without a prior table, so the
- * two predicates agree on every path (all-clear, fresh start, failed retry).
+ * Advisor tool set — ZERO git, every round. The change surface comes from the
+ * review scope (paths / _touchedFiles injected by the caller), never from git:
+ * git output misled reviews (committed fixes never show in `git diff HEAD`, so
+ * "no changes" was read as "not fixed") and the user mandate is full decoupling
+ * (7d49a52). The advisor reads files; it never touches git.
  */
-function advisorToolsFor(agent) {
-  const tools = (agent._advisorRound || 0) > 0
-    ? [readTool, globTool, grepTool, lsTool, lspTool, codeSearchTool]
-    : ADVISOR_TOOLS
-  return { schemas: tools.map(toOpenAISchema), byName: new Map(tools.map((t) => [t.name, t])) }
+function advisorToolsFor() {
+  return { schemas: ADVISOR_TOOLS.map(toOpenAISchema), byName: new Map(ADVISOR_TOOLS.map((t) => [t.name, t])) }
 }
-// Test seam: the round-aware tool set is pure (agent._advisorRound → tools).
+// Test seam: the tool set is pure and constant.
 export { advisorToolsFor as _advisorToolsFor }
 
 /** Compact one-line summary of tool args for panel progress lines.
@@ -121,7 +97,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
   const emit = (kind) => (onOutput ? (text) => onOutput({ kind, text }) : undefined)
   const onThink = emit("think")
   const onText = emit("text")
-  const { schemas: toolSchemas, byName: toolByName } = advisorToolsFor(agent)
+  const { schemas: toolSchemas, byName: toolByName } = advisorToolsFor()
   let turns = 0
   const startTime = Date.now()
   

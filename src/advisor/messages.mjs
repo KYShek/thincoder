@@ -162,7 +162,7 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   // Instructions — round-aware: re-reviews skip convention discovery entirely
   const isReReview = prior && (agent._advisorRound || 0) > 0
   parts.push("## Instructions")
-  parts.push("1. IMPORTANT: in the diff, `-` lines are REMOVED content (no longer in the file), `+` lines are ADDED. The prior issue table (if any) is HISTORY — always verify current file state with `read` before judging an item.")
+  parts.push("1. IMPORTANT: the review scope lists the files under review — always verify current file state with `read` before judging. The prior issue table (if any) is HISTORY — never decide based on it alone.")
   if (isReReview) {
     parts.push("2. STALE-CONTEXT WARNING: any diff or file content embedded in earlier messages is a historical snapshot — treat it as expired. Only fresh `read` results describe the current state. Never quote a `-` line from an earlier diff as if it were live code.")
     parts.push("3. Verify the prior issue table against the CURRENT FILE STATE — use `read`, never `git diff` alone. You have no git tool this round; git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).")
@@ -171,7 +171,7 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     parts.push("6. Produce your verification table. Do not re-read content you already have.")
   } else {
     parts.push("2. Read `AGENTS.md` / design docs only if they exist (check once; do not re-probe with multiple patterns).")
-    parts.push("3. `read` changed files for full context beyond the diff. Batch independent reads/greps in a single reply instead of one call per round-trip.")
+    parts.push("3. `read` the files in the Review Scope in full — they define exactly what to inspect. Batch independent reads/greps in a single reply instead of one call per round-trip.")
     parts.push("4. Use `grep` or `lsp` to trace callers, imports, and dependencies — only where the diff leaves genuine doubt.")
     parts.push("5. Produce your review table based on the review criteria above. Do not re-read content you already have.")
     parts.push("6. You may also flag other issues: crashes, data loss, logic errors — anything obvious. This is the convergence protocol: round 1 is the full review, later rounds only re-verify.")

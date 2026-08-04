@@ -743,22 +743,20 @@ test("runAdvisorReview: convergence cap blocks a 6th review call", async () => {
 })
 
 
-test("advisorToolsFor: round 1 has git; rounds 2+ are pure-read (no git tool)", async () => {
+test("advisorToolsFor: ZERO git tools on every round (full decoupling)", async () => {
   const mod = await import("../src/advisor/run.mjs")
-  const round1 = mod._advisorToolsFor({ _advisorRound: 0 })
-  const round2 = mod._advisorToolsFor({ _advisorRound: 1 })
-  const round5 = mod._advisorToolsFor({ _advisorRound: 5 })
-  assert.ok(round1.byName.has("git"), "round 1 keeps git for change discovery")
-  assert.ok(!round2.byName.has("git"), "round 2+ removes git — read-only verification")
-  assert.ok(!round5.byName.has("git"), "all convergence rounds are git-free")
-  for (const t of ["read", "grep", "lsp", "glob", "ls"]) {
-    assert.ok(round2.byName.has(t), `round 2+ keeps ${t}`)
+  const tools = mod._advisorToolsFor()
+  assert.ok(!tools.byName.has("git"), "no git tool — advisor never touches git")
+  assert.equal(tools.schemas.length, 6, "read/glob/grep/ls/lsp/code_search only")
+  for (const t of ["read", "grep", "lsp", "glob", "ls", "execute"]) {
+    assert.ok(tools.byName.has(t), `tool set keeps ${t}`)
   }
-  assert.equal(round2.schemas.length, 6, "round 2+ schema count (read/glob/grep/ls/lsp/code_search)")
+})
 
 test("prepareAdvisorMessages: all-clear review resets the round — prompt and tool set agree", () => {
   // Prior review passed (all-clear → no prior table) but _advisorRound > 0:
-  // the next review must be a fresh round 1 (ROUND1 prompt + git tool).
+  // the next review must be a fresh round 1 (ROUND1 prompt — git-free tool set
+  // applies to every round, so prompt and tools stay consistent).
   const agent = { history: [{ role: "tool", tool_call_id: "a1", content: "everything is fine, no issues" }], _advisorRound: 3, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
   const session = prepareAdvisorMessages(agent)
   assert.equal(agent._advisorRound, 0, "round reset — new review cycle")
@@ -771,8 +769,6 @@ test("prepareAdvisorMessages: failed-retry with prior table PRESERVES the round"
   const session = prepareAdvisorMessages(agent)
   assert.equal(agent._advisorRound, 2, "round preserved for the convergence prompt")
   assert.ok(session[0].content.includes("Strictly verify only the prior issue table"), "ROUND3 prompt — convergence continues")
-})
-
 })
 
 test("runAdvisorReview: cap blocks design reviews too after 5 rounds (bounded loop)", async () => {
