@@ -261,7 +261,7 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 
 **TUI todo 面板**：对话区与输入框之间常驻，最多 5 行（`▶ in_progress` / `✓ done`（暗色+删除线）/ `○ pending`；超 5 条优先 in_progress、兼顾最早 pending 和最近 done）；一轮结束全部 done 自动收起；会话恢复时以 `agent.tasks` 直接初始化。状态栏保留 `▶done/total` 计数，对话区每次更新留痕 `[task] x/y ▶ 当前任务`。chat 命令经 stderr 输出同款留痕。
 
-**轻量 markdown 显示（IK5VW3）**：`tui/markdown.mjs` 把模型回复的行内标记渲染为 ANSI——`**粗体**`/`__粗体__`（`\x1b[1m`，用 `22` 关闭不破坏行底色）、`` `代码` ``（反色 `7m/27m`）、`~~删除线~~`（`9m/29m`）、`# 标题`（去标记+整行粗体）。设计约束：**在 wrapText 之后渲染**（ANSI 不再影响宽度数学）；反引号内标记不解释（markdown 语义）；未闭合标记按原文（流式安全）。表格对齐走 render.mjs 既有 `formatTables`，不受影响。复制文本时 ANSI 剥离即得干净内容。
+**轻量 markdown 显示（IK5VW3）**：`tui/markdown.mjs` 把模型回复的行内标记渲染为 ANSI——`**粗体**`/`__粗体__`（`\x1b[1m`，用 `22` 关闭不破坏行底色）、`` `代码` ``（反色 `7m/27m`）、`~~删除线~~`（`9m/29m`）、`# 标题`（去标记+整行粗体）。设计约束：**在 wrapText 之后渲染**（ANSI 不再影响宽度数学）；反引号内标记不解释（markdown 语义）；未闭合标记按原文（流式安全）。表格对齐走 render.mjs 既有 `formatTables`，**含标记单元格由 `renderMarkdownPreservingWidth` 行尾补偿**（标记消失导致的宽度差补空格，竖线不错位）；`stringWidth` 剥离 ANSI 序列（零显示宽度）。复制文本时 ANSI 剥离即得干净内容。
 
 **Ctrl+C 两段确认（IK61BI）**：空闲态第一次 Ctrl+C 只提示"再按一次退出"并武装（3 秒窗口，超时自动解除），窗口内再按才退出；picker 打开时 Ctrl+C = 取消 picker、生成中 Ctrl+C = abort，均不退出进程。状态栏与 F1 帮助文案同步（`Ctrl+C: exit (×2)`）。
 

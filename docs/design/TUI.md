@@ -79,7 +79,7 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
   → renderMarkdownHeading + renderMarkdownInline（**粗体**/`下划线代码`/~~删除线~~/标题，IK5VW3）
   → 折叠（连续 dim 行 >8 折成 "… N more lines — click to expand"）
 ```
-关键约束：**markdown ANSI 在 wrap 之后插入**——插入的转义序列不再参与宽度计算，不破坏对齐。窄作用域复位（`22`/`24`/`29` 而非 `0`）保证不冲掉行底色。缓存：`convCacheKey`（lines 长度/最后一行长度/streaming/reasoning 长度 + expandedBlocks 摘要）命中则跳过重建。
+关键约束：**markdown ANSI 在 wrap 之后插入**——插入的转义序列不再参与宽度计算，不破坏对齐。**宽度补偿**：标记（`` ` ``/`**`/`~~`）渲染后消失，含标记的表格行会比 formatTables 计算的列宽短——`renderMarkdownPreservingWidth` 在行尾补空格恢复原宽（竖线对齐）。`stringWidth` 剥离 ANSI 序列（ANSI 零显示宽度）——渲染后文本的宽度数学同样正确。窄作用域复位（`22`/`24`/`29` 而非 `0`）保证不冲掉行底色。缓存：`convCacheKey`（lines 长度/最后一行长度/streaming/reasoning 长度 + expandedBlocks 摘要）命中则跳过重建。
 
 ## 4. 折叠交互（双向：展开 ↔ 收起）
 

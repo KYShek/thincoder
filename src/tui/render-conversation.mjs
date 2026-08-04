@@ -3,10 +3,21 @@
  * Extracted from render-frame.mjs.
  */
 import { ansi, C } from "./ansi.mjs"
-import { formatTables, sanitizeDisplay, wrapText } from "./render.mjs"
+import { formatTables, sanitizeDisplay, stringWidth, wrapText } from "./render.mjs"
 import { renderMarkdownInline, renderMarkdownHeading } from "./markdown.mjs"
 
 let _convCache = { key: "", cols: 0, lines: [] }
+
+/** Render markdown markers to ANSI, then pad the line tail back to the pre-render
+ *  display width. Markers (`` ` ``, `**`, `~~`) vanish on render — without the
+ *  compensation, table rows containing them display shorter than the column widths
+ *  computed by formatTables and the borders misalign (reported regression). */
+function renderMarkdownPreservingWidth(text) {
+  const rendered = renderMarkdownInline(renderMarkdownHeading(text))
+  const diff = stringWidth(text) - stringWidth(rendered)
+  return diff > 0 ? rendered + " ".repeat(diff) : rendered
+}
+
 
 export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
@@ -87,7 +98,7 @@ function buildConvLines(state, cols) {
       for (const wrapped of wrapText(line, cols - 1)) {
         // Lightweight markdown display (IK5VW3): headings bold + inline markers styled.
         // Runs AFTER wrapping so the ANSI it inserts never skews width math.
-        block.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: l.color, _foldId: l._foldId, _src: i })
+        block.push({ text: renderMarkdownPreservingWidth(wrapped), color: l.color, _foldId: l._foldId, _src: i })
       }
     }
     if (folded && block.length > LONG_FOLD_LINES) {
@@ -135,7 +146,7 @@ function buildConvLines(state, cols) {
   if (state.streaming) {
     for (const line of formatTables(sanitizeDisplay(state.streaming), cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
-        convLines.push({ text: renderMarkdownInline(renderMarkdownHeading(wrapped)), color: C.text })
+        convLines.push({ text: renderMarkdownPreservingWidth(wrapped), color: C.text })
       }
     }
   }

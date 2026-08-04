@@ -31,8 +31,14 @@ export function charWidth(cp) {
 
 /** Compute the display width of a string (CJK characters count as 2) */
 export function stringWidth(text) {
+  // ANSI escape sequences occupy zero display width — strip them before counting.
+  // Without this, markdown-rendered text (ANSI inserted) was measured wider than it
+  // displays, and table lines with inline markers ended up shorter than the computed
+  // column widths (reported: table borders misaligned after `code`/`**bold**` cells).
   let w = 0
-  for (const ch of text) w += charWidth(ch.codePointAt(0))
+  for (const part of text.split(ANSI_SEQUENCE_RE)) {
+    for (const ch of part) w += charWidth(ch.codePointAt(0))
+  }
   return w
 }
 

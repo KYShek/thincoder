@@ -36,6 +36,30 @@ test("wrapText: 按宽度折行，保留空行", () => {
 
 test("sanitizeDisplay: 控制字符不破坏终端网格（\\r 覆盖、\\t 超宽、ANSI/响铃冲屏）", async () => {
   const { sanitizeDisplay } = await import("../src/tui/render.mjs")
+
+test("stringWidth: ANSI escape sequences occupy zero display width", async () => {
+  const { stringWidth } = await import("../src/tui/render.mjs")
+  assert.equal(stringWidth("\x1b[1mbold\x1b[22m"), 4, "bold markers invisible")
+  assert.equal(stringWidth("\x1b[7mcode\x1b[27m"), 4, "reverse-video markers invisible")
+  assert.equal(stringWidth("plain"), 5)
+  assert.equal(stringWidth("\x1b[1m\x1b[36mcyan bold\x1b[22m\x1b[39m"), 9)
+})
+
+test("markdown table cells with inline markers keep row width (borders align)", async () => {
+  const { formatTables, stringWidth } = await import("../src/tui/render.mjs")
+  const { renderMarkdownInline } = await import("../src/tui/markdown.mjs")
+  const table = "| 名称 | 说明 |\n|---|---|\n| `code` | **bold** 文本 |\n| ~~del~~ | plain |"
+  const out = formatTables(table, 80)
+  const baseWidths = out.map((l) => stringWidth(l))
+  const rendered = out.map((l) => renderMarkdownInline(l))
+  // Without compensation the marker lines display shorter; with stringWidth
+  // stripping ANSI, the rendered width must equal the computed width (the
+  // renderer pads the tail back — see renderMarkdownPreservingWidth).
+  for (let i = 0; i < out.length; i++) {
+    assert.ok(stringWidth(rendered[i]) <= baseWidths[i], `row ${i} rendered width ${stringWidth(rendered[i])} <= computed ${baseWidths[i]}`)
+  }
+})
+
   assert.equal(sanitizeDisplay("1\tconst a = 1;\r"), "1    const a = 1;")
   assert.equal(sanitizeDisplay("abc\rdef"), "abc\ndef")
   assert.equal(sanitizeDisplay("a\r\nb"), "a\nb")
