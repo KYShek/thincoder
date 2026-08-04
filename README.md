@@ -212,6 +212,12 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.11 (2026-08)
+- **Subagent model per type** — `subagent` tool `model` arg, `config.agent.subagentModels` (per explore/plan/coder/eng-coder) and `config.agent.subagentModel` (global fallback); priority: tool arg > type > global > parent provider. `/submodel` TUI command: picker over 5 slots (global + 4 roles) with provider→model selection, or direct args (`/submodel coder deepseek:deepseek-v4-flash`).
+- **Configurable bash shell** — `config.shell` or `/shell` TUI command: platform-aware picker (Windows: pwsh/Git Bash/WSL bash; POSIX: bash/zsh/fish — availability-detected, custom path supported). Windows default cmd now forces UTF-8 per command (`chcp 65001`) — fixes garbled Chinese output on win11.
+- **Markdown table alignment fix** — `stringWidth` strips ANSI (zero display width) and rendered table rows are padded back to the computed width; inline markers (`` `code` ``, `**bold**`) no longer shift the borders.
+- **sliceByWidth keeps ANSI sequences whole** — never slices mid-escape-sequence.
+
 ### 0.12.10 (2026-08)
 - **Code-quality pass (advisor subsystem):**
   - **Drop 11 unused exports** — internal-use symbols no longer leak through the module API (advisor table headers/constants, plan reminders, token-UUID helper, shrinkOversized).
