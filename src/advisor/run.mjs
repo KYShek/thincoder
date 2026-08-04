@@ -172,18 +172,21 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       if (!tool) {
         result = `Error: unknown tool "${tc.name}". Available: ${[...ADVISOR_TOOL_BY_NAME.keys()].join(", ")}`
       } else {
-        // Execute with timeout
+        // Execute with timeout (clear the timer when the tool wins the race —
+        // otherwise up to MAX_ADVISOR_TURNS dangling timers accumulate)
         try {
-          const toolPromise = tool.execute(args, {
-            cwd,
-            agent,
-            onOutput,
-            signal,
+          let timeoutId
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error(`tool timeout after ${TOOL_TIMEOUT_MS}ms`)), TOOL_TIMEOUT_MS)
           })
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`tool timeout after ${TOOL_TIMEOUT_MS}ms`)), TOOL_TIMEOUT_MS)
-          )
-          result = await Promise.race([toolPromise, timeoutPromise])
+          try {
+            result = await Promise.race([
+              tool.execute(args, { cwd, agent, onOutput, signal }),
+              timeoutPromise,
+            ])
+          } finally {
+            clearTimeout(timeoutId)
+          }
         } catch (e) {
           const errorType = e.message.includes("timeout") ? "timeout"
             : e.message.includes("ENOENT") ? "file_not_found"

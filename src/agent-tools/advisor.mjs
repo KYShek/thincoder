@@ -5,6 +5,7 @@
  */
 import { randomUUID, createHmac } from "node:crypto"
 import { runAdvisorReview } from "../advisor/run.mjs"
+import { isDocFile } from "../advisor/repos.mjs"
 
 const TOKEN_EXPIRY_MS = 3600000 // 1 hour
 const TOKEN_SECRET = process.env.THINCODER_TOKEN_SECRET || "thincoder-default-secret"
@@ -118,7 +119,6 @@ export const advisorTool = {
 
     // Design review: validate that documents are in docs/ or are recognized doc files
     if (reviewType === "design" && documents) {
-      const { isDocFile } = await import("../advisor/repos.mjs")
       const invalidDocs = documents.filter((doc) => {
         // Allow docs/ directory and recognized doc files (METHODOLOGY.md, README.md, etc.)
         if (doc.startsWith("docs/") || doc.startsWith("docs\\")) return false
