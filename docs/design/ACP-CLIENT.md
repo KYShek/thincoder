@@ -14,6 +14,12 @@
 竞争评估（COMPETITIVE-CLI-2026.md）P0 项。thincoder 已有专有 VS Code 扩展；ACP 一次实现，
 Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补上"编辑器接线"生态位。
 
+**用户故事**（需求层，跟踪到 .thincoder/checklist.md）：
+- 作为一个 **Zed 用户**，我想要在 IDE 里直接对话 thincoder（编辑器上下文自动注入），以便不用切换终端
+- 作为一个 **JetBrains 用户**，我想要在 AI chat 里驱动 thincoder（工具审批弹在 IDE 内），以便保持编辑器焦点
+- 作为一个 **多编辑器用户**，我想要一次终端登录、多处可用（会话/鉴权复用），以便不重复配置
+- 作为一个 **工程师**，我想要 agent 的编辑以 IDE 原生 diff 呈现（fs 反向 RPC），以便审查更可靠
+
 **具体收益**：
 - 编辑器上下文自动注入（打开文件/光标/选区，无需手动 @）
 - agent 编辑以 IDE 原生 diff 应用（fs 反向 RPC）
@@ -44,7 +50,7 @@ Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补�
 | `session/cancel` | ✅ | 中断当前轮（复用 signal 中断机制） |
 | `session/set_mode` | ✅ | plan/normal 模式切换（映射 configOption mode） |
 | `session/set_config_option` | ✅ | model / thinking 统一分发（映射 thincoder /model、/think 语义） |
-| `session/close`、`logout` | ❌ | `session/close` → **返回成功空响应（no-op）**，进程由客户端负责终止；`logout` 不支持（无账号体系）。进程退出时 pipe 自然关闭，客户端据此判定会话结束 |
+| `session/close`、`logout` | ❌ | `session/close` → **返回成功空响应（no-op）+ stderr 日志**（"session {id} closed by client"），进程由客户端负责终止；`logout` 不支持（无账号体系）。进程退出时 pipe 自然关闭，客户端据此判定会话结束 |
 
 ### 3.2 Client-side reverse-RPC（agent → IDE）—— 5/9
 
@@ -94,7 +100,7 @@ ACP 官方 SDK（`@agentclientprotocol/sdk`）是 npm 依赖——违反零依�
 
 - `readline` 逐行读 stdin → JSON.parse → 分发
 - 响应/通知写 stdout（**严格只写 JSON**——日志全走 stderr，kimi log-guard 同款）
-- 请求 ID 匹配 + 错误码映射（-32602 invalidParams / -32000 authRequired / -32601 methodNotFound）
+- 请求 ID 匹配 + 错误码映射：-32600（非法 JSON）/-32601（未知方法）/-32602（无效参数）/-32603（**内部错误**——未捕获异常返回合法 JSON-RPC 错误，不中断 NDJSON 流）/-32000（authRequired）
 - SIGINT/SIGTERM → graceful drain（等待进行中请求结束再退出）
 
 ### 4.2 会话层（AcpSession）
@@ -127,10 +133,17 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 
 **工具执行钩子**：`src/agent/dispatch.mjs` 工具循环注入可插拔点（**默认空实现，TUI/CLI 路径行为不变**）：
 
-1. **fs 读写路由**——`toolRouter(toolName, args)` 在 `runOne` 的 `item.tool.execute(...)` 调用前拦截：
+1. **fs 读写路由**——经 **runAgent callbacks 扩展**注册（与 onPermissionRequest 同通道）：
+   ```js
+   // callbacks.toolRouter —— ACP bridge 提供，TUI/CLI 不传（默认无路由）
+   toolRouter: (toolName, args) => Promise<{ handled: boolean, result?: string }>
+   // dispatch.mjs runOne 中 item.tool.execute(...) 调用前：
+   //   有 toolRouter → 先试路由；handled=true 用 result 作为工具结果，handled=false 走本地执行
+   ```
    - read/glob/grep/ls：**不路由**（本地读，性能优先）
    - write：`fs/write_text_file` 全量写（构造新内容直接写，无需读回）
    - edit/apply_patch：**先 `fs/read_text_file` 读回 client 当前全文 → 本地应用现有 diff 逻辑（复用 tool 实现）→ `fs/write_text_file` 全量写回**——读回保证与 IDE buffer 一致（防止客户端已改过文件），IDE 呈现 diff
+     - **已知风险（TOCTOU）**：读回与写入之间用户在 IDE 改了 buffer → 写入静默覆盖用户改动。缓解：IDE diff 审查（用户在保存前可见并拒绝）；后续可选演进：写入带 base revision 校验（协议不稳定面，非 v1 必需）。**记录为接受风险**
    - delete：`fs/write_text_file` 空内容（或由客户端删除语义决定）
    - 工具结果返回客户端确认后的写入结果
 2. **审批**——**复用现有 `callbacks.onPermissionRequest` 通道**（dispatch.mjs:113 已存在，不存在→deny）：
@@ -147,8 +160,9 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 - `session/load`/`resume` 读 thincoder 会话存档（src/session.mjs，双线历史 JSON）
 - **重放范围**（session/load）：人读线（`_fullHistory`）全量消息按序重放为 `user_message_chunk` / `agent_message_chunk`（含工具调用摘要卡片）；机读注入（reminder/interrupt/transient）**不重放**——客户端只应看到真实对话
 - `session/resume`：不重放历史，仅恢复 cwd + configOptions（model/thinking/mode）+ 当前会话上下文
-- `session/list` 枚举存档槽位——**槽位数量 unlimited（src/session.mjs 现有语义："Each project keeps unlimited session slots"），按实际存档全量返回**（更正早期"5 槽位"错误说法）
+- `session/list` 枚举存档槽位——**槽位数量 unlimited（src/session.mjs 现有语义："Each project keeps unlimited session slots"），按实际存档全量返回**（更正早期"5 槽位"错误说法）。**sessionId ↔ 槽位映射**：ACP sessionId = 槽位号（数字字符串，如 `"3"`），list 返回 `{ id: "3", cwd, updatedAt }`；load/resume/delete 按 id 解析槽位
 - `session/delete`：新增 `deleteSlot(cwd, slot)` 导出（删槽位文件 + manifest 条目）——**新能力**，现有 session.mjs 无删除函数
+- **重放性能**：逐块发送（客户端异步消费，协议本身无批量通道）；超长会话（数千消息）加载会有可见延迟——M3 视实测决定是否批量压缩，v1 接受
 - ACP 会话本身**不写存档**（由客户端管理生命周期）——最小侵入
 
 ### 4.6 非功能性需求
@@ -178,7 +192,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 5 | cancel 中断 | prompt 进行中发 `session/cancel` | 当前轮停止，后续无事件 |
 | 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` | list 返回全部槽位（unlimited）；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现 |
 | 7 | resume 与配置 | `session/resume {id}`（跳过重放）→ `session/set_config_option {configId:"mode", value:"plan"}` → `session/set_mode {mode:"normal"}` | resume 恢复 cwd+configOptions 无历史事件；set_config_option/set_mode 生效并发出 `current_mode_update` / `config_option_update` |
-| 8 | 错误映射 | 非法 JSON / 未知方法 / 未鉴权 prompt / 畸形 mcpServers / 活跃回合中再发 prompt | -32600 / -32601 / -32000 / mcpServers 忽略+warn 不报错 / 并发 prompt 排队或 -32602 |
+| 8 | 错误映射 | 非法 JSON / 未知方法 / 未鉴权 prompt / 畸形 mcpServers / 活跃回合中再发 prompt | -32600 / -32601 / -32000 / mcpServers 忽略+warn 不报错 / **并发 prompt 排队串行**（与 TUI 输入队列语义一致，不拒绝） |
 
 ## 7. 不做项（明确裁剪）
 
