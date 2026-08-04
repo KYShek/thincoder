@@ -6,9 +6,9 @@ import { C } from "./ansi.mjs"
  *  /shell <path|name>     → set (e.g. "C:\\Program Files\\Git\\bin\\bash.exe", "pwsh", "cmd")
  *  /shell reset           → back to system default (cmd on Windows, /bin/sh elsewhere) */
 export async function handleShellCommand(ctx, args = []) {
-  const raw = args.join(" ").trim()
+  const input = args.join(" ").trim()
   const current = ctx.agent.config.shell
-  if (!raw) {
+  if (!input) {
     const def = process.platform === "win32"
       ? "cmd (UTF-8 forced via chcp 65001 per command)"
       : "/bin/sh"
@@ -16,13 +16,13 @@ export async function handleShellCommand(ctx, args = []) {
     ctx.pushLine(`Usage: /shell <path>  |  /shell reset  |  e.g. /shell "C:\\Program Files\\Git\\bin\\bash.exe"  |  /shell pwsh`, C.dim)
     return
   }
-  if (raw === "reset") {
+  if (input === "reset") {
     ctx.agent.config.shell = null
-    await ctx.persistRaw({ shell: null }).catch((e) => ctx.pushLine(`[error] ${e.message}`, C.error))
+    await ctx.persistRaw((raw) => { raw.shell = null }).catch((e) => ctx.pushLine(`[error] ${e.message}`, C.error))
     ctx.pushLine("Shell reset to system default.", C.text)
     return
   }
-  ctx.agent.config.shell = raw
-  await ctx.persistRaw({ shell: raw }).catch((e) => ctx.pushLine(`[error] ${e.message}`, C.error))
-  ctx.pushLine(`Shell set to \`${raw}\` — bash tool commands will run through it.`, C.text)
+  ctx.agent.config.shell = input
+  await ctx.persistRaw((raw) => { raw.shell = input }).catch((e) => ctx.pushLine(`[error] ${e.message}`, C.error))
+  ctx.pushLine(`Shell set to \`${input}\` — bash tool commands will run through it.`, C.text)
 }

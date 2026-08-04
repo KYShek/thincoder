@@ -48,7 +48,7 @@ function checkBashSafety(command, cwd) {
  * Sets PYTHONIOENCODING on Windows to override GBK default for Python scripts.
  */
 function buildBashEnv() {
-  const winCmd = process.platform === "win32"
+  const isWindows = process.platform === "win32"
   return {
     ...process.env,
     GIT_EDITOR: "true",
@@ -57,7 +57,7 @@ function buildBashEnv() {
     GIT_PAGER: "cat",
     PAGER: "cat",
     TERM: "dumb",
-    ...(winCmd ? { PYTHONIOENCODING: "utf-8" } : {}),
+    ...(isWindows ? { PYTHONIOENCODING: "utf-8" } : {}),
   }
 }
 

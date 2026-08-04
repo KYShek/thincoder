@@ -25,7 +25,7 @@ import { validateDesignToken } from "./advisor.mjs"
  * API keys follow the config fallback order (provider.apiKey → THINCODER_API_KEY → provider-specific env).
  */
 export function resolveChildProvider(parent, modelArg) {
-  if (!modelArg) return parent.provider
+  if (!modelArg) return { ...parent.provider }
   const providers = parent.config?.providersList ?? []
   const withKey = (p) => {
     if (p.apiKey?.trim()) return { ...p, apiKey: p.apiKey.trim() }
