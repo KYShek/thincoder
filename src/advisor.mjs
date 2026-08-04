@@ -151,7 +151,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     // a follow-up "Verify Prior Table" would be meaningless; start a fresh full review
     if (!prior) {
       agent._advisorSession = null
-          session = null
+      session = null
       // Only reset the round counter on a truly fresh start (no prior reviews at all).
       // If _advisorRound > 0, there WAS a prior review — it just passed (all-clear).
       if (!agent._advisorRound) agent._advisorRound = 0
