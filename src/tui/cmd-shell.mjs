@@ -4,9 +4,9 @@ import { C } from "./ansi.mjs"
 
 /** Platform shell candidates: { name, value (config.shell payload), detect() }.
  *  detect() returns truthy when the shell is available (static check, never throws).
- *  The candidate list + detection is cached at module level — shell availability does
- *  not change during a session, and re-running spawnSync on every /shell would freeze
- *  the TUI (up to 3 × timeout per open). */
+ *  The FULL filtered result (available shells) is cached at module level — shell
+ *  availability does not change during a session, and re-running spawnSync on every
+ *  /shell would freeze the TUI (up to 3 × timeout per open). */
 let _shellCandidatesCache = null
 function platformShellCandidates() {
   if (_shellCandidatesCache) return _shellCandidatesCache
@@ -37,8 +37,10 @@ function platformShellCandidates() {
       candidates.push({ name: sh, value: sh, detect: () => commandExists(sh) })
     }
   }
-  _shellCandidatesCache = candidates
-  return candidates
+  // Known limitation: POSIX detection requires `sh` in PATH (extremely minimal
+  // containers may lack it — then only "System default" is offered).
+  _shellCandidatesCache = candidates.filter((c) => c.detect())
+  return _shellCandidatesCache
 }
 
 /** /shell command: bash tool shell — platform-aware picker (default) or direct args.
@@ -70,11 +72,10 @@ export async function handleShellCommand(ctx, args = []) {
   }
 
   // ── Platform-aware picker ──
-  const candidates = platformShellCandidates()
-  const available = candidates.filter((c) => c.detect())
+  const available = platformShellCandidates() // cached — detection runs once per session
   const current = agent.config?.shell ?? null
   const entries = [
-    { type: "header", text: "Shell — pick one (Esc exits)" },
+    { type: "header", text: current ? `Current: ${current}` : "Current: (system default)" },
     ...available.map((c) => ({
       type: "item",
       text: `${c.name}${c.value ? `  →  ${c.value}` : "  (cmd + UTF-8 on Windows / /bin/sh elsewhere)"}`,
@@ -96,11 +97,8 @@ export async function handleShellCommand(ctx, args = []) {
     pushLine(`Shell set to \`${path.trim()}\` — bash tool commands will run through it.`, C.text)
     return
   }
-  if (picked.value === null) {
-    await persist(null)
-    pushLine("Shell reset to system default.", C.text)
-  } else {
-    await persist(picked.value)
-    pushLine(`Shell set to \`${picked.value}\` — bash tool commands will run through it.`, C.text)
-  }
+  await persist(picked.value)
+  pushLine(picked.value === null
+    ? "Shell reset to system default."
+    : `Shell set to \`${picked.value}\` — bash tool commands will run through it.`, C.text)
 }

@@ -40,6 +40,8 @@ export function createPickers(ctx) {
     closePicker()
     return new Promise((resolve) => {
       const itemCount = entries.filter((e) => e.type === "item").length
+      // No selectable items — resolve immediately instead of showing an empty picker
+      if (itemCount === 0) { resolve(null); return }
       const index = Math.max(0, Math.min(defaultIndex, Math.max(0, itemCount - 1)))
       state.picker = { title, entries, lines: [], index, scroll: 0, selectedLine: 0, filter: "", resolve }
       state.pickerStack.push(state.picker)

@@ -3,7 +3,10 @@ import { ansi, C } from "./ansi.mjs"
 /** Subagent role slots — each has an independent model override slot */
 export const SUBMODEL_SLOTS = ["explore", "plan", "coder", "eng-coder"]
 
-/** Human-readable effective display with inheritance source. role=null → global slot. */
+/** Human-readable effective display with inheritance source. role=null → global slot.
+ *  source semantics: "type" = role-specific override (subagentModels[role]),
+ *  "global" = falls back to subagentModel, "parent" = no override, inherits the
+ *  parent agent's provider. */
 function slotDisplay(agent, role) {
   const cfg = agent.config?.agent ?? {}
   if (role === null) {
@@ -27,9 +30,14 @@ function slotDisplay(agent, role) {
 export async function handleSubmodelCommand(ctx, args = []) {
   const { agent, pushLine, showPicker, askQuestion, persistRaw, pickModelForSlot } = ctx
   const input = args.join(" ").trim()
-  const cfg = agent.config.agent ??= {}
 
+  // Single write channel: mutate BOTH in-memory agent.config.agent and the disk raw
+  // with the same function (no divergent double-writes). Agent config is created
+  // lazily here — an Esc-cancelled picker never writes anything.
   const persist = async (mutate) => {
+    agent.config.agent ??= {}
+    const a = agent.config.agent
+    mutate(a)
     await persistRaw((raw) => {
       raw.agent ??= {}
       mutate(raw.agent)
@@ -47,13 +55,9 @@ export async function handleSubmodelCommand(ctx, args = []) {
           pushLine(`Unknown subagent type: ${type} (available: ${SUBMODEL_SLOTS.join(", ")})`, C.error)
           return
         }
-        cfg.subagentModels ??= {}
-        delete cfg.subagentModels[type]
-        if (Object.keys(cfg.subagentModels).length === 0) delete cfg.subagentModels
         await persist((a) => { a.subagentModels ??= {}; delete a.subagentModels[type]; if (Object.keys(a.subagentModels).length === 0) delete a.subagentModels })
         pushLine(`Subagent type ${type}: reset to inherit (${slotDisplay(agent, type).source === "global" ? `global: ${slotDisplay(agent, type).value}` : "parent provider"}).`, C.text)
       } else {
-        cfg.subagentModel = null
         await persist((a) => { a.subagentModel = null })
         pushLine("Subagent global model: reset to inherit parent provider.", C.text)
       }
@@ -66,8 +70,6 @@ export async function handleSubmodelCommand(ctx, args = []) {
         pushLine(`Subagent ${first}: ${d.value ? `\`${d.value}\` (${d.source} config)` : "(inherit: parent provider)"}`, C.text)
         return
       }
-      cfg.subagentModels ??= {}
-      cfg.subagentModels[first] = value
       await persist((a) => { a.subagentModels ??= {}; a.subagentModels[first] = value })
       pushLine(`Subagent ${first} model set to \`${value}\`.`, C.text)
       return
@@ -78,7 +80,6 @@ export async function handleSubmodelCommand(ctx, args = []) {
       return
     }
     // Global value (provider:model | provider | model)
-    cfg.subagentModel = input
     await persist((a) => { a.subagentModel = input })
     pushLine(`Subagent global model set to \`${input}\`.`, C.text)
     return
@@ -104,8 +105,6 @@ export async function handleSubmodelCommand(ctx, args = []) {
     if (!picked) return // Esc
 
     if (picked.action === "resetall") {
-      cfg.subagentModel = null
-      delete cfg.subagentModels
       await persist((a) => { a.subagentModel = null; delete a.subagentModels })
       pushLine("All subagent model overrides cleared — inherit parent provider.", C.text)
       continue
@@ -126,34 +125,24 @@ export async function handleSubmodelCommand(ctx, args = []) {
       if (!sel) continue
       const value = `${sel.provider}:${sel.model}`
       if (role) {
-        cfg.subagentModels ??= {}
-        cfg.subagentModels[role] = value
         await persist((a) => { a.subagentModels ??= {}; a.subagentModels[role] = value })
         pushLine(`Subagent ${role} model set to \`${value}\`.`, C.text)
       } else {
-        cfg.subagentModel = value
         await persist((a) => { a.subagentModel = value })
         pushLine(`Subagent global model set to \`${value}\`.`, C.text)
       }
     } else if (sub.action === "parent") {
       const value = `${agent.activeProvider}:${agent.activeModel ?? agent.provider?.model}`
       if (role) {
-        cfg.subagentModels ??= {}
-        cfg.subagentModels[role] = value
         await persist((a) => { a.subagentModels ??= {}; a.subagentModels[role] = value })
       } else {
-        cfg.subagentModel = value
         await persist((a) => { a.subagentModel = value })
       }
       pushLine(`Subagent ${picked.slot} set to parent model \`${value}\`.`, C.text)
     } else if (sub.action === "reset") {
       if (role) {
-        cfg.subagentModels ??= {}
-        delete cfg.subagentModels[role]
-        if (Object.keys(cfg.subagentModels).length === 0) delete cfg.subagentModels
         await persist((a) => { a.subagentModels ??= {}; delete a.subagentModels[role]; if (Object.keys(a.subagentModels).length === 0) delete a.subagentModels })
       } else {
-        cfg.subagentModel = null
         await persist((a) => { a.subagentModel = null })
       }
       pushLine(`Subagent ${picked.slot} reset to inherit.`, C.text)
