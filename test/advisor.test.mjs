@@ -742,6 +742,21 @@ test("runAdvisorReview: convergence cap blocks a 6th review call", async () => {
   assert.ok(result.includes(String(MAX_ADVISOR_ROUNDS)), "cap message names the round limit")
 })
 
+
+test("advisorToolsFor: round 1 has git; rounds 2+ are pure-read (no git tool)", async () => {
+  const mod = await import("../src/advisor/run.mjs")
+  const round1 = mod._advisorToolsFor({ _advisorRound: 0 })
+  const round2 = mod._advisorToolsFor({ _advisorRound: 1 })
+  const round5 = mod._advisorToolsFor({ _advisorRound: 5 })
+  assert.ok(round1.byName.has("git"), "round 1 keeps git for change discovery")
+  assert.ok(!round2.byName.has("git"), "round 2+ removes git — read-only verification")
+  assert.ok(!round5.byName.has("git"), "all convergence rounds are git-free")
+  for (const t of ["read", "grep", "lsp", "glob", "ls"]) {
+    assert.ok(round2.byName.has(t), `round 2+ keeps ${t}`)
+  }
+  assert.equal(round2.schemas.length, 6, "round 2+ schema count (read/glob/grep/ls/lsp/code_search)")
+})
+
 test("runAdvisorReview: cap blocks design reviews too after 5 rounds (bounded loop)", async () => {
   const { runAdvisorReview, MAX_ADVISOR_ROUNDS } = await import("../src/advisor/run.mjs")
   const agent = {

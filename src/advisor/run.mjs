@@ -75,8 +75,24 @@ const advisorGitTool = {
 }
 
 const ADVISOR_TOOLS = [readTool, globTool, grepTool, lsTool, advisorGitTool, lspTool, codeSearchTool]
-const ADVISOR_TOOL_SCHEMAS = ADVISOR_TOOLS.map(toOpenAISchema)
-const ADVISOR_TOOL_BY_NAME = new Map(ADVISOR_TOOLS.map((t) => [t.name, t]))
+
+/**
+ * Round-aware advisor tool set.
+ * - Round 1: full set incl. git (diff/status/log) — the reviewer discovers the
+ *   change surface with `git diff` since no diff is injected into the message.
+ * - Rounds 2+ (convergence): NO git tool. A stale diff misled re-reviews —
+ *   committed fixes never show in `git diff HEAD`, so "no changes" was read as
+ *   "not fixed" (decision 7d49a52: verification is `read`-only). Removing the
+ *   tool closes the loop the prompt could not.
+ */
+function advisorToolsFor(agent) {
+  const tools = (agent._advisorRound || 0) > 0
+    ? [readTool, globTool, grepTool, lsTool, lspTool, codeSearchTool]
+    : ADVISOR_TOOLS
+  return { schemas: tools.map(toOpenAISchema), byName: new Map(tools.map((t) => [t.name, t])) }
+}
+// Test seam: the round-aware tool set is pure (agent._advisorRound → tools).
+export { advisorToolsFor as _advisorToolsFor }
 
 /** Compact one-line summary of tool args for panel progress lines.
  *  Picks the most identifying field; falls back to truncated JSON. */
@@ -101,6 +117,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
   const emit = (kind) => (onOutput ? (text) => onOutput({ kind, text }) : undefined)
   const onThink = emit("think")
   const onText = emit("text")
+  const { schemas: toolSchemas, byName: toolByName } = advisorToolsFor(agent)
   let turns = 0
   const startTime = Date.now()
   
@@ -129,7 +146,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     
     const response = await chat(provider, {
       messages,
-      tools: ADVISOR_TOOL_SCHEMAS,
+      tools: toolSchemas,
       signal: (signal && !signal.aborted) ? signal : null,
       onToken: onText,
       onReasoning: onThink,
@@ -153,7 +170,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
 
     // Execute each tool call
     for (const tc of response.toolCalls) {
-      const tool = ADVISOR_TOOL_BY_NAME.get(tc.name)
+      const tool = toolByName.get(tc.name)
       let args = {}
       let parseError = null
       try {
