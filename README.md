@@ -209,6 +209,9 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.8 (2026-08)
+- **Fix: pending-task pushback fires at most once** — the completion guard that reminds the model to update pending tasks before finishing could loop forever when a pending item could not be resolved. Now each task-list state earns exactly one reminder; if the model insists on finishing anyway, it is allowed to (updating the list via the task tool resets the budget). VS Code extension synced.
+
 ### 0.12.7 (2026-08)
 - **Fix: long replies and thinking are never folded** — the long-message folding feature (0.12.6) collapsed main output and reasoning behind a click when they exceeded 12 lines, hurting readability. Folding now applies to secondary dim-colored content (tool summaries/status) only; expanded blocks are exempt from the consecutive-dim folding so nothing folds twice.
 - **Fix: wide tables misaligned in narrow terminals** — a many-column table that still exceeded the terminal width after column shrinking (e.g. 8 columns at 40 cols) wrapped at the terminal and misaligned. Table rows are now clipped with an ellipsis instead of ever exceeding the width.
