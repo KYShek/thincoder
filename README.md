@@ -20,7 +20,7 @@ Design philosophy (the entire meaning of the name): if the Node standard library
 - **Memory system**: three layers (personal/project/team), FTS5 + vector RRF hybrid retrieval, git-friendly markdown format
 - **Two-phase tool scheduling**: permission prompts serialized, read-only tools parallelized, side-effect tools serialized
 - **Session persistence** ⭐0.5.0: up to 5 archive slots, `/session` to switch anytime, tool results visible after restore. Process-level isolation — multiple instances in the same directory each get their own session slot
-- **Concurrent subagents**: three roles — `explore`/`plan`/`coder` — dispatched in parallel, streaming output visible, reports land in the conversation
+- **Concurrent subagents**: three roles — `explore`/`plan`/`coder` — dispatched in parallel, streaming output visible, reports land in the conversation; per-subagent model override (`subagent` tool `model` arg or `agent.subagentModel` config — e.g. discuss with `glm-5.2`, let `deepseek-v4-flash` implement)
 - **Plan Mode**: read-only exploration + design, implement after user approval
 - **AUTO mode**: `/auto` full authorization, no confirmations on long tasks
 - **Task tracking**: `task` tool breaks down multi-step work, status bar ✓n/m live progress, auto-filters completed items
@@ -85,7 +85,7 @@ thincoder upgrade
 
 Running from source: replace `thincoder` above with `node bin/thincoder.mjs`.
 
-Slash commands in the TUI: `/help`, `/model` (two-level picker: first select provider, then model; `/model <provider>:<name>` switches directly), `/provider` (add/remove providers, set keys, custom endpoints), `/think` (thinking mode toggle and reasoning effort), `/config` (view config, `/config embedkey` for the embedding key, `/config set` for parameters), `/session` (list/switch archived sessions), `/reindex` (rebuild the index), `/extract` (extract knowledge from the current session), `/restore` (restore checkpoint), `/clear`, `/exit`. High-frequency commands support abbreviations: `/h` `/x` `/m` `/p` `/t` `/c` `/n`. Typing `/` shows live matching hints in the status bar. Model picker supports search/filter — type to narrow down results.
+Slash commands in the TUI: `/help`, `/model` (two-level picker: first select provider, then model; `/model <provider>:<name>` switches directly), `/shell` (show/set the bash-tool shell — e.g. `/shell "C:\Program Files\Git\bin\bash.exe"`, `/shell pwsh`, `/shell reset`; fixes win11 cmd encoding/command issues), `/provider` (add/remove providers, set keys, custom endpoints), `/think` (thinking mode toggle and reasoning effort), `/config` (view config, `/config embedkey` for the embedding key, `/config set` for parameters), `/session` (list/switch archived sessions), `/reindex` (rebuild the index), `/extract` (extract knowledge from the current session), `/restore` (restore checkpoint), `/clear`, `/exit`. High-frequency commands support abbreviations: `/h` `/x` `/m` `/p` `/t` `/c` `/n`. Typing `/` shows live matching hints in the status bar. Model picker supports search/filter — type to narrow down results.
 
 Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`), `THINCODER_BASE_URL`, `THINCODER_MODEL`, `SILICONFLOW_API_KEY`.
 
@@ -112,6 +112,7 @@ Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_
     },
   ],
   "activeProvider": "deepseek", // currently active provider name
+  "shell": null, // bash tool shell (win11: e.g. "C:\\Program Files\\Git\\bin\\bash.exe" or "pwsh"); null = system default — cmd on Windows (UTF-8 forced per command), /bin/sh elsewhere. TUI: /shell
   "embedding": {
     // optional: without it, retrieval is pure FTS
     "baseURL": "https://api.siliconflow.cn/v1",
@@ -120,6 +121,7 @@ Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_
   },
   "agent": {
     "maxTurns": 100, // tool-loop cap
+    "subagentModel": null, // default subagent provider/model override: "provider:model" | provider name | model name; null = inherit parent provider. Per-call: subagent tool `model` arg
     "compactThreshold": 100000, // context compaction threshold (approx. tokens)
   },
   "memory": {

@@ -206,6 +206,8 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 | `verify` | 完成前自检：git diff --stat + task 清单 + 自检 checklist | 仅顶层 |
 | `subagent` / `skill` | 子 agent（explore/plan/coder）与项目技能加载 | 仅顶层（防递归） |
 
+**子 agent 模型指定**：`subagent` 工具 `model` 参数可覆盖子 agent 的 provider/model——`"provider:model"`（指定 provider 与模型，如 `deepseek:deepseek-v4-flash`）、provider 名（用其配置模型）、或纯模型名（父 provider 换模型）；未指定时回落 `config.agent.subagentModel`，再回落父 provider。API key 按 config 回退序（provider.apiKey → THINCODER_API_KEY → provider 专属 env）。典型用法：主会话用 glm-5.2 讨论定方案，把消耗大的实现外包给便宜模型。
+
 **子 agent 权限模型**：explore/plan 强制只读（权限回调恒 false）；coder/默认角色在 AUTO 模式直接放行，**手动模式把权限请求排队透传到父 agent 的审批 UI**（工具名带 `coder/` 前缀，如 `coder/bash`）——人在回路，子 agent 的写操作由用户逐条批准，拒绝后子 agent 按 overlay 设计改为交报告。并行子 agent 的请求经 `parent._permQueue` 串行化，避免两个审批同时弹出互相覆盖（question 工具的教训）。
 
 **plan 子 agent（借鉴 kimi-code 的 plan profile）**：只读规划 agent，交付物是计划本身。overlay 的灵魂是**编排意识**——先判断是否足够了解代码库，不足则明确列出"建议父 agent 派 explore 调查的问题"（plan → explore → plan 链），而非硬猜；输出契约：引用真实文件/行号、步骤可验证、有权衡时推荐一个方案并给理由。工具与 explore 相同（只读过滤），git 上下文同样注入。与 plan mode 互补：plan mode 是用户在场审批方案，plan 子 agent 是父 agent 自主外包规划阅读。

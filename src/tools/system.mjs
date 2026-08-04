@@ -118,11 +118,18 @@ async function gitGuardSnapshot(command, cwd) {
   }
 }
 
-function runBash(command, cwd, { timeout, signal, onOutput }) {
+function runBash(command, cwd, { timeout, signal, onOutput, shell }) {
   return new Promise((resolve) => {
-    const child = spawn(command, {
+    // Windows + default cmd: force UTF-8 code page for this child process (each spawn
+    // is an independent cmd, so chcp has no side effects on other shells) — otherwise
+    // cmd emits GBK bytes that the UTF-8 decoder turns into mojibake, and the model
+    // fights encoding errors instead of the actual command (reported UX on win11).
+    const effectiveCommand = process.platform === "win32" && !shell
+      ? `chcp 65001 >nul && ${command}`
+      : command
+    const child = spawn(effectiveCommand, {
       cwd,
-      shell: true,
+      shell: shell ?? true,
       windowsHide: true,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
@@ -239,6 +246,7 @@ export const bashTool = {
       timeout: args.timeout ?? BASH_TIMEOUT_MS,
       signal: ctx.signal,
       onOutput: ctx.onOutput,
+      shell: ctx.agent?.config?.shell ?? null,
     })
     return guard ? `${guard.notice}\n\n${result}` : result
   },

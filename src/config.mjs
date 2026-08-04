@@ -43,6 +43,7 @@ const DEFAULTS = {
   agent: {
     maxTurns: 100,
     subagentTurns: 100,
+    subagentModel: null,  // default model for subagents: "provider:model" | provider name | model name (parent provider); null = inherit parent provider
     goalTurns: 200,
     compactThreshold: 100000,
     verifyGuard: false,  // push model back to verify when files were mutated but verify not run (opt-in)
@@ -56,6 +57,7 @@ const DEFAULTS = {
     projectDir: ".thincoder/memory",
     team: null,
   },
+  shell: null,            // bash tool shell executable (e.g. "C:\\Program Files\\Git\\bin\\bash.exe" or "pwsh"); null = system default (cmd on Windows, /bin/sh elsewhere)
   embedding: {
     baseURL: "https://api.siliconflow.cn/v1",
     model: "BAAI/bge-m3",

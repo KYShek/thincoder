@@ -14,6 +14,38 @@ import { validateDesignToken } from "./advisor.mjs"
  * - parallel subagent calls via the parallel channel (parallel: true)
  * - non-recursive: child agents do not get the subagent tool (depth > 0 is not injected)
  */
+
+/**
+ * Resolve the sub-agent's provider from a model override string (shared with the
+ * VS Code port). Forms accepted:
+ *   "provider:model"  → the named provider with the named model
+ *   "provider"        → the named provider's configured model
+ *   "model"           → same provider as the parent, different model
+ * null → parent's provider unchanged.
+ * API keys follow the config fallback order (provider.apiKey → THINCODER_API_KEY → provider-specific env).
+ */
+export function resolveChildProvider(parent, modelArg) {
+  if (!modelArg) return parent.provider
+  const providers = parent.config?.providersList ?? []
+  const withKey = (p) => {
+    if (p.apiKey?.trim()) return { ...p, apiKey: p.apiKey.trim() }
+    if (process.env.THINCODER_API_KEY) return { ...p, apiKey: process.env.THINCODER_API_KEY }
+    const envMap = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }
+    const keyVar = envMap[p.name]
+    if (keyVar && process.env[keyVar]) return { ...p, apiKey: process.env[keyVar] }
+    return { ...p }
+  }
+  if (modelArg.includes(":")) {
+    const [pname, mname] = modelArg.split(":")
+    const p = providers.find((x) => x.name === pname)
+    if (!p) throw new Error(`subagent model: unknown provider "${pname}" (available: ${providers.map((x) => x.name).join(", ") || "none"})`)
+    return { ...withKey(p), model: mname || p.model }
+  }
+  const byName = providers.find((x) => x.name === modelArg)
+  if (byName) return withKey(byName)
+  return { ...parent.provider, model: modelArg }
+}
+
 export const subagentTool = {
   name: "subagent",
   description:
@@ -30,6 +62,7 @@ export const subagentTool = {
       task: { type: "string", description: "Self-contained task description for the sub-agent" },
       context: { type: "string", description: "Optional background the sub-agent needs (it cannot see this conversation)" },
       role: { type: "string", enum: ["explore", "plan", "coder", "eng-coder"], description: "Sub-agent role: 'explore' (read-only search/analysis), 'plan' (read-only implementation planning), 'coder' (full implementation), 'eng-coder' (engineering-mode coder — strict methodology, design-driven). ENUM IS OVERRIDDEN IN setup.mjs PER ENGINEERING MODE." },
+      model: { type: "string", description: "Provider/model override for this sub-agent: 'provider:model', a provider name from config, or a model name on the parent's provider. Defaults to the agent.subagentModel config, then the parent's provider. Useful for offloading heavy work to a cheaper model." },
       designToken: { type: "string", description: "Required when role='eng-coder': the token returned by advisor(type='design') after the design review passed. Without a valid token, eng-coder cannot modify files." },
     },
     required: ["task"],
@@ -48,6 +81,9 @@ export const subagentTool = {
     if (!parent.config?.agent?.engineering && role === "eng-coder") {
       throw new Error("Engineering mode is not active — use role='coder' for implementation tasks.")
     }
+
+    // Provider/model override: subagent `model` arg > agent.subagentModel config > parent provider
+    const childProvider = resolveChildProvider(parent, args.model ?? parent.config?.agent?.subagentModel ?? null)
 
     // eng-coder token gate: the design review must have passed and the caller must
     // present the exact token advisor issued — otherwise the child is not authorized to code.
@@ -97,7 +133,7 @@ export const subagentTool = {
       : parent.config
 
     const child = createAgent({
-      provider: parent.provider,
+      provider: childProvider,
       tools,
       config: childConfig,
       cwd: parent.cwd,

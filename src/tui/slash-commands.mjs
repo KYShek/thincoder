@@ -25,6 +25,7 @@ import { handleAutoCommand } from "./cmd-auto.mjs"
 import { handleAdvisorCommand } from "./cmd-advisor.mjs"
 import { handleThinkCommand } from "./cmd-think.mjs"
 import { handleModelCommand } from "./cmd-model.mjs"
+import { handleShellCommand } from "./cmd-shell.mjs"
 import { handleConfigCommand } from "./cmd-config.mjs"
 import { handleExtractCommand } from "./cmd-extract.mjs"
 import { handleHelpCommand } from "./cmd-help.mjs"
@@ -39,6 +40,7 @@ export const SLASH_COMMANDS = [
   { name: "/eng", group: "Agent", desc: "toggle engineering mode — strict methodology enforcement" },
   { name: "/advisor", group: "Agent", desc: "advisor settings (toggle, model, thinking, guard)" },
   { name: "/model", group: "Agent", desc: "select model & manage providers" },
+  { name: "/shell", group: "System", desc: "bash tool shell (git-bash/pwsh path; win11 cmd encoding fix)" },
   { name: "/goal", group: "Agent", desc: "set/view/cancel long-term goal" },
   { name: "/think", group: "Agent", desc: "thinking mode & reasoning effort" },
   { name: "/upgrade", group: "System", desc: "check for updates & upgrade" },
@@ -78,6 +80,7 @@ export const HANDLERS = {
   "/advisor": handleAdvisorCommand,
   "/think": handleThinkCommand,
   "/model": handleModelCommand,
+  "/shell": handleShellCommand,
   "/config": handleConfigCommand,
   "/upgrade": handleUpgradeCommand,
   "/fold": handleFoldCommand,
