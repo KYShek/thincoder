@@ -9,7 +9,7 @@ export async function handleShellCommand(ctx, args = []) {
   // Strip surrounding quotes (slash args are whitespace-split; /shell "C:\Program Files\Git\bin\bash.exe"
   // would otherwise persist the literal quote characters and spawn would fail)
   const input = args.join(" ").trim().replace(/^["'](.+)["']$/, "$1")
-  const current = ctx.agent.config.shell
+  const current = ctx.agent.config?.shell
   if (!input) {
     const def = process.platform === "win32"
       ? "cmd (UTF-8 forced via chcp 65001 per command)"
@@ -18,7 +18,7 @@ export async function handleShellCommand(ctx, args = []) {
     ctx.pushLine(`Usage: /shell <path>  |  /shell reset  |  e.g. /shell "C:\\Program Files\\Git\\bin\\bash.exe"  |  /shell pwsh`, C.dim)
     return
   }
-  if (input === "reset") {
+  if (input.toLowerCase() === "reset") {
     ctx.agent.config.shell = null
     await ctx.persistRaw((raw) => { raw.shell = null }).catch((e) => ctx.pushLine(`[error] ${e.message}`, C.error))
     ctx.pushLine("Shell reset to system default.", C.text)
