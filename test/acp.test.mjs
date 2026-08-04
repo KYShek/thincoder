@@ -199,14 +199,19 @@ describe("acp handlers — handshake + session lifecycle (injected deps)", () =>
     // Fake run: first turn honours cancel by throwing AbortError; second turn
     // must run with a CLEAN signal (proves the reset in createAcpSession).
     let turn = 0
+    let signalIsReal = false
     let sawAborted = false
     deps.createSession = async ({ id, notify }) => {
       const s = createAcpSession({
         id, agent: {}, notify,
         run: async (agent, input, cb, { signal }) => {
           turn++
+          // The signal must be a REAL AbortSignal — provider layers compose
+          // AbortSignal.any([signal, timeout]) and would throw on a plain object.
+          signalIsReal = signal instanceof AbortSignal
           if (turn === 1) {
-            signal.aborted = true; signal.reason = { interrupt: true, message: "cancel" }
+            cb.onToken("pre-cancel")
+            signal.dispatchEvent(new Event("abort")) // simulate provider abort path
             const err = new Error("aborted"); err.name = "AbortError"; throw err
           }
           sawAborted = signal.aborted // second turn: must be false
@@ -230,6 +235,7 @@ describe("acp handlers — handshake + session lifecycle (injected deps)", () =>
     const results = c.all()
     assert.ok(results.some((r) => r.id === 4 && r.result?.stopReason === "cancelled"), "turn 1 reports cancelled (AbortError path)")
     assert.ok(results.some((r) => r.id === 5 && r.result?.stopReason === "end_turn"), "turn 2 runs normally")
+    assert.equal(signalIsReal, true, "signal is a real AbortSignal — AbortSignal.any() compatible")
     assert.equal(sawAborted, false, "signal reset between turns — second turn is not aborted")
   })
 

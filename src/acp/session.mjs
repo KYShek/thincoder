@@ -3,15 +3,19 @@
  *
  * - `run(input)` serializes prompts through a per-session FIFO promise chain
  *   (concurrent prompts queue; each runs after the previous turn's end_turn).
- * - `cancel()` flips the agent signal — the in-flight turn aborts
- *   (runAgent handles `signal.reason.interrupt`).
+ * - `cancel()` aborts the in-flight turn via a REAL AbortController — the
+ *   provider layer composes `AbortSignal.any([signal, timeout])` (core.mjs:280,
+ *   anthropic.mjs:67, google.mjs:98), which requires a real AbortSignal; a
+ *   plain object would throw TypeError on every LLM call.
+ * - The controller is rebuilt after every turn, so one cancel only affects the
+ *   in-flight turn; the next queued prompt starts with a clean signal.
  * - `run` is injectable for tests (defaults to the real runAgent).
  */
 import { runAgent } from "../agent.mjs"
 import { buildAcpCallbacks } from "./bridge.mjs"
 
 export function createAcpSession({ id, agent, notify, log = () => {}, run = runAgent }) {
-  const signal = { aborted: false, reason: null }
+  let controller = new AbortController()
   const callbacks = buildAcpCallbacks({ sessionId: id, notify, log })
   let queue = Promise.resolve()
   let busy = false
@@ -24,13 +28,11 @@ export function createAcpSession({ id, agent, notify, log = () => {}, run = runA
       const task = queue.then(async () => {
         busy = true
         try {
-          return await run(agent, input, callbacks, { signal })
+          return await run(agent, input, callbacks, { signal: controller.signal })
         } finally {
           busy = false
-          // Reset the signal after every turn — cancel() only affects the
-          // in-flight turn; the next queued prompt must start with a clean signal.
-          signal.aborted = false
-          signal.reason = null
+          // Fresh controller per turn: cancel() only affects the in-flight turn.
+          controller = new AbortController()
         }
       })
       // Keep the chain alive even when a turn rejects (the next prompt still runs).
@@ -38,8 +40,7 @@ export function createAcpSession({ id, agent, notify, log = () => {}, run = runA
       return task
     },
     cancel() {
-      signal.aborted = true
-      signal.reason = { interrupt: true, message: "cancelled by client" }
+      controller.abort({ interrupt: true, message: "cancelled by client" })
     },
   }
 }
