@@ -19,19 +19,20 @@ import { assembleAgent } from "./cli/make-agent.mjs"
 import { createAcpServer, ACP_ERRORS } from "./acp/transport.mjs"
 import { createAcpSession } from "./acp/session.mjs"
 import { replayHistory } from "./acp/bridge.mjs"
-import { listSlots, loadSession, applySession, deleteSlot, sessionPath, normalizeCwd, isLegacyTransient } from "./session.mjs"
+import { listSlots, applySession, deleteSlot, sessionPath, normalizeCwd, isLegacyTransient } from "./session.mjs"
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
 
 /** Load a specific slot file (not the active one) — session/load by id.
- *  Same validation as loadSession: version 1/2 + legacy-transient filtering
- *  (pre-filtering slot files must not leak machine lines into the replay). */
+ *  Same validation as loadSession: version 1/2, cwd match, legacy-transient
+ *  filtering (pre-filtering slot files must not leak machine lines into replay). */
 function loadSlotFile(cwd, slot) {
   const path = `${sessionPath(cwd)}.${slot}`
   try {
     const data = JSON.parse(readFileSync(path, "utf8"))
     if (data?.version !== 1 && data?.version !== 2) return null
     if (!Array.isArray(data.history)) return null
+    if (data.cwd && normalizeCwd(data.cwd).toLowerCase() !== normalizeCwd(cwd).toLowerCase()) return null
     data.history = data.history.filter((m) => !isLegacyTransient(m))
     return data
   } catch {
@@ -140,10 +141,11 @@ export function buildAcpHandlers({
         // Normalized comparison: resolve() collapses trailing slashes, and
         // normalizeCwd().toLowerCase() makes the check case-insensitive on
         // Windows (drive letter + path — a client sending "c:\users\…" vs
-        // process.cwd() "C:\Users\…" must match). The ternary is load-bearing:
-        // resolve(undefined) throws TypeError. Note: `requested` never feeds
-        // any path operation — the agent always runs in getCwd() — so a
-        // case-insensitive match on case-sensitive platforms is harmless.
+        // process.cwd() "C:\Users\…" must match). The ternary guards against
+        // resolve(undefined) — it would coerce undefined to the literal
+        // "undefined" and resolve a nonsense path. Note: `requested` never
+        // feeds any path operation — the agent always runs in getCwd() — so
+        // a case-insensitive match on case-sensitive platforms is harmless.
         const norm = (p) => normalizeCwd(p).toLowerCase()
         const requested = params.cwd ? resolve(params.cwd) : getCwd()
         if (norm(requested) !== norm(getCwd())) {
@@ -208,7 +210,7 @@ export function buildAcpHandlers({
           sessions: slots.map((s) => ({
             id: String(s.slot),
             cwd: getCwd(), // single-cwd model (design §4.5)
-            updatedAt: s.updatedAt ?? s.timestamp ?? 0,
+            updatedAt: s.updatedAt ?? 0,
             title: s.title ?? "",
             messageCount: s.messageCount ?? 0,
           })),

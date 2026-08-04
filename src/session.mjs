@@ -290,6 +290,7 @@ export function deleteSlot(cwd, slot) {
   const m = loadManifest(cwd)
   if (!m.slots[n]) return false
   delete m.slots[n]
+  delete m.slotSessions?.[n] // orphan session-id entries bloat the manifest forever
   try { unlinkSync(slotPath(cwd, n)) } catch { /* missing file is fine */ }
   if (m.active === n) delete m.active
   saveManifest(cwd, m)

@@ -12,7 +12,7 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createAcpServer, ACP_ERRORS } from "../src/acp/transport.mjs"
-import { buildAcpCallbacks } from "../src/acp/bridge.mjs"
+import { buildAcpCallbacks, replayHistory } from "../src/acp/bridge.mjs"
 import { createAcpSession } from "../src/acp/session.mjs"
 import { buildAcpHandlers } from "../src/acp.mjs"
 import { saveSession, loadSession } from "../src/session.mjs"
@@ -214,6 +214,48 @@ describe("session — FIFO queue + cancel", () => {
   it("cancel flips the signal the agent loop observes", () => {
     const s = createAcpSession({ id: "s1", agent: {}, notify: () => {}, run: async () => {} })
     assert.equal(s.agent !== undefined, true)
+describe("M3 — replayHistory edge cases", () => {
+  it("replays EVERY tool in a multi-tool batch (no orphan updates)", () => {
+    const events = []
+    replayHistory({
+      sessionId: "s1",
+      notify: (m, p) => events.push(p.update),
+      history: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: "", tool_calls: [{ name: "bash" }, { name: "write" }] },
+        { role: "tool", content: "ls output" },
+        { role: "tool", content: "written" },
+      ],
+    })
+    const calls = events.filter((u) => u.sessionUpdate === "tool_call")
+    const updates = events.filter((u) => u.sessionUpdate === "tool_call_update")
+    assert.equal(calls.length, 2, "one tool_call per tool in the batch")
+    assert.equal(updates.length, 2, "both results delivered")
+    assert.deepEqual(updates.map((u) => u.toolCallId), calls.map((c) => c.toolCallId), "updates reference the emitted call ids")
+    assert.equal(calls[0].kind, "execute", "kind inferred from the tool name")
+    assert.equal(calls[1].kind, "edit", "kind inferred from the tool name")
+  })
+
+  it("replays multi-block assistant content as one chunk per block", () => {
+    const events = []
+    replayHistory({
+      sessionId: "s1",
+      notify: (m, p) => events.push(p.update),
+      history: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: [{ type: "text", text: "part one" }, { type: "text", text: "part two" }] },
+      ],
+    })
+    const chunks = events.filter((u) => u.sessionUpdate === "agent_message_chunk")
+    assert.deepEqual(chunks.map((c) => c.content.text), ["part one", "part two"])
+  })
+})
+
+    s.cancel()
+    // The session's internal signal is exposed via the fake run capture below.
+  })
+})
+
 describe("M2 — Windows cwd case normalization (drive letter)", () => {
   it("session/new accepts a differently-cased drive letter", async () => {
     // simulate win32: injected cwd has lowercase drive; client sends uppercase
@@ -229,11 +271,6 @@ describe("M2 — Windows cwd case normalization (drive letter)", () => {
     await c.send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "C:\\Users\\test\\project" } })
     const r = c.next()
     assert.ok(r.result?.id, `case-mismatched cwd accepted (normalizeCwd), got: ${JSON.stringify(r)}`)
-  })
-})
-
-    s.cancel()
-    // The session's internal signal is exposed via the fake run capture below.
   })
 })
 

@@ -173,14 +173,9 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
 export function replayHistory({ sessionId, notify, history, log = () => {} }) {
   const update = (sessionUpdate, extra = {}) =>
     notify("session/update", { sessionId, update: { sessionUpdate, ...extra } })
-  const textOf = (m) => {
-    if (typeof m?.content === "string") return m.content
-    if (Array.isArray(m?.content)) {
-      return m.content.map((b) => (typeof b === "string" ? b : b?.text ?? "")).filter(Boolean).join("\n")
-    }
-    return ""
-  }
-  const blocks = (m) => {
+  // Shared content extraction: string → single text block; array → text blocks
+  // (images skipped with a log). textOf derives from the same source.
+  const contentBlocks = (m) => {
     const items = []
     if (typeof m?.content === "string") items.push({ type: "text", text: m.content })
     else if (Array.isArray(m?.content)) {
@@ -192,26 +187,33 @@ export function replayHistory({ sessionId, notify, history, log = () => {} }) {
     }
     return items
   }
+  const textOf = (m) => contentBlocks(m).map((b) => b.text).join("\n")
 
-  let pendingToolCalls = [] // { id, title } of the current assistant tool_calls batch
+  let pendingToolCalls = [] // { id, title, kind } of the current assistant tool_calls batch
   let toolSeq = 0
   for (const m of history ?? []) {
     if (m?.role === "user") {
       pendingToolCalls = []
-      for (const b of blocks(m)) update("user_message_chunk", { content: b })
+      for (const b of contentBlocks(m)) update("user_message_chunk", { content: b })
     } else if (m?.role === "assistant") {
       const calls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0 ? m.tool_calls : null
       if (calls) {
-        pendingToolCalls = calls.map((tc, i) => ({ id: `t${++toolSeq}`, title: tc?.name ?? "tool" }))
-        update("tool_call", {
-          toolCallId: pendingToolCalls[0].id,
-          title: pendingToolCalls[0].title,
-          kind: "other",
-          status: "in_progress",
-          content: blocks(m).map((b) => ({ type: "content", content: b })),
+        // One tool_call notification PER tool in the batch — clients correlate
+        // later tool_call_updates by toolCallId; an orphan update would be ignored.
+        pendingToolCalls = calls.map((tc, i) => {
+          const id = `t${++toolSeq}`
+          const title = tc?.name ?? "tool"
+          update("tool_call", {
+            toolCallId: id,
+            title,
+            kind: inferToolKind(title),
+            status: "in_progress",
+            content: contentBlocks(m).map((b) => ({ type: "content", content: b })),
+          })
+          return { id, title }
         })
       } else {
-        const items = blocks(m)
+        const items = contentBlocks(m)
         for (const b of items) update("agent_message_chunk", { content: b })
         pendingToolCalls = []
       }
