@@ -44,7 +44,7 @@ Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补�
 | `session/new` | ✅ | 接受 `cwd` / `mcpServers`；返回 configOptions（model/thinking/mode） |
 | `session/load` | ✅ | 恢复 thincoder 会话存档（双线历史 JSON），经 session/update 重放历史 |
 | `session/resume` | ✅ | 轻量变体（跳过历史重放） |
-| `session/list` | ✅ | 枚举会话存档（5 槽位） |
+| `session/list` | ✅ | 枚举会话存档（unlimited 槽位，见 4.5） |
 | `session/delete` | ✅ | 删除会话存档（schema v1 有、kimi 未实现——客户端清理会话的必需能力） |
 | `session/prompt` | ✅ | 接受 text/image/resource 块；流式 `agent_message_chunk` |
 | `session/cancel` | ✅ | 中断当前轮（复用 signal 中断机制） |
@@ -58,7 +58,7 @@ Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补�
 |---|---|---|
 | `session/update` | ✅ | 事件块见 4.3（含 agent_message_chunk / **agent_thought_chunk** / tool_call / tool_call_update / plan / usage_update / end_turn 等） |
 | `session/request_permission` | ✅ | 工具审批 + 提问（askPermission 的 ACP 实现） |
-| `fs/read_text_file` | ✅ | read 工具路由到 client（IDE 编辑器读取） |
+| `fs/read_text_file` | ✅ | **仅内部用于 edit/apply_patch 的读回**（读 IDE buffer 当前内容再算 diff）——独立 `read` 工具保持本地（4.3），两者不冲突 |
 | `fs/write_text_file` | ✅ | write/edit/apply_patch/delete 的写路径路由到 client（IDE diff 应用） |
 | `terminal/create·output·release·kill·wait_for_exit` | ❌ | shell 走本地执行（与 kimi 相同取舍） |
 
@@ -125,7 +125,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | `callbacks.onToken(text)` | `agent_message_chunk` |
 | `callbacks.onReasoning` | **`agent_thought_chunk`**（schema v1 已实证——schema.json const 枚举含 `agent_thought_chunk`，评审 #7 已核实） |
 | 工具开始/结果（tool loop 内） | `tool_call` / `tool_call_update` |
-| plan mode 切换 | `plan` 事件块 |
+| plan mode 切换 | `plan` 事件块（schema v1 const 枚举已实证含 `plan`；payload 形状实现时对照 schema，与 `current_mode_update` 区分） |
 | `callbacks.onUsage` | `usage_update`（token 统计） |
 | 回合结束 | `end_turn` |
 | 模型/模式变更 | `config_option_update` / `current_mode_update` |
@@ -164,7 +164,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
   - `role: "assistant"` 无 tool_calls → `agent_message_chunk`
   - `role: "assistant"` 含 tool_calls → `tool_call` 事件（IDE 显示工具调用卡片）
   - `role: "tool"` 结果 → 跟随其 assistant 消息的 tool_call_update/结果文本
-  - 机读注入（reminder/interrupt/transient）**不重放**——过滤规则：`content` 以 `[System reminder:` 或 `[User interrupt:` 开头（复用 session 既有 transient 标记，见 src/session.mjs LEGACY_TRANSIENT_PREFIXES）——客户端只应看到真实对话
+  - 机读注入（reminder/interrupt/transient）**不重放**——过滤规则与 session.mjs 存档同款：`m.transient === true`（interrupt/reminder 主机制，session.mjs:307 `!m.transient && !isLegacyTransient(m)`）+ `LEGACY_TRANSIENT_PREFIXES` 两前缀（`[System reminder: working directory snapshot:` / `[Relevant memories from previous sessions`）——**`[User interrupt:` 由 transient 属性覆盖，不在 LEGACY 前缀里**（代码实证）
   - **字段名**：运行时用 `agent._fullHistory`；从磁盘读用 `data.history`（saveSession 写入源为 `_fullHistory ?? history`）
 - `session/resume`：不重放历史，仅恢复 cwd + configOptions（model/thinking/mode）+ 当前会话上下文
 - `session/list` 枚举存档槽位——**槽位数量 unlimited（src/session.mjs 现有语义："Each project keeps unlimited session slots"），按实际存档全量返回**（更正早期"5 槽位"错误说法）。**sessionId ↔ 槽位映射**：ACP sessionId = 槽位号（数字字符串，如 `"3"`），list 返回 `{ id: "3", cwd, updatedAt }`；load/resume/delete 按 id 解析槽位
@@ -174,8 +174,10 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 
 ### 4.6 非功能性需求
 
-- **性能**：首 token 延迟与 `thincoder chat` 持平（无额外开销——ACP 层仅透传）；流式事件逐块转发不做缓冲合并
-- **兼容性**：协议以 schema v1 为准；客户端最低要求 = 支持 `initialize` 版本协商的任何 ACP v1 客户端（Zed 原生、JetBrains AI chat 插件、Paseo）；**验证计划**：M1 在 Zed 实测（免费原生），M3 在 JetBrains 实测（AI chat 插件 + agent_servers 配置）
+- **性能**：ACP 层零缓冲透传——TTFT 开销 < 5ms（与 `thincoder chat` 直跑对比，实测基线）；流式事件逐块转发不做缓冲合并
+- **兼容性**：协议以 schema v1 为准；客户端最低要求 = 支持 `initialize` 版本协商的任何 ACP v1 客户端（Zed 原生 ACP、JetBrains AI chat 插件、Paseo）——**具体最低版本不预设**（避免编造），M3 实测后在集成指南记录"已验证版本"
+- **鉴权门控**：**session 级 `authenticated` 标志**——除 `initialize`/`authenticate` 外所有方法需先鉴权通过；未鉴权调用 → -32000（测试 8 ③ 已覆盖）
+- **排队机制**：并发 prompt 用 **per-session FIFO promise 链**（无界队列）——后到 prompt 挂到链尾，前一轮 `end_turn` 后执行；客户端建议等 `end_turn` 再发下一轮
 - **可维护性**：ACP 模块与 agent 核心解耦（可插拔点默认空实现）；协议细节收敛在 src/acp/ 下，TUI/CLI 不感知
 - **安全**：见第 5 节（默认 deny、AUTO 关闭、stdout 纯净 JSON）
 
@@ -199,7 +201,8 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 5 | cancel 中断 | prompt 进行中发 `session/cancel` | 当前轮停止，后续无事件 |
 | 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` → `session/load {deleted-id}` | list 返回全部槽位（unlimited）；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现；**再 load 已删/不存在 id → 错误**（-32602） |
 | 7 | resume 与配置 | `session/resume {id}`（跳过重放）→ `session/set_config_option {configId:"mode", value:"plan"}` → `session/set_mode {mode:"normal"}` | resume 恢复 cwd+configOptions 无历史事件；set_config_option/set_mode 生效并发出 `current_mode_update` / `config_option_update`；**resume 不存在 id → 错误** |
-| 8 | 错误映射 | ① 非法 JSON → -32600；② 未知方法 → -32601；③ 未鉴权 prompt → -32000；④ 畸形 mcpServers → 忽略+warn（不报错）；⑤ 活跃回合中再发 prompt → **排队串行**（与 TUI 输入队列语义一致，不拒绝）；⑥ `session/close` → 成功 `{}` + stderr 日志 | 每项独立断言，错误码符合 JSON-RPC |
+| 8 | 错误映射 | ① 非法 JSON → -32600；② 未知方法 → -32601；③ 未鉴权 prompt → -32000（session 级 authenticated 门控）；④ 畸形 mcpServers → 忽略+warn（不报错）；⑤ 活跃回合中再发 prompt → **排队串行**（per-session FIFO 链）；⑥ `session/close` → 成功 `{}` + stderr 日志 | 每项独立断言，错误码符合 JSON-RPC |
+| 9 | 边界（M4 补全） | ⑦ 损坏会话文件 load → 错误而非崩溃；⑧ `fs/write_text_file` 客户端返回错误 → 工具结果透传错误；⑨ delete **活跃**会话 → 拒绝或仅删磁盘存档（定：仅删存档，活跃会话继续）；⑩ 单轮多工具并发 → 各自 tool_call 事件齐全 | M4 补全测试 |
 
 ## 7. 不做项（明确裁剪）
 
