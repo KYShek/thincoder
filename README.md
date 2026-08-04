@@ -209,6 +209,10 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.7 (2026-08)
+- **Fix: long replies and thinking are never folded** — the long-message folding feature (0.12.6) collapsed main output and reasoning behind a click when they exceeded 12 lines, hurting readability. Folding now applies to secondary dim-colored content (tool summaries/status) only; expanded blocks are exempt from the consecutive-dim folding so nothing folds twice.
+- **Fix: wide tables misaligned in narrow terminals** — a many-column table that still exceeded the terminal width after column shrinking (e.g. 8 columns at 40 cols) wrapped at the terminal and misaligned. Table rows are now clipped with an ellipsis instead of ever exceeding the width.
+
 ### 0.12.6 (2026-08)
 - **Checkpoint v2 — full-file-copy snapshots** — snapshots now store complete copies of changed files (tracked + untracked) instead of a git diff patch: rollback works even after commits happened post-snapshot. New `versions` checkpoint action lists a file's historical copies across snapshots (time / size / content hash) and restores a specific version. **Full rollback is disabled** (as dangerous as a working-tree reset — silently discards post-snapshot work); oversized files (>5MB) are skipped with an explicit notice; files created after a snapshot are never deleted by a restore.
 - **Git destructive-command protection** — `checkout --` / `restore` / `reset --hard` / `clean -f` (including bypass variants like `checkout HEAD -- .`) auto-snapshot every uncommitted file **before** running, then execute without blocking — a model rollback can no longer destroy uncommitted work. Snapshot triggers slimmed to: destructive-git guard, pre-restore, manual.
