@@ -7,6 +7,7 @@
  *   thincoder memory <sub>    Memory management: list / search / put / remove
  *   thincoder upgrade         Update to the latest version from npm
  *   thincoder completion <sh> Shell completion: bash / zsh / fish
+ *   thincoder acp             Agent Client Protocol server (stdio, for Zed/JetBrains/Paseo)
  *   thincoder -v              Print version
  *   thincoder --help          Print help
  */
@@ -385,6 +386,12 @@ complete -c thincoder -n '__fish_seen_subcommand_from completion' -a fish -d 'Fi
       execSync("npm install -g thincoder@latest", { stdio: "inherit" })
       console.log(`Upgraded to ${result.latest}`)
     }
+    break
+  }
+
+  case "acp": {
+    const { runAcpServer } = await import("../src/acp.mjs")
+    await runAcpServer()
     break
   }
 
