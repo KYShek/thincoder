@@ -15,11 +15,18 @@ export function convCacheKey(state) {
   return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state._advisorThink?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}|${exp}`
 }
 
-/** Fold marker line: bold-cyan icon + "click to …" phrase underlined (clickable affordance). */
+/** Fold marker line: bold-cyan icon + "click to …" phrase underlined (clickable affordance).
+ *  No indent — flush with the content below it; the caller adds a blank line BEFORE it
+ *  so the control line stands apart from unrelated content (reported UX). */
 function foldHintLine(text, foldKey, srcIdx) {
   // Underline just the actionable phrase — link/button convention
   const withUnderline = text.replace(/(click to (?:expand|collapse))/, "\x1b[4m$1\x1b[24m")
-  return { text: `  ${withUnderline}`, color: C.fold, _foldToggle: foldKey, _src: srcIdx }
+  return { text: withUnderline, color: C.fold, _foldToggle: foldKey, _src: srcIdx }
+}
+
+/** Blank separator before a fold control line (uncolored — must not join consecutive-dim folding). */
+function blankLine() {
+  return { text: "", color: "" }
 }
 
 function highlightSearchMatches(text, query, matchesInLine, globalCurrentIndex, allMatches, lineIndex) {
@@ -79,19 +86,20 @@ function buildConvLines(state, cols) {
       }
     }
     if (folded && block.length > LONG_FOLD_LINES) {
-      // Folded state: the ▶ hint sits at the block HEAD — a clear click target
-      // (the old mid-block position was easy to miss), then first/last for context.
+      // Folded state: blank line, then the ▶ control line at the block HEAD (flush
+      // with content — reported: indented hint looked unrelated), then first/last.
+      convLines.push(blankLine())
       convLines.push(foldHintLine(`▶ … ${block.length - 2} more lines — click to expand`, longKey, i))
       convLines.push(block[0])
       convLines.push(block[block.length - 1])
     } else if (block.length > LONG_FOLD_LINES) {
-      // EXPANDED long block: the ▼ collapse marker ALSO sits at the block HEAD,
-      // directly before the content (reported: a tail marker felt disconnected
-      // from the content). DIM blocks must not re-trigger the consecutive-dim
+      // EXPANDED long block: blank line + ▼ control line at the HEAD, directly
+      // before the content. DIM blocks must not re-trigger the consecutive-dim
       // folding below (folding stacked on folding — reported regression).
       if (l.color === C.dim) {
         for (const line of block) line._skipDimFold = true
       }
+      convLines.push(blankLine())
       convLines.push(foldHintLine(`▼ … ${block.length} lines — click to collapse`, longKey, i))
       convLines.push(...block)
     } else {
@@ -141,14 +149,16 @@ function buildConvLines(state, cols) {
       if (blockLen > FOLD_LINES && !hasExpandedLong) {
         const foldKey = `fold-${foldCounter++}`
         if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
-          // ▶ hint at the block HEAD (clear click target), then first two lines
+          // Blank line + ▶ control line at the block HEAD (flush with content), then first two lines
+          folded.push(blankLine())
           folded.push(foldHintLine(`▶ … ${blockLen - 2} more lines — click to expand`, foldKey))
           folded.push(convLines[i])
           if (blockLen > 2) folded.push(convLines[i + 1])
           i = j
           continue
         }
-        // EXPANDED consecutive-dim block: ▼ marker at the HEAD, then every line
+        // EXPANDED consecutive-dim block: blank + ▼ at the HEAD, then every line
+        folded.push(blankLine())
         folded.push(foldHintLine(`▼ … ${blockLen} lines — click to collapse`, foldKey))
         for (let k = i; k < j; k++) folded.push(convLines[k])
         i = j
