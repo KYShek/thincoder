@@ -620,7 +620,7 @@ test("buildAdvisorFollowUp: tolerates missing response table", () => {
   assert.ok(msg.includes("did not provide a response table"))
 })
 
-test("buildAdvisorFollowUp: skips re-pushing an unchanged diff snapshot", () => {
+test("buildAdvisorFollowUp: injects git context (branch/commits/status), never a raw diff snapshot", () => {
   const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
   try {
     createGitRepo(tmp)
@@ -631,10 +631,10 @@ test("buildAdvisorFollowUp: skips re-pushing an unchanged diff snapshot", () => 
       _touchedFiles: [join(tmp, "app.js")],
       history: [{ role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
     }
-    const first = buildAdvisorFollowUp(agent)
-    assert.ok(first.includes("refreshed"), "first follow-up carries the diff")
-    const second = buildAdvisorFollowUp(agent)
-    assert.ok(second.includes("No changes since your previous review"), "identical diff is not re-pushed")
+    const followUp = buildAdvisorFollowUp(agent)
+    assert.ok(followUp.includes("Git Context"), "git context section present")
+    assert.ok(followUp.includes("working tree clean") || followUp.includes("Uncommitted"), "working-tree status present")
+    assert.ok(!followUp.includes("## Current Changes"), "no diff-snapshot section injected (it misled re-reviews after committed fixes)")
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
