@@ -6,9 +6,9 @@
  * No network: sessions use an injected run; authenticate uses an injected
  * isConfigured; transport `write` is captured instead of stdout.
  */
-import { describe, it, beforeEach } from "node:test"
+import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createAcpServer, ACP_ERRORS } from "../src/acp/transport.mjs"
@@ -293,9 +293,11 @@ describe("M3 — persisted slots (list/load/resume/delete) + config options", ()
     }
     c = mockClient(buildAcpHandlers(deps).handlers, events)
   })
+  afterEach(() => rmSync(tmpCwd, { recursive: true, force: true }))
 
   function seedSlot(history) {
     // Write a slot file directly in the sandbox (slot 1 = active).
+    // Return value is a self-check that the seed is loadable (callers ignore it).
     const agent = { history: [...history], _fullHistory: [...history], cwd: tmpCwd, config: {}, title: "seed", tasks: [], planMode: false, autoApprove: false, goal: null }
     saveSession(agent, [])
     return loadSession(tmpCwd)
@@ -406,12 +408,12 @@ describe("M4 — edge cases (⑦-⑩)", () => {
     }
     c = mockClient(buildAcpHandlers(deps).handlers, events)
   })
+  afterEach(() => rmSync(tmpCwd, { recursive: true, force: true }))
 
   it("⑦ corrupt slot file load → error, not a crash", async () => {
     // Write garbage into a slot file directly.
     const base = sessionPath(tmpCwd)
-    const fs = await import("node:fs")
-    fs.writeFileSync(`${base}.1`, "{not valid json")
+    writeFileSync(`${base}.1`, "{not valid json")
     await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
     c.next()
     await c.send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "1" } })

@@ -43,7 +43,12 @@ Three layers, all "query if present, skip if absent", unified hybrid retrieval:
 - **Dual-track accumulation**: conventions written manually (`memory_put`), experience extracted from sessions via `/extract` — **the LLM proposes candidates, a human confirms each y/n** before anything is stored; never fully automatic
 - **Retrieval isolation**: the Project layer is isolated by project path — project A's memories never leak into project B
 
-- **Agent Client Protocol** ⭐: `thincoder acp` exposes the agent over [ACP](https://agentclientprotocol.com/) v1 on stdio — drive sessions from **Zed** (native), **JetBrains** AI chat, or **Paseo** with one terminal login. Streaming replies, thinking chunks, tool approval dialogs, IDE-native diffs (write/edit route through the editor buffer), persisted-session list/load/resume/delete, per-session model/thinking/mode config. See [docs/guides/ides.md](docs/guides/ides.md) for setup.
+- **Agent Client Protocol** ⭐: `thincoder acp` exposes the agent over [ACP](https://agentclientprotocol.com/) v1 on stdio — one terminal login drives sessions from **Zed**, **JetBrains** AI chat, or **Paseo**:
+  - Streaming replies + thinking chunks; tool approval dialogs in the IDE
+  - IDE-native diffs — `write`/`edit` route through the editor buffer
+  - Persisted sessions: list / load (history replay) / resume / delete
+  - Per-session config: model / thinking / mode
+  - Setup: [docs/guides/ides.md](docs/guides/ides.md)
 
 
 ## Requirements

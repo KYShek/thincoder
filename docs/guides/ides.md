@@ -11,7 +11,7 @@ stdin/stdout using JSON-RPC (NDJSON). One login (terminal setup) serves every su
 - Completed setup: `thincoder` run once in a terminal, or `~/.thincoder/config.json` with a
   provider API key (the ACP `authenticate` gate checks it)
 
-## Capabilities (M1–M3, v0.13-dev)
+## Capabilities (M1–M4, v0.13-dev)
 
 | Area | Status |
 |---|---|
@@ -93,9 +93,9 @@ Paseo's generic ACP adapter does not drive the login flow — complete terminal 
   points at the problem (usually "authenticate → authRequired").
 - **"auth required"**: `~/.thincoder/config.json` has no resolvable provider key. Run
   `thincoder` in a terminal once to complete setup, then restart the IDE.
-- **Files edited outside the IDE are invisible to diff review**: `edit` reads the IDE buffer
-  back before applying — unsaved editor changes are respected; files changed on disk but not
-  reloaded in the editor may produce a stale-buffer mismatch (reload the file).
+- **Stale editor buffers**: an `edit` reads the IDE buffer back before applying, so unsaved
+  editor changes are respected. A file that was changed on disk but not reloaded in the editor
+  may yield a stale-buffer mismatch — reload the file in the editor before invoking the agent.
 - **No permission prompts**: AUTO mode is off by default in ACP sessions; `session/request_permission`
   failing (transport error) always rejects the tool (safety-first).
 
