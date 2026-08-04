@@ -70,6 +70,25 @@ bin/thincoder.mjs  ── "acp" 子命令 ──▶ src/acp.mjs
                stdio 层, ~100 行   method → agent 映射)    callbacks + askPermission)
 ```
 
+### 4.0 受影响文件清单
+
+**新增**：
+| 文件 | 职责 |
+|---|---|
+| `src/acp.mjs` | 子命令入口：装配 transport/session/bridge，SIGINT 优雅退出 |
+| `src/acp/transport.mjs` | NDJSON JSON-RPC stdio 层（读行分发、写响应、错误码映射） |
+| `src/acp/session.mjs` | AcpSession：方法 → agent 映射、会话生命周期 |
+| `src/acp/bridge.mjs` | runAgent callbacks + 工具钩子 + 权限通道装配 |
+| `test/acp.test.mjs` | mock 客户端全链路测试 |
+
+**修改**：
+| 文件 | 改动点 |
+|---|---|
+| `bin/thincoder.mjs` | 注册 `"acp"` 子命令（`thincoder acp` → `src/acp.mjs`） |
+| `src/agent.mjs` | 工具循环注入两个可插拔点（见 4.3），默认行为不变（TUI/CLI 零影响） |
+| `src/cli/permission.mjs` | `askPermission` 增加"有 ACP 通道即用通道"判定（非 TTY 不再直接 deny） |
+| `src/session.mjs` | 导出会话枚举/删除辅助（session/list、session/delete 复用存档逻辑） |
+
 ### 4.1 传输层（自写，零依赖）
 
 ACP 官方 SDK（`@agentclientprotocol/sdk`）是 npm 依赖——违反零依赖哲学。自写精简层：
@@ -101,9 +120,22 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 模型/模式变更 | `config_option_update` / `current_mode_update` |
 | `callbacks.onCompress` | 压缩提示（保持透明） |
 
-**工具执行钩子**：agent.mjs 工具循环当前直接调 toolByName——需在 ACP 模式下注入两个可插拔点：
-1. **fs 读写路由**：read/write/edit/apply_patch/delete → 改走 `fs/read_text_file`/`fs/write_text_file` 反向 RPC（write 类工具先反查 client 当前 buffer 再应用，diff 由 IDE 呈现）
-2. **审批**：副作用工具执行前 → `session/request_permission`（替代 TTY askPermission；ACP 下无 TTY，判定逻辑改为"有 ACP 权限通道即用通道"）
+**工具执行钩子**：agent.mjs 工具循环当前直接调 toolByName——需在 ACP 模式下注入两个可插拔点（**默认导出空实现，TUI/CLI 路径行为不变**）：
+
+1. **fs 读写路由**（钩子签名）：
+   ```js
+   // agent.mjs: 工具执行前调用（仅 ACP 模式装配非空实现）
+   toolRouter(toolName, args) → { routed: true, result } | { routed: false }
+   ```
+   - read/glob/grep/ls：不路由（本地读，性能优先）
+   - write/edit/apply_patch/delete：路由 → **先 `fs/read_text_file` 反查 client 当前内容 → 本地计算新内容 → `fs/write_text_file` 全量写回**（IDE 呈现 diff，无 diff 由 IDE 能力决定）→ 工具结果返回客户端确认的写入结果
+2. **审批钩子**（钩子签名）：
+   ```js
+   // agent.mjs: 副作用工具执行前调用（AUTO 关闭时）
+   permissionGate(toolName, args, context) → boolean | Promise<boolean>
+   ```
+   - ACP 模式：`session/request_permission`（请求带工具名+格式化参数，等待 `allow_once`/`deny_once` 响应）
+   - 非 ACP 模式：回退 TTY `askPermission`（现状不变）
 
 ### 4.4 鉴权与配置
 
@@ -113,8 +145,18 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 ### 4.5 会话持久化
 
 - `session/load`/`resume` 读 thincoder 会话存档（src/session.mjs，双线历史 JSON）
-- `session/list` 枚举存档槽位
+- **重放范围**（session/load）：人读线（`_fullHistory`）全量消息按序重放为 `user_message_chunk` / `agent_message_chunk`（含工具调用摘要卡片）；机读注入（reminder/interrupt/transient）**不重放**——客户端只应看到真实对话
+- `session/resume`：不重放历史，仅恢复 cwd + configOptions（model/thinking/mode）+ 当前会话上下文
+- `session/list` 枚举存档槽位（**5 槽位 = thincoder 现有 src/session.mjs 限制**，非 ACP 协议规定）
+- `session/delete` 删除指定槽位存档
 - ACP 会话本身**不写存档**（由客户端管理生命周期）——最小侵入
+
+### 4.6 非功能性需求
+
+- **性能**：首 token 延迟与 `thincoder chat` 持平（无额外开销——ACP 层仅透传）；流式事件逐块转发不做缓冲合并
+- **兼容性**：协议以 schema v1 为准；客户端最低要求 = 支持 `initialize` 版本协商的任何 ACP v1 客户端（Zed 原生、JetBrains AI chat 插件、Paseo）；**验证计划**：M1 在 Zed 实测（免费原生），M3 在 JetBrains 实测（AI chat 插件 + agent_servers 配置）
+- **可维护性**：ACP 模块与 agent 核心解耦（可插拔点默认空实现）；协议细节收敛在 src/acp/ 下，TUI/CLI 不感知
+- **安全**：见第 5 节（默认 deny、AUTO 关闭、stdout 纯净 JSON）
 
 ## 5. 安全语义
 
@@ -125,14 +167,17 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 
 ## 6. 测试策略
 
-`test/acp.test.mjs`——**mock ACP 客户端**驱动（起子进程或直接 import 传输层）：
-1. initialize → authenticate → session/new 全链路
-2. prompt → agent_message_chunk 流式
-3. 工具调用：request_permission → approve → tool_result 回环（mock fs 反向 RPC）
-4. cancel 中断
-5. session/load/resume 重放
-6. 错误映射（未鉴权 / 未知方法 / 非法 JSON）
-7. 零依赖约束：`npm test` 全量含新测试
+`test/acp.test.mjs`——**mock ACP 客户端**驱动（直接 import transport/session 层，避免子进程时序脆弱）：
+
+| # | 场景 | 输入（mock 客户端发送） | 预期输出 |
+|---|---|---|---|
+| 1 | 握手全链路 | `initialize`（protocolVersion 1）→ `authenticate`（terminal） | initialize 返回 agentInfo+能力矩阵；authenticate 通过（config 已配置）/ -32000（未配置） |
+| 2 | prompt 流式 | `session/new {cwd}` → `session/prompt {text}`（mock LLM 短回复） | 依次收到 `agent_message_chunk` 事件 → 最终 `end_turn` |
+| 3 | 工具审批回环 | prompt 触发 bash → mock 收到 `session/request_permission`（含工具名+参数）→ 回 `allow_once` | 审批通过后收到 `tool_call`/`tool_call_update` → 工具结果 → `agent_message_chunk` 继续 |
+| 4 | fs 反向 RPC | write 工具触发 | mock 收到 `fs/read_text_file`（旧内容）→ 回内容 → 收到 `fs/write_text_file`（新内容）→ 回确认 → write 工具结果 = 客户端确认值 |
+| 5 | cancel 中断 | prompt 进行中发 `session/cancel` | 当前轮停止，后续无事件 |
+| 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` | list 返回槽位；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现 |
+| 7 | 错误映射 | 非法 JSON / 未知方法 / 未鉴权 prompt | -32600 / -32601 / -32000（错误码符合 JSON-RPC） |
 
 ## 7. 不做项（明确裁剪）
 
