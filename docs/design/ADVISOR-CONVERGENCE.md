@@ -10,11 +10,13 @@
 
 | 轮次 | system prompt | 检查范围 | 新问题权限 |
 |---|---|---|---|
-| Round 1 | `advisor-round1.md` | 全量审查（读约定文档、追踪调用方） | ✅ 任意问题，建立 issue 表 |
-| Round 2 | `advisor-round2.md` | 以验证 prior 表为主 | ⚠️ 仅限 diff 明显可见且导致 crashes / data loss / logic errors 的新问题 |
+| Round 1 | `advisor-round1.md`（代码）/ `advisor-design.md`（设计） | 全量审查（读约定文档、追踪调用方） | ✅ 任意问题，建立 issue 表 |
+| Round 2 | `advisor-round2.md` | 以验证 prior 表为主 | ⚠️ 仅限明显可见且导致 crashes / data loss / logic errors 的新问题 |
 | Round 3–5 | `advisor-round3.md` | 严格只验证 prior 表 | ❌ 禁止（Do NOT look for new issues） |
 
 轮次映射（`buildAdvisorSystemPrompt`）：`_advisorRound` 在每次 advisor 工具调用成功后 +1（`agent.mjs`），调用时 `_advisorRound=0 → ROUND1`，`=1 → ROUND2`，`≥2 → ROUND3`。注意 `_advisorRound` 是**已完成的** advisor 调用次数，`buildAdvisorSystemPrompt` 用 `_advisorRound + 1` 推导即将进行的轮次号——两者相差 1，勿混淆。
+
+> **设计评审（`reviewType="design"`）与代码评审共用同一收敛协议**（2026-08-04 决策变更）：round 1 用 `advisor-design.md`（设计评审标准 + Approval Signal），round 2/3+ 用 `advisor-round*.md` 收敛提示词（验证 prior 表、证据强制）。设计文档多次修改的评审循环因此与代码评审同构：第 2 轮可报新问题，第 3+ 轮严格只查已知问题，5 轮封顶后不再打回。
 
 ## 关键机制
 
@@ -26,7 +28,9 @@
 
 ### 2. 机械轮次上限
 
-`MAX_ADVISOR_ROUNDS = 5`（`run.mjs`）。第 6 次 code review 调用直接返回终止消息（"convergence cap reached"），不消耗 LLM。设计评审（`reviewType="design"`）豁免——每次调用重置轮次，单遍评审无收敛需求。空 `_touchedFiles` 检查在 cap 检查**之前**，保证诊断信息准确。
+`MAX_ADVISOR_ROUNDS = 5`（`run.mjs`）。第 6 次 advisor 调用（**代码与设计评审一致**）直接返回终止消息（"convergence cap reached"），不消耗 LLM——**5 轮后不再打回**：cap 消息列出未决问题与选项（接受当前状态 / 手动 read 复查 / 新会话重置），由用户拍板。空 `_touchedFiles` 检查在 cap 检查**之前**，保证诊断信息准确。
+
+> 设计评审曾豁免 cap（每次调用重置轮次、单遍评审无收敛需求）——2026-08-04 决策变更：设计文档多轮修改的评审循环同样会无限发散，与代码评审共用 5 轮上限与轮次预算（`_advisorRound` 共享递增）。
 
 ### 3. stale-context 加固
 
@@ -53,7 +57,7 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 - **Design gate（机械强制）**：spawn `eng-coder` 时 `subagent.mjs` 校验 `parent._engDesignToken === designToken`，不符即拒绝；`dispatch.mjs` 的写文件门禁以 `_engDesignReviewed` 为兜底，advisor 工具在 design review 通过（token 回显）时同步置位——两套机制联动，任何未经授权路径都无法写文件。
 - **Code gate（机械强制）**：eng-coder 返回后 `mergeChildMutations`（subagent.mjs）把子代理的修改合并进父代理（`_mutatedThisRun`/`_touchedFiles`，并使先前 verify/advisor 标记失效）——父代理的 advisor guard 因此触发，无法通过"把所有改动委托给 eng-coder"跳过代码评审。
 - **Verify（机械强制）**：工程模式下 verify guard 与 `verifyGuard: true` 等效，父代理完成前必须 verify（verify 用 `git diff` 检测，子代理改动同样可见）。
-- **轮次隔离**：design review（`type="design"`）不递增 `_advisorRound`——设计评审是独立门禁，不消耗 code 收敛轮次（MAX_ADVISOR_ROUNDS）预算，也不会污染后续 code review 的轮次显示。
+- **轮次共享**：design review 与 code review 共用 `_advisorRound`（每次 advisor 调用成功 +1，含 design）——设计评审与代码评审共享 MAX_ADVISOR_ROUNDS=5 预算。设计文档的评审循环因此有界（2026-08-04 决策变更；此前 design 不递增、不消耗预算）。
 - **Token 生命周期**：`_engDesignToken` 在会话内跨 turn 存活（TUI 用户批准设计是新的 runAgent 调用，token 必须跨过去）；任何 design review 失败会使其失效（agent-tools/advisor.mjs）。已知的保守缺口：token 不随任务结束自动作废，极端情况下可从历史中复用——接受（需要模型既违反工程提示词又提取旧 token，实际风险低）。
 - **机械强制的边界**：机械闸（token 校验、写文件门禁、guard 推回）作用于 **eng-coder 子代理**；**父代理本身不受写文件门禁约束**——它需要写设计文档（docs/），且工程提示词（engineering.md）约束其"设计先行、委托实现、实现后必须 code review"。父代理的越权（跳过设计直接写代码）只能靠提示词约束，这是信任模型的设计选择，与普通模式的纪律约束一致。
 

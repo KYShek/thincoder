@@ -73,8 +73,17 @@ try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.m
  * @returns {string} the system prompt
  */
 export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
-  // Design review: dedicated prompt, no convergence rounds
-  if (reviewType === "design") return ADVISOR_DESIGN || `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
+  // Design review: round 1 uses the dedicated design-review prompt (full scope +
+  // approval token); rounds 2+ converge like code reviews (verify prior table).
+  if (reviewType === "design") {
+    const prior = _prior ?? extractPriorIssueTable(agent.history)
+    if (!prior || (agent._advisorRound || 0) === 0) {
+      return ADVISOR_DESIGN || `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
+    }
+    const round = (agent._advisorRound || 0) + 1
+    if (round === 2) return ADVISOR_ROUND2
+    return ADVISOR_ROUND3
+  }
   const prior = _prior ?? extractPriorIssueTable(agent.history)
   if (!prior || (agent._advisorRound || 0) === 0) return ADVISOR_ROUND1
   const round = (agent._advisorRound || 0) + 1

@@ -282,8 +282,10 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
 
   // Mechanical convergence cap — refuse further reviews once the protocol has run
   // its rounds. _advisorRound counts completed advisor calls (incremented by the
-  // agent after each one), so >= MAX_ADVISOR_ROUNDS blocks the next call.
-  if (reviewType !== "design" && (agent._advisorRound || 0) >= MAX_ADVISOR_ROUNDS) {
+  // agent after each one — code AND design reviews alike), so >= MAX_ADVISOR_ROUNDS
+  // blocks the next call. 5 rounds max; after that the review is never pushed back
+  // (the caller decides: accept, manual re-check, or /new to reset).
+  if ((agent._advisorRound || 0) >= MAX_ADVISOR_ROUNDS) {
     // 提取未解决的问题，给出更具体的指导
     const prior = extractPriorIssueTable(agent.history)
     const unfixed = prior ? extractUnfixedIssues(prior.text) : []

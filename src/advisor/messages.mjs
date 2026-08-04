@@ -27,7 +27,7 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   const pathList = Array.isArray(paths) ? paths.filter((p) => typeof p === "string" && p.trim()) : []
 
   // Design review: simplified message — focus on the design doc, not code
-  if (reviewType === "design") {
+  if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
     const repos = findReviewRepos(agent)
     parts.push("## Design Review")
     if (docList.length > 0) {
@@ -95,7 +95,8 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     return parts.join("\n")
   }
 
-  // Convergence data (round 2+). Design reviews returned above — only code reviews reach here.
+  // Convergence data (round 2+). Design reviews round 1 returned above — rounds
+  // 2+ of both types reach here.
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
       || "(Agent did not provide a response table — re-evaluate each issue)"

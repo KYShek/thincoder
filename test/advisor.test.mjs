@@ -269,6 +269,21 @@ test("buildAdvisorSystemPrompt: reviewType=design returns design prompt", () => 
   assert.ok(!result.includes("code review"), "不应包含代码审查内容")
 })
 
+test("buildAdvisorSystemPrompt: design round 1 uses design prompt; rounds 2+ converge like code", () => {
+  const base = { history: [], cwd: tmpdir() }
+  const round1 = buildAdvisorSystemPrompt({ ...base, _advisorRound: 0 }, null, "design")
+  assert.ok(round1.includes("design reviewer"), "round 1 keeps the design-review prompt")
+  // Round 2 with a prior table → convergence prompt (verify prior table + new issues allowed)
+  const prior = { text: "| # | Category | Severity | Issue | Suggestion |\n|---|---------|----------|------|------------|" }
+  const round2 = buildAdvisorSystemPrompt({ ...base, _advisorRound: 1 }, prior, "design")
+  assert.ok(!round2.includes("design reviewer"), "round 2 no longer uses the design prompt")
+  assert.ok(round2.includes("Verify the prior issue table"), "round 2 uses the convergence prompt")
+  // Round 3+ → strict verification
+  const round3 = buildAdvisorSystemPrompt({ ...base, _advisorRound: 2 }, prior, "design")
+  assert.ok(round3.includes("Strictly verify only the prior issue table"), "round 3+ strict verification")
+})
+
+
 test("buildAdvisorUserMessage: reviewType=design includes design review header", () => {
   const agent = {
     history: [{ role: "user", content: "design a feature" }],
@@ -532,9 +547,9 @@ test("agent: _advisorRound initialized to 0 in runAgent", () => {
   assert.equal(_mutatedThisRun && !_calledAdvisorThisRun, false)
 })
 
-test("agent: _advisorRound increments only on code-review advisor calls", () => {
-  // Mirrors agent.mjs: design reviews (type="design") are a separate gate and
-  // must NOT consume the code-review convergence budget.
+test("agent: _advisorRound increments on every advisor call (code AND design)", () => {
+  // Mirrors agent.mjs: design reviews share the convergence budget with code
+  // reviews — both advance _advisorRound toward MAX_ADVISOR_ROUNDS=5.
   let _advisorRound = 0
   const toolCalls = [
     { name: "write", ok: true, arguments: "{}" },
@@ -547,15 +562,15 @@ test("agent: _advisorRound increments only on code-review advisor calls", () => 
   for (const tc of toolCalls) {
     if (tc.name === "advisor") {
       try {
-        const advArgs = JSON.parse(tc.arguments || "{}")
-        if (advArgs.type !== "design") _advisorRound++
+        JSON.parse(tc.arguments || "{}")
       } catch {
-        _advisorRound++
+        /* unparseable — still counts as a review attempt */
       }
+      _advisorRound++
     }
   }
 
-  assert.equal(_advisorRound, 2) // 两次 code review；design 不计数
+  assert.equal(_advisorRound, 3) // code + design + code — all count
 })
 
 // ────────────────────────────────────────
@@ -696,7 +711,7 @@ test("runAdvisorReview: convergence cap blocks a 6th review call", async () => {
   assert.ok(result.includes(String(MAX_ADVISOR_ROUNDS)), "cap message names the round limit")
 })
 
-test("runAdvisorReview: cap does not block design reviews (each resets the round)", async () => {
+test("runAdvisorReview: cap blocks design reviews too after 5 rounds (bounded loop)", async () => {
   const { runAdvisorReview, MAX_ADVISOR_ROUNDS } = await import("../src/advisor/run.mjs")
   const agent = {
     config: { advisor: { enabled: true } },
@@ -707,11 +722,28 @@ test("runAdvisorReview: cap does not block design reviews (each resets the round
     _advisorSession: null,
     cwd: tmpdir(),
   }
-  // Pre-aborted signal: the tool loop returns "interrupted" immediately — no
-  // network call. If the cap guard wrongly blocked design reviews, we'd see the
-  // cap message instead, so this also proves the guard let the review through.
+  // Cap reached — design reviews share the 5-round budget with code reviews.
+  // No network call happens: the cap returns the termination message directly.
   const result = await runAdvisorReview(agent, "design", { signal: { aborted: true } })
-  assert.ok(!result.includes("convergence cap reached"), `design review must bypass cap, got: ${result}`)
+  assert.ok(result.includes("convergence cap reached"), `design review must hit the cap, got: ${result}`)
+  assert.ok(result.includes(String(MAX_ADVISOR_ROUNDS)), "cap message names the round limit")
+})
+
+test("runAdvisorReview: design review below cap reaches the tool loop", async () => {
+  const { runAdvisorReview, MAX_ADVISOR_ROUNDS } = await import("../src/advisor/run.mjs")
+  const agent = {
+    config: { advisor: { enabled: true } },
+    provider: { name: "p", model: "m" },
+    history: [],
+    _touchedFiles: [],
+    _advisorRound: MAX_ADVISOR_ROUNDS - 1, // 5th review still allowed
+    _advisorSession: null,
+    cwd: tmpdir(),
+  }
+  // Pre-aborted signal: the tool loop returns "interrupted" immediately — no
+  // network call. Proves the guard let the review through before the cap.
+  const result = await runAdvisorReview(agent, "design", { signal: { aborted: true } })
+  assert.ok(!result.includes("convergence cap reached"), `design review must pass the cap guard, got: ${result}`)
   assert.ok(result.includes("interrupted"), `design review must reach the tool loop, got: ${result}`)
 })
 
