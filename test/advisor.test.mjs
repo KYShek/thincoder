@@ -620,7 +620,7 @@ test("buildAdvisorFollowUp: tolerates missing response table", () => {
   assert.ok(msg.includes("did not provide a response table"))
 })
 
-test("buildAdvisorFollowUp: injects git context (branch/commits/status), never a raw diff snapshot", () => {
+test("buildAdvisorFollowUp: injects NO git information (read-only verification by design)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
   try {
     createGitRepo(tmp)
@@ -632,9 +632,10 @@ test("buildAdvisorFollowUp: injects git context (branch/commits/status), never a
       history: [{ role: "tool", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
     }
     const followUp = buildAdvisorFollowUp(agent)
-    assert.ok(followUp.includes("Git Context"), "git context section present")
-    assert.ok(followUp.includes("working tree clean") || followUp.includes("Uncommitted"), "working-tree status present")
-    assert.ok(!followUp.includes("## Current Changes"), "no diff-snapshot section injected (it misled re-reviews after committed fixes)")
+    assert.ok(followUp.includes("Prior Issue Table"), "prior table present")
+    assert.ok(!followUp.includes("Git Context"), "no git context injected")
+    assert.ok(!followUp.includes("## Current Changes"), "no diff-snapshot section injected")
+    assert.ok(!followUp.includes("git status"), "no git status injected")
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

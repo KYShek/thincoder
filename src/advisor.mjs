@@ -40,7 +40,6 @@ import { fileURLToPath } from "node:url"
 import { findReviewRepos } from "./advisor/repos.mjs"
 import { extractPriorIssueTable, extractAgentResponseTable } from "./advisor/history.mjs"
 import { buildAdvisorUserMessage } from "./advisor/messages.mjs"
-import { collectGitContext } from "./agent/helpers.mjs"
 // Re-export for run.mjs and tests (keeps their imports from "../advisor.mjs" stable)
 export { ADVISOR_MD_PATH, extractPriorIssueTable, extractAgentResponseTable, extractConversationBackground } from "./advisor/history.mjs"
 export { buildAdvisorUserMessage } from "./advisor/messages.mjs"
@@ -113,23 +112,16 @@ export function buildAdvisorFollowUp(agent, _prior) {
       ? "Verify each item in the prior table. Flag any obvious NEW issues introduced by the fixes (crashes, data loss, logic errors — not style). Produce a verification table."
       : "Strictly verify ONLY the items in the prior table against the CURRENT FILE STATE (use `read` — an empty diff does not mean the fixes are absent). Do NOT look for new issues.",
     "",
-    "IMPORTANT: in any embedded diff, `-` lines are REMOVED content (no longer in the file), `+` lines are ADDED. The prior issue table is HISTORY — always verify current file state with `read` before judging an item as fixed or unfixed.",
+    "IMPORTANT: the prior issue table is HISTORY — always verify current file state with `read` before judging an item as fixed or unfixed.",
     // Round-aware evidence rule: "New" entries only exist in round 2 (round 3+ forbids them).
-    `STALE-CONTEXT WARNING: all diffs in earlier messages (including round 1) are historical snapshots — files have changed since. Only fresh \`read\` results describe the current state. A "Current Changes" section that says "no changes" does NOT mean the fixes are absent — fixes may already be committed, and \`git diff HEAD\` shows nothing for committed work. Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may come from the stale prior table). Uncited findings are unverified and will be ignored.`,
+    `STALE-CONTEXT WARNING: only fresh \`read\` results describe the current state — never judge from earlier snapshots or from \`git diff\` (committed fixes never show in \`git diff HEAD\`). Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may come from the stale prior table). Uncited findings are unverified and will be ignored.`,
     "",
-    "Do NOT re-read AGENTS.md / design docs. Verify fix status with \`read\` (and \`git log -3\` to see recent commits) — a clean working tree does NOT mean nothing changed: fixes may already be committed.",
+    "Do NOT re-read AGENTS.md / design docs. Verify fix status with \`read\` only — no git information is injected on purpose: a clean working tree does NOT mean nothing changed, fixes may already be committed.",
     "",
   ]
-  // Git context (branch + recent commits + working-tree status) INSTEAD of a raw
-  // `git diff HEAD` snapshot. A diff snapshot misled re-reviews: once fixes are
-  // committed the diff is empty and the model read "no changes" as "no fixes".
-  // Commit history has no such trap — recent commits make committed fixes visible.
-  const gitCtx = collectGitContext(agent.cwd)
-  if (gitCtx) {
-    parts.push("## Git Context (branch, recent commits, working tree)")
-    parts.push(gitCtx)
-    parts.push("")
-  }
+  // Deliberately NO git information injected here (no diff snapshot, no git context):
+  // git output misled re-reviews — committed fixes never show in `git diff HEAD`, so
+  // the model read "no changes" as "no fixes". Verification is `read`-only by design.
   return parts.join("\n")
 }
 
