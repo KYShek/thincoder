@@ -88,10 +88,10 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
 2. **连续 dim 块折叠**：连续 dim 行 >8 → 折叠为 `[首行, 次行, hint]`；key = `fold-{n}`
 
 **标志（哪里可折叠一眼可见）**：
-- **折叠态**：hint 行 `  … N more lines — click to expand`（C.fold 色）——表示可展开
-- **展开态**：块尾追加收起提示行 `  … N lines — click to collapse`（C.fold 色）——表示可收起（与 hint 同 key `_foldToggle`）
+- **折叠态**：块**头部**提示行 `  ▶ … N more lines — click to expand`（C.fold 色 + `▶` 图标，位置在首行之上）——头部即点击点，含义清晰
+- **展开态**：块尾追加收起提示行 `  ▼ … N lines — click to collapse`（C.fold 色 + `▼` 图标）——与 hint 同 key `_foldToggle`
 
-**动作（点击即切换）**：点击任意带 `_foldToggle` 的行（hint 或收起提示）→ `expandedBlocks` **toggle**（有则删=收起、无则加=展开）→ 重渲染。展开/收起对称，一键往返。
+**动作（点击即切换）**：点击任意带 `_foldToggle` 的行（hint 或收起提示）→ `expandedBlocks` **toggle**（有则删=收起、无则加=展开）→ 重渲染。展开/收起对称，一键往返。`▶`/`▼` 图标指示当前状态：`▶` 可展开、`▼` 可收起。
 
 **约束**：
 - 展开的长 dim 块行带 `_skipDimFold` 标记，不再参与连续 dim 折叠（防折叠套折叠——0.12.7 回归修复）
