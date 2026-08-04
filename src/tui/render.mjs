@@ -108,14 +108,19 @@ function renderTable(block, width) {
   // Cell rendering: sliceByWidth truncates (single-line for header), padByWidth pads
   const fmtCell = (text, ci) => padByWidth(sliceByWidth(text, widths[ci]), widths[ci])
   const fmtRow = (cells) => "│ " + cells.map((c, i) => fmtCell(c, i)).join(" │ ") + " │"
+  // Many-column tables can still exceed `width` after shrinking to the 3-char floor
+  // (e.g. 8 columns → 8×3 + 25 borders = 49 > 40). Rows wider than the terminal would
+  // wrap and misalign — clip the row instead, with an ellipsis (fixes the reported
+  // "table no longer aligns" regression in narrow windows).
+  const clip = (line) => stringWidth(line) > width ? sliceByWidth(line, Math.max(1, width - 1)) + "…" : line
 
   // separator line
   const separator = "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤"
 
   const out = []
   // Header: single-line truncation (header labels are usually short, truncation beats wrapping)
-  out.push(fmtRow(rows[0]))
-  out.push(separator)
+  out.push(clip(fmtRow(rows[0])))
+  out.push(clip(separator))
 
   // Data rows: over-long cells wrap by column width; one logical row may produce multiple display lines
   for (let r = 2; r < rows.length; r++) {
@@ -123,7 +128,7 @@ function renderTable(block, width) {
     const wrapped = rows[r].map((cell, ci) => wrapText(cell, widths[ci]))
     const height = Math.max(...wrapped.map((lines) => lines.length))
     for (let lineIdx = 0; lineIdx < height; lineIdx++) {
-      out.push(fmtRow(wrapped.map((lines) => lines[lineIdx] ?? "")))
+      out.push(clip(fmtRow(wrapped.map((lines) => lines[lineIdx] ?? ""))))
     }
   }
 

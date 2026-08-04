@@ -101,6 +101,22 @@ test("formatTables: 超宽表格按列收缩到可用宽度", async () => {
   assert.ok(result.length > 0, "produces output even if narrow")
 })
 
+test("formatTables: 多列表格收缩到下限后仍超宽 → 行级截断，绝不超界（终端折行错位回归）", async () => {
+  const { formatTables, stringWidth } = await import("../src/tui/render.mjs")
+  // 8 列表格 @ width 40：8×3 + 25 borders = 49 > 40，收缩到 3 下限后仍超界
+  const table = "| a | b | c | d | e | f | g | h |\n|---|---|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |"
+  const result = formatTables(table, 40)
+  assert.ok(result.length > 0)
+  for (const line of result) {
+    assert.ok(stringWidth(line) <= 40, `行宽 ${stringWidth(line)} 不得超过 width 40: ${line}`)
+  }
+  assert.match(result[0], /…$/, "超宽行以省略号结尾")
+  // 正常宽度下不受影响
+  const wide = formatTables(table, 120)
+  for (const line of wide) assert.ok(stringWidth(line) <= 120)
+  assert.ok(!wide[0].endsWith("…"), "宽终端不截断")
+})
+
 // ====================================================================
 // layout.mjs — computeLayout
 // ====================================================================
