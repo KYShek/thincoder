@@ -81,3 +81,40 @@ test("handleCompletion: pending tasks still take priority over empty retry? no �
   const last = agent.history.at(-1)
   assert.ok(last.content.startsWith("[System reminder: your last response was empty"), last.content)
 })
+
+test("handleCompletion: pending-task pushback fires at most ONCE (no unbounded loop)", () => {
+  const agent = baseAgent({ tasks: [{ title: "T1", status: "pending" }] })
+  // First completion attempt with pending → one reminder, continue
+  const cr1 = handleCompletion(agent, baseResponse, 0, 0, 0, false, 0, {})
+  assert.equal(cr1.action, "continue")
+  assert.equal(agent._taskPushbacks, 1)
+  const last = agent.history.at(-1)
+  assert.ok(last.content.startsWith("[System reminder: you still have pending tasks: T1"), last.content)
+  assert.ok(last.content.includes("only reminder"), "copy says it is the only reminder")
+
+  // Second completion attempt → model is free to finish (no second pushback)
+  const cr2 = handleCompletion(agent, baseResponse, 0, 1, 0, false, 0, {})
+  assert.equal(cr2.action, "done", "second attempt is not pushed back")
+  assert.equal(cr2.content, "ok")
+})
+
+test("handleCompletion: updating the task list resets the pushback budget", async () => {
+  const agent = baseAgent({ tasks: [{ title: "T1", status: "pending" }] })
+  handleCompletion(agent, baseResponse, 0, 0, 0, false, 0, {})
+  assert.equal(agent._taskPushbacks, 1)
+  // Task tool updates the list (statuses changed) → fresh budget
+  const { taskTool } = await import("../src/agent-tools/task.mjs")
+  taskTool.execute({ items: [{ title: "T1", status: "in_progress" }, { title: "T2", status: "pending" }] }, { agent })
+  assert.equal(agent._taskPushbacks, 0, "task update resets the counter")
+  const cr = handleCompletion(agent, baseResponse, 0, 1, 0, false, 0, {})
+  assert.equal(cr.action, "continue", "fresh list state earns one reminder again")
+  assert.equal(agent._taskPushbacks, 1)
+})
+
+test("handleCompletion: no pending tasks → no pushback, no counter touched", () => {
+  const agent = baseAgent({ tasks: [{ title: "D1", status: "done" }] })
+  const cr = handleCompletion(agent, baseResponse, 0, 0, 0, false, 0, {})
+  assert.equal(cr.action, "done")
+  assert.equal(agent._taskPushbacks ?? 0, 0)
+})
+

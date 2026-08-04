@@ -54,13 +54,18 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
     )
   }
 
-  // Pending tasks: remind the model before it declares itself done
-  if (depth === 0 && agent.tasks.some((t) => t.status === "pending")) {
+  // Pending tasks: remind the model ONCE before it declares itself done.
+  // Deliberately capped at one pushback (reported pain: unbounded looping when a
+  // pending item can't be resolved). After the single reminder the model is free
+  // to finish — updating the task list (task tool) resets the budget, so a fresh
+  // list state earns one fresh reminder.
+  if (depth === 0 && agent.tasks.some((t) => t.status === "pending") && (agent._taskPushbacks ?? 0) < 1) {
+    agent._taskPushbacks = (agent._taskPushbacks ?? 0) + 1
     const pending = agent.tasks.filter((t) => t.status === "pending").map((t) => t.title).join(", ")
     pushReal(agent, { role: "assistant", content: response.content })
     agent.history.push({
       role: "user",
-      content: `[System reminder: you still have pending tasks: ${pending}. Update their status with the task tool before finishing — if they're done, mark them done; if they're not applicable, remove them.]`,
+      content: `[System reminder: you still have pending tasks: ${pending}. Update their status with the task tool before finishing — if they're done, mark them done; if they're not applicable, remove them. (This is your only reminder — if you choose not to, finish anyway.)]`,
     })
     callbacks.onTurnEnd?.(agent, turn)
     return { action: "continue", guardPushbacks, honestReminderInjected, advisorPushbacks }

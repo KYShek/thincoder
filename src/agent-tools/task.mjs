@@ -77,6 +77,7 @@ export const taskTool = {
     const recentDone = raw.filter((t) => t.status === "done").slice(-3)
     const items = [...pending, ...recentDone].slice(0, 20)
     ctx.agent.tasks = items
+    ctx.agent._taskPushbacks = 0 // task list changed — the completion gate earns a fresh reminder
     ctx.agent._onTaskUpdate?.(items)
     const done = items.filter((i) => i.status === "done").length
     const open = items.length - done
