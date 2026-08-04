@@ -111,7 +111,7 @@ export function buildAdvisorFollowUp(agent, _prior) {
     "## Instructions",
     round === 2
       ? "Verify each item in the prior table. Flag any obvious NEW issues introduced by the fixes (crashes, data loss, logic errors — not style). Produce a verification table."
-      : "Strictly verify ONLY the items in the prior table against the current diff. Do NOT look for new issues.",
+      : "Strictly verify ONLY the items in the prior table against the CURRENT FILE STATE (use `read` — an empty diff does not mean the fixes are absent). Do NOT look for new issues.",
     "",
     "IMPORTANT: in any embedded diff, `-` lines are REMOVED content (no longer in the file), `+` lines are ADDED. The prior issue table is HISTORY — always verify current file state with `read` before judging an item as fixed or unfixed.",
     // Round-aware evidence rule: "New" entries only exist in round 2 (round 3+ forbids them).
