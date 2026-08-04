@@ -115,9 +115,9 @@ export function buildAdvisorFollowUp(agent, _prior) {
     "",
     "IMPORTANT: in any embedded diff, `-` lines are REMOVED content (no longer in the file), `+` lines are ADDED. The prior issue table is HISTORY — always verify current file state with `read` before judging an item as fixed or unfixed.",
     // Round-aware evidence rule: "New" entries only exist in round 2 (round 3+ forbids them).
-    `STALE-CONTEXT WARNING: all diffs in earlier messages (including round 1) are historical snapshots — files have changed since. Only THIS message's "Current Changes" section and fresh \`read\` results are authoritative. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST cite read-verified evidence (file:line from a \`read\` of the current file); uncited findings are unverified and will be ignored.`,
+    `STALE-CONTEXT WARNING: all diffs in earlier messages (including round 1) are historical snapshots — files have changed since. Only fresh \`read\` results describe the current state. A "Current Changes" section that says "no changes" does NOT mean the fixes are absent — fixes may already be committed, and \`git diff HEAD\` shows nothing for committed work. Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may come from the stale prior table). Uncited findings are unverified and will be ignored.`,
     "",
-    "Do NOT re-read AGENTS.md / design docs or re-run git status/diff (current changes are below) — you already have full context from previous rounds.",
+    "Do NOT re-read AGENTS.md / design docs. If the \"Current Changes\" section is empty, verify with \`read\` (and \`git log -3\` to see recent commits) instead of assuming nothing changed.",
     "",
   ]
   const snapshots = collectRepoSnapshots(findReviewRepos(agent), agent.cwd)
@@ -126,12 +126,14 @@ export function buildAdvisorFollowUp(agent, _prior) {
   // Skip re-pushing an identical diff (e.g. advisor re-run without any file changes) —
   // the previous snapshot is already in the conversation, duplicating it wastes tokens.
   if (snapshots.length === 0) {
-    parts.push("## Current Changes", "(No git repository or no changes detected.)")
+    // Empty diff does NOT mean no fixes — committed work never shows in `git diff HEAD`.
+    // The instruction block above tells the model to read-verify instead of trusting this line.
+    parts.push("## Current Changes", "(No uncommitted changes detected via git diff HEAD — note: committed fixes do NOT appear here. Read the review-scope files to verify their current state.)")
   } else if (snapshotHash && snapshotHash === agent._advisorLastSnapshotHash) {
     // Hash match → the snapshot from the previous round is still current.
     // Using hash instead of full-text comparison avoids keeping the entire diff
     // string in memory and handles edge cases (e.g. file changed then reverted).
-    parts.push("## Current Changes", "(No changes since your previous review — the diff snapshot is identical, so the one from your last round remains valid for this round.)")
+    parts.push("## Current Changes", "(No changes since your previous review — the diff snapshot is identical, so the one from your last round remains valid for this round. Note: committed fixes also produce an identical snapshot — read the files to verify.)")
   } else {
     parts.push("## Current Changes (git status + git diff HEAD, refreshed)", ...snapshots)
   }

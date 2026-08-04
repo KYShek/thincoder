@@ -96,7 +96,7 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
     return parts.join("\n")
   }
 
-  // Convergence data (round 2+)
+  // Convergence data (round 2+). Design reviews returned above — only code reviews reach here.
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
       || "(Agent did not provide a response table — re-evaluate each issue)"
