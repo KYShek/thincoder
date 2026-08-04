@@ -124,7 +124,7 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
 
 - **interaction.mjs**：`askPermission(name, args)`（y/n/a；a = 批准并开启 AUTO）、`askQuestion(text, options)`（选项列表 ↑↓ 或自由文本）——agent 工具（permission/question）与 TUI 的桥。
 - **slash-commands.mjs**：`SLASH_COMMANDS` 表 + `SLASH_ALIASES`（/h /x /m /p /t /c /n）+ `HANDLERS` 分派；`completions(input)` 按命令/参数补全；Tab 循环候选。命令分两类：**即时反馈**（/plan /auto /fold 等本地状态切换）与 **菜单循环**（/config /think /mcp /provider 等 picker 驱动）。
-- **/submodel 命令**（cmd-submodel.mjs）：子 agent 模型设置入口——与 `/model`（主会话模型）对称。**按类型分别配置**：4 种子 agent 类型（explore / plan / coder / eng-coder）各有独立配置项。无参显示全局默认 + 各类型当前生效值（含继承关系）；参数三态与 subagent 工具 `model` 参数同构：`provider:model`（跨 provider）/ `provider` 名（其配置模型）/ `model` 名（父 provider 换模型）。持久化到 `config.agent.subagentModel`（全局）与 `config.agent.subagentModels[role]`（类型级），立即生效。**优先级链**：subagent 工具 `model` 参数 > 类型级 `subagentModels[role]` > 全局 `subagentModel` > 继承父 provider（`resolveChildProvider` 单一解析源）。Tab 补全 provider 名 + 类型名。设计决策：**独立命令而非扩展 /model**——/model 语义是主会话 provider 切换，混入子模型会混淆；子 agent 模型是高频习惯性操作，一步直达优于 /config 菜单两步。不做 picker（参数直设够用，图形选择留 P2）。
+- **/submodel 命令**（cmd-submodel.mjs）：子 agent 模型设置入口——与 `/model`（主会话模型）对称。**按类型分别配置**：4 种子 agent 类型（explore / plan / coder / eng-coder）各有独立配置项。**picker 菜单导航**（无参时）：菜单列出全局 + 4 类型共 5 个槽位（各显示当前生效值与继承来源）——选中槽位进入二级选择：provider 列表 → 模型列表（复用两级模型选择器，选中写入该槽位而非主会话），另提供快捷项（设为父模型 / 清除该槽位 / 全部清除）。**参数直设快捷路径**保留：`/submodel <type> <value>` / `/submodel <value>`（全局）/ `/submodel <type>`（查看）/ `/submodel reset [type]`；参数三态与 subagent 工具 `model` 参数同构：`provider:model`（跨 provider）/ `provider` 名（其配置模型）/ `model` 名（父 provider 换模型）。持久化到 `config.agent.subagentModel`（全局）与 `config.agent.subagentModels[role]`（类型级），立即生效。**优先级链**：subagent 工具 `model` 参数 > 类型级 `subagentModels[role]` > 全局 `subagentModel` > 继承父 provider（`resolveChildProvider` 单一解析源）。Tab 补全 provider 名 + 类型名。实现注记：`openModelPicker` 绑定主会话状态不可直接复用——pickers 需新增"选中写入指定槽位"的参数化变体（复用 provider/模型列表构建与两级交互）。设计决策：**独立命令而非扩展 /model**——/model 语义是主会话 provider 切换，混入子模型会混淆；子 agent 模型是高频习惯性操作，picker 与直参双通道（图形导航 + 快捷输入）。
 - **wizard.mjs**：首启无 key 时进入——provider 选择（含自定义端点）→ API key → embedding key（可跳过）→ 模型；Esc 可随时跳过。
 - **pickers.mjs**：通用选择器（标题/条目/filter 输入/位置指示/↑ more ↓ more/栈式嵌套）；模型选择器两级（provider → model，可 fetch `/models` 拉取真实列表，失败回退预设）；`/provider` 添加/删除/设 key 的问答流程。
 
@@ -136,8 +136,9 @@ todo 面板（task 列表，≤5 行，全部 done 自动收起）
 | stdin 双层（keyStream + paste 累积） | 粘贴与按键保序，bracketed paste 大文本不丢 |
 | Ctrl+C 永不直接杀进程 | 防误触（双确认）+ picker/生成语义分层（IK61BI） |
 | markdown 渲染放 wrap 后 | ANSI 不干扰宽度数学；窄复位不清行色（IK5VW3） |
-| /submodel 独立命令而非扩展现有 /model | /model 语义是主会话 provider 切换；子 agent 模型是高频操作，一步直达（参数三态与 subagent 工具 model 参数同构，单一解析源） |
+| /submodel 独立命令而非扩展现有 /model | /model 语义是主会话 provider 切换；子 agent 模型是高频操作，picker 导航 + 参数直设双通道 |
 | 子 agent 模型按类型分别配置（subagentModels[role]） | 4 种 role（explore/plan/coder/eng-coder）用途差异大——搜索用便宜模型、规划/实现用好模型；全局 subagentModel 保留为兜底（向后兼容）；优先级：工具参数 > 类型级 > 全局 > 继承父 |
+| /submodel picker 选中写入槽位（不复用 openModelPicker） | openModelPicker 绑定主会话状态（改 activeProvider/activeModel）；子模型选择需"选中即写指定槽位"的参数化变体——复用 provider/模型列表构建与两级交互，仅回调目标不同 |
 | 恢复优先 display 快照 | WYSIWYG 保真；history 重建是降级路径 |
 | 恢复过滤 [System reminder: | 机读消息不显示（与 VS Code 渲染契约一致） |
 | 增量渲染 + 缓存键 | 1M 行会话不卡：只重绘变化行 |
