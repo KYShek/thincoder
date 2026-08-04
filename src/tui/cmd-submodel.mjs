@@ -3,15 +3,12 @@ import { ansi, C } from "./ansi.mjs"
 /** Subagent role slots — each has an independent model override slot */
 export const SUBMODEL_SLOTS = ["explore", "plan", "coder", "eng-coder"]
 
-/** Effective value for a slot: type-level > global > null (inherit parent). */
-function slotValue(agent, role) {
-  const cfg = agent.config?.agent ?? {}
-  return cfg.subagentModels?.[role] ?? cfg.subagentModel ?? null
-}
-
-/** Human-readable effective display with inheritance source. */
+/** Human-readable effective display with inheritance source. role=null → global slot. */
 function slotDisplay(agent, role) {
   const cfg = agent.config?.agent ?? {}
+  if (role === null) {
+    return cfg.subagentModel ? { value: cfg.subagentModel, source: "global" } : { value: null, source: "parent" }
+  }
   const type = cfg.subagentModels?.[role]
   const global = cfg.subagentModel
   if (type) return { value: type, source: "type" }

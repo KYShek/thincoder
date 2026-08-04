@@ -291,7 +291,7 @@ export async function startTUI(agent, opts = {}) {
         // local TUI/agent config, never the in-flight turn); the rest are queued
         const cmd0 = text.split(/\s+/)[0].toLowerCase()
         const resolved0 = SLASH_ALIASES[cmd0] ?? cmd0
-        const safeDuringProcessing = new Set(["/help", "/exit", "/model", "/think", "/config", "/skills", "/mcp", "/goal", "/session"])
+        const safeDuringProcessing = new Set(["/help", "/exit", "/model", "/submodel", "/shell", "/think", "/config", "/skills", "/mcp", "/goal", "/session"])
         if (safeDuringProcessing.has(resolved0)) {
           await handleSlash(text)
           render()

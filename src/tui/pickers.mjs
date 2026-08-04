@@ -415,6 +415,5 @@ export function createPickers(ctx) {
     return { provider: e.provider, model: me.model }
   }
 
-   return { showPicker, closePicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey, pickModelForSlot }
-  return { showPicker, closePicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey }
+  return { showPicker, closePicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey, pickModelForSlot }
 }

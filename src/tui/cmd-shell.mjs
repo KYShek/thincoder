@@ -6,7 +6,6 @@ import { C } from "./ansi.mjs"
  *  detect() returns truthy when the shell is available (static check, never throws). */
 function platformShellCandidates() {
   const win = process.platform === "win32"
-  const posix = !win
   const commandExists = (cmd) => {
     try {
       const r = spawnSync(win ? "where" : "sh", win ? [cmd] : ["-c", `command -v ${cmd}`], { encoding: "utf8", timeout: 3000 })
@@ -28,7 +27,7 @@ function platformShellCandidates() {
     if (gb) candidates.push({ name: `Git Bash (${gb})`, value: gb, detect: () => true })
     candidates.push({ name: "WSL bash (wsl)", value: "wsl", detect: () => commandExists("wsl") })
   } else {
-    for (const sh of posix ? ["bash", "zsh", "fish"] : []) {
+    for (const sh of ["bash", "zsh", "fish"]) {
       candidates.push({ name: sh, value: sh, detect: () => commandExists(sh) })
     }
   }
@@ -65,7 +64,7 @@ export async function handleShellCommand(ctx, args = []) {
 
   // ── Platform-aware picker ──
   const candidates = platformShellCandidates()
-  const available = candidates.filter((c) => { try { return c.detect() } catch { return false } })
+  const available = candidates.filter((c) => c.detect())
   const current = agent.config?.shell ?? null
   const entries = [
     { type: "header", text: "Shell — pick one (Esc exits)" },
