@@ -199,6 +199,33 @@ describe("long-message folding (render-conversation)", () => {
     const { C } = await import("../src/tui/ansi.mjs")
     const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
     const longText = "line0\n" + "content\n".repeat(20) + "end" // 22 wrapped lines > 12
+
+  it("completed reply stays expanded until the next turn starts (auto-expand lifecycle)", async () => {
+    const { C } = await import("../src/tui/ansi.mjs")
+    const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
+    const state = {
+      lines: [],
+      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      foldEnabled: true, expandedBlocks: new Set(), _autoExpand: [], scroll: 0, search: null,
+    }
+    const longText = "line0\n" + "content\n".repeat(20) + "end" // 22 wrapped lines > 12
+
+    // Completion moment (flushStream): push + add long-{idx} to expandedBlocks
+    const idx = state.lines.length
+    state.lines.push({ text: longText, color: C.text })
+    state.expandedBlocks.add(`long-${idx}`)
+    state._autoExpand.push(idx)
+    const justCompleted = buildConvLines(state, 80)
+    assert.equal(justCompleted.length, 24, "completed reply rendered EXPANDED (marker + 22 lines)")
+
+    // Next turn starts (runAgentTurn head): auto-expand markers cleared
+    for (const i of state._autoExpand) state.expandedBlocks.delete(`long-${i}`)
+    state._autoExpand = []
+    const nextTurn = buildConvLines(state, 80)
+    assert.equal(nextTurn.length, 6, "next turn renders FOLDED (first 4 + ▶ + last)")
+    assert.ok(nextTurn[4].text.startsWith("▶ … 17 more lines — "), "folded control line at the ellipsis position")
+  })
+
     for (const color of [C.text, C.reason]) {
       const state = {
         lines: [{ text: longText, color }],

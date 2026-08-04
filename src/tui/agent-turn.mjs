@@ -29,6 +29,12 @@ export async function runAgentTurn(ctx, text) {
   // 可注入覆盖（测试用）；默认走真实实现
   const runAgentImpl = ctx.runAgent ?? runAgent
   const saveSessionImpl = ctx.saveSession ?? saveSession
+  // A new user message starts a new turn: auto-expanded completed replies from the
+  // previous turn (kept open so the user could read them) collapse now.
+  for (const idx of state._autoExpand ?? []) {
+    state.expandedBlocks?.delete(`long-${idx}`)
+  }
+  state._autoExpand = []
   pushLabel(`❯ You:`, ansi.bold + C.user)
   pushLine(text, C.text)
 
@@ -52,11 +58,23 @@ export async function runAgentTurn(ctx, text) {
 
   const flushStream = () => {
     if (state.reasoning) {
+      const idx = state.lines.length
       pushLine(state.reasoning, C.reason)
+      // Completed reasoning stays expanded (user is reading it) until the next turn
+      state.expandedBlocks ??= new Set()
+      state.expandedBlocks.add(`long-${idx}`)
+      state._autoExpand ??= []
+      state._autoExpand.push(idx)
       state.reasoning = ""
     }
     if (state.streaming) {
+      const idx = state.lines.length
       pushLine(state.streaming, C.text)
+      // Completed main output stays expanded (user is reading it) until the next turn
+      state.expandedBlocks ??= new Set()
+      state.expandedBlocks.add(`long-${idx}`)
+      state._autoExpand ??= []
+      state._autoExpand.push(idx)
       state.streaming = ""
     }
     state.advisorStreaming = ""

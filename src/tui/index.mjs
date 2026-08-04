@@ -81,6 +81,7 @@ export async function startTUI(agent, opts = {}) {
     ctxCache: { len: -1, tokens: 0 }, // context utilization estimate cache (estimateTokens is O(n), only recompute when history grows)
     reasoning: "", // thinking stream buffer (dimmed display)
     completion: null, // Tab completion state { candidates, index }
+    _autoExpand: [], // indices of completed replies kept expanded; cleared when the next user turn starts
     subTasks: {}, // sub-agent panel: { roleName: { role, text, done } }, one line per role, marked done briefly after completion
     currentTool: null, // currently executing tool name (shown in status bar)
     processingStarted: 0, // current turn start time (status bar timer)
