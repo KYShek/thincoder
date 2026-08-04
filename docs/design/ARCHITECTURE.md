@@ -230,7 +230,7 @@ export function createAgent({ provider, tools, config, cwd, memory, overlay, ...
 
 1. **工具描述 prompt**：写明何时该用（多步任务动手前先建表、收到多步指令先落成 tasks）、何时不该用（单发请求）、状态机纪律（恰好一个 in_progress、完成立即标 done 不批量补标、测试红不许标 done、阻塞保持 in_progress、避免 churn）
 2. **工具结果即时强化**：每次 task 写入成功的 result 尾部附"继续保持恰好一个 in_progress、完成立即标 done"提醒，形成即时反馈回路
-3. **闲置提醒注入**：10 轮未碰 task 工具即注入 system reminder（**仅顶层 agent，depth=0**——子 agent 生命周期短、任务单一，提醒建表纯浪费 token）——有未完成项催更新（附列表快照）；**从未建表也提醒**（建议为多步工作建表，"不适用就忽略"）；提醒均要求不向用户提及。goal 每 10 轮、plan mode 每 8 轮同机制；提醒统一以 `role: "user"` 的 `[System reminder: ...]` 写入 history
+3. **pending 完成守卫**：模型无工具调用回合（准备收尾）时，若任务列表仍有 pending 项，注入"更新 task 状态再收尾"的 system reminder 并继续循环——**每个任务列表状态最多推回一次**（`_taskPushbacks` 计数，task 工具更新列表即重置；防无限循环卡死——模型第二次坚持收尾则放行）。**仅顶层 agent（depth=0）**；提醒统一以 `role: "user"` 的 `[System reminder: ...]` 写入 history
 4. **生命周期保障**：压缩后以独立 system reminder 回注 task 列表（每次压缩重新注入，永远最新且在历史末尾；单一信息源，不嵌入摘要正文）；tasks 随会话持久化（session.mjs），resume 恢复
 
 **完成守卫（completion guard）**：模型给出最终回答（无 toolCalls）时，若本轮运行用写/编辑类工具改过文件却没跑过 `verify`，不直接收工——把回答入历史、注入"先跑测试并调 verify 自检"的 system reminder 后继续循环。每次 runAgent 最多推一次（防死循环）；`bash` / `subagent` 不算 mutation（跑测试、explore 子 agent 不该被催；coder 子 agent 有专属校验提醒）。仅顶层 agent（depth=0）生效。
