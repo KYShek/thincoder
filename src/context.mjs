@@ -237,7 +237,7 @@ const OVERSIZE_CONTENT_LIMIT = 8_000
  * does not touch reasoning_content (DeepSeek/Kimi echo protocol) or tool_calls pairing structure — no protocol 400 risk.
  * Only called after compressIfNeeded determines threshold is exceeded. Returns whether any message was truncated.
  */
-export function shrinkOversized(agent, limit = OVERSIZE_CONTENT_LIMIT) {
+function shrinkOversized(agent, limit = OVERSIZE_CONTENT_LIMIT) {
   let shrunk = false
   for (const m of agent.history) {
     if ((m.role !== "user" && m.role !== "tool") || typeof m.content !== "string") continue

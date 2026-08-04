@@ -5,8 +5,8 @@
 import { execFileSync } from "node:child_process"
 import { dirname, basename, resolve } from "node:path"
 
-export const GIT_TIMEOUT = 5_000
-export const MAX_EMBEDDED_DIFF = 50_000
+const GIT_TIMEOUT = 5_000
+const MAX_EMBEDDED_DIFF = 50_000
 
 /**
  * Find the git repository roots that contain the agent's touched files.

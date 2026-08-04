@@ -50,7 +50,7 @@ export function validateDesignToken(token) {
 }
 
 /** Extract UUID from signed token for regex matching */
-export function extractTokenUUID(token) {
+function extractTokenUUID(token) {
   const parts = token.split(":")
   return parts.length >= 1 ? parts[0] : token
 }

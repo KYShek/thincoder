@@ -8,17 +8,17 @@
  * user sends a new message — so the constraint never fades from context.
  */
 
-export const PLAN_FULL_REMINDER =
+const PLAN_FULL_REMINDER =
   "[System reminder: plan mode is ON. Workflow: (1) explore/read codebase with read-only tools, " +
   "(2) design a solution considering trade-offs, (3) present your plan by calling plan with action='exit' " +
   "so the user can approve it. Only read-only tools are allowed — do not write, edit, or run mutation commands. " +
   "Your turn must end with either a clarifying question to the user or a call to plan with action='exit'.]"
 
-export const PLAN_SPARSE_REMINDER =
+const PLAN_SPARSE_REMINDER =
   "[System reminder: plan mode still active — read-only tools only (the current plan file exempt). " +
   "Design the solution, then call plan with action='exit' for user approval.]"
 
-export const PLAN_EXIT_REMINDER =
+const PLAN_EXIT_REMINDER =
   "[System reminder: plan mode is now OFF. Start implementing your plan — edit files, run commands. " +
   "No need for a task list (plan already covered that) or further confirmation.]"
 

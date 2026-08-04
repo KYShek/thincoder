@@ -8,7 +8,7 @@ import { toOpenAISchema } from "../tools/index.mjs"
 import { prepareAdvisorMessages } from "../advisor.mjs"
 import { extractPriorIssueTable } from "../advisor/history.mjs"
 
-export const MAX_ADVISOR_TURNS = 100
+const MAX_ADVISOR_TURNS = 100
 // Mechanical convergence cap: the protocol assumes up to 5 rounds suffice
 // (full review, verify+fix cycles, strict verification). A 6th call means the
 // model is looping — refuse it instead of burning tokens on a review that cannot
@@ -224,7 +224,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
 }
 
 /** Resolve the advisor's provider: cfg.provider/model when set, otherwise the main agent's provider */
-export function resolveAdvisorProvider(agent) {
+function resolveAdvisorProvider(agent) {
   const cfg = agent.config?.advisor
   if (cfg?.provider) {
     try {

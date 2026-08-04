@@ -6,8 +6,8 @@ import { join } from "node:path"
 
 export const ADVISOR_MD_PATH = ".thincoder/advisor.md"
 export const ADVISOR_TABLE_HEADER = "| # | File | Severity | Issue | Suggestion |"
-export const CONVERGENCE_TABLE_HEADER = "| # | Orig# | File | Severity | Status | Notes |"
-export const AGENT_RESPONSE_HEADER = "| # | Action | Detail |"
+const CONVERGENCE_TABLE_HEADER = "| # | Orig# | File | Severity | Status | Notes |"
+const AGENT_RESPONSE_HEADER = "| # | Action | Detail |"
 export const LEGACY_ADVISOR_HEADER = "| # | 文件 | 严重程度 | 问题描述 | 建议修复 |"
 
 const DEFAULT_CRITERIA = `Review the code changes, focusing on:
