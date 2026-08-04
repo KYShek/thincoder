@@ -13,6 +13,9 @@ export const MAX_ADVISOR_TURNS = 100
 // (full review, verify+fix cycles, strict verification). A 6th call means the
 // model is looping — refuse it instead of burning tokens on a review that cannot
 // converge. Design reviews are exempt (each call resets the round).
+// NOTE: prompts/advisor-round{1,2,3}.md advertise a 30-round BUDGET — the
+// prompt-level efficiency target, distinct from this 100-round mechanical hard
+// cap (loop guard). Keep both in sync when either changes.
 export const MAX_ADVISOR_ROUNDS = 5
 
 // Context window limits
