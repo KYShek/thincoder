@@ -30,12 +30,13 @@ export function defaultIsConfigured() {
   }
 }
 
-/** M1 session factory: one agent per session, built from the process cwd (single-cwd model).
+/** M1/M2 session factory: one agent per session, built from the process cwd (single-cwd model).
  *  `id` is the ACP session id — it is baked into the callbacks at construction time
- *  (buildAcpCallbacks closure), so it must be known BEFORE createAcpSession runs. */
-export async function defaultCreateSession({ id, notify, log }) {
+ *  (buildAcpCallbacks closure), so it must be known BEFORE createAcpSession runs.
+ *  `request` is the transport's reverse-RPC channel (permissions + fs routing). */
+export async function defaultCreateSession({ id, notify, request, log }) {
   const agent = await assembleAgent()
-  return createAcpSession({ id, agent, notify, log })
+  return createAcpSession({ id, agent, notify, request, log })
 }
 
 /**
@@ -53,6 +54,7 @@ export function buildAcpHandlers({
   createSession = defaultCreateSession,
 }) {
   const notifyRef = { current: notify }
+  const requestRef = { current: async () => { throw new Error("no request channel") } }
   const sessions = new Map()
   let nextId = 1
   let authenticated = false
@@ -92,7 +94,7 @@ export function buildAcpHandlers({
         }
         try {
           const id = String(nextId++)
-          const session = await createSession({ id, notify: notifyRef.current, log })
+          const session = await createSession({ id, notify: notifyRef.current, request: requestRef.current, log })
           // `id` is immutable after construction (baked into the callbacks) — never reassign.
           sessions.set(id, session)
           return { id, configOptions: [{ configId: "model" }, { configId: "thinking" }, { configId: "mode" }] }
@@ -139,6 +141,7 @@ export function buildAcpHandlers({
     },
     sessions,
     notifyRef,
+    requestRef,
   }
 }
 
@@ -146,10 +149,11 @@ export function buildAcpHandlers({
 export async function runAcpServer() {
   const log = (...a) => process.stderr.write(a.join(" ") + "\n")
   // Build handlers first, then wire the transport — no window where requests
-  // hit an empty handler map. notifyRef.current becomes live with the server.
+  // hit an empty handler map. notifyRef/requestRef become live with the server.
   const built = buildAcpHandlers({ log })
   const server = createAcpServer(built.handlers, { log })
   built.notifyRef.current = server.notify
+  built.requestRef.current = server.request
   log(`[acp] thincoder ${VERSION} — ACP v1 over stdio, waiting for initialize`)
   server.start()
 }

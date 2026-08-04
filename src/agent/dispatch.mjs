@@ -152,6 +152,15 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
       if (!item.tool?.readonly && item.args) {
         snapshotForUndo(agent, item.toolCall.name, item.args, agent.cwd)
       }
+      // M2 ACP: route fs tools through the client (IDE buffer / diff review).
+      // toolRouter returns { handled: true, result } to short-circuit execution.
+      if (callbacks.toolRouter) {
+        const routed = await callbacks.toolRouter(item.toolCall.name, item.args)
+        if (routed?.handled) {
+          callbacks.onToolResult?.(item.toolCall.name, routed.result)
+          return { ...item, result: routed.result, ok: true }
+        }
+      }
       const rawResult = await item.tool.execute(item.args, {
         cwd: agent.cwd,
         agent,

@@ -13,12 +13,120 @@ import { buildAcpCallbacks } from "../src/acp/bridge.mjs"
 import { createAcpSession } from "../src/acp/session.mjs"
 import { buildAcpHandlers } from "../src/acp.mjs"
 
+describe("M2 — tools, permissions, fs routing (bridge callbacks)", () => {
+  it("onToolCall/onToolResult emit tool_call + tool_call_update with matching ids", () => {
+    const events = []
+    const cb = buildAcpCallbacks({
+      sessionId: "s1",
+      notify: (m, p) => events.push(p),
+      request: async () => ({ outcome: { outcome: "selected", optionId: "approve_once" } }),
+    })
+    cb.onToolCall("bash", { command: "ls" })
+    cb.onToolResult("bash", "file.txt")
+    const call = events[0].update
+    const done = events[1].update
+    assert.equal(call.sessionUpdate, "tool_call")
+    assert.equal(call.status, "in_progress")
+    assert.equal(call.title, "bash")
+    assert.equal(call.kind, "execute")
+    assert.equal(done.sessionUpdate, "tool_call_update")
+    assert.equal(done.toolCallId, call.toolCallId, "result update references the same call id")
+    assert.equal(done.status, "completed")
+    assert.equal(done.content[0].content.text, "file.txt")
+  })
+
+  it("onPermissionRequest resolves true for approve_once and false for reject", async () => {
+    const seen = []
+    const cb = buildAcpCallbacks({
+      sessionId: "s1",
+      notify: () => {},
+      request: async (method, params) => { seen.push({ method, params }); return { outcome: { outcome: "selected", optionId: "approve_once" } } },
+    })
+    assert.equal(await cb.onPermissionRequest("write", { path: "a.txt" }), true)
+    assert.equal(seen[0].method, "session/request_permission")
+    assert.equal(seen[0].params.sessionId, "s1")
+    assert.deepEqual(seen[0].params.options.map((o) => o.optionId), ["approve_once", "approve_always", "reject"])
+    // reject path
+    const cb2 = buildAcpCallbacks({ sessionId: "s1", notify: () => {}, request: async () => ({ outcome: { outcome: "selected", optionId: "reject" } }) })
+    assert.equal(await cb2.onPermissionRequest("bash", {}), false)
+  })
+
+  it("onPermissionRequest rejects on transport failure (safety-first)", async () => {
+    const cb = buildAcpCallbacks({ sessionId: "s1", notify: () => {}, request: async () => { throw new Error("client gone") } })
+    assert.equal(await cb.onPermissionRequest("write", {}), false)
+  })
+
+  it("toolRouter routes write through fs/write_text_file", async () => {
+    const seen = []
+    const cb = buildAcpCallbacks({ sessionId: "s1", notify: () => {}, request: async (m, p) => { seen.push({ m, p }); return {} } })
+    const r = await cb.toolRouter("write", { path: "src/a.mjs", content: "new" })
+    assert.equal(r.handled, true)
+    assert.equal(seen[0].m, "fs/write_text_file")
+    assert.equal(seen[0].p.path, "src/a.mjs")
+    assert.equal(seen[0].p.content, "new")
+  })
+
+  it("toolRouter edit does read-back → local replace → write-back", async () => {
+    const seen = []
+    const cb = buildAcpCallbacks({
+      sessionId: "s1", notify: () => {},
+      request: async (m, p) => {
+        seen.push({ m, p })
+        if (m === "fs/read_text_file") return { text: "hello world" }
+        return {}
+      },
+    })
+    const r = await cb.toolRouter("edit", { path: "a.txt", old_string: "hello", new_string: "goodbye" })
+    assert.equal(r.handled, true)
+    assert.ok(r.result.includes("edited"), r.result)
+    assert.equal(seen[0].m, "fs/read_text_file")
+    assert.equal(seen[1].m, "fs/write_text_file")
+    assert.equal(seen[1].p.content, "goodbye world")
+  })
+
+  it("toolRouter leaves reads/delete/apply_patch local", async () => {
+    const cb = buildAcpCallbacks({ sessionId: "s1", notify: () => {}, request: async () => { throw new Error("must not be called") } })
+    for (const [name, args] of [["read", { path: "a" }], ["delete", { path: "a" }], ["apply_patch", { patch: "x" }], ["grep", { pattern: "x" }]]) {
+      const r = await cb.toolRouter(name, args)
+      assert.equal(r.handled, false, `${name} stays local`)
+    }
+  })
+
+  it("edit read-back missing old_string reports a clear error, not a crash", async () => {
+    const cb = buildAcpCallbacks({ sessionId: "s1", notify: () => {}, request: async () => ({ text: "nothing here" }) })
+    const r = await cb.toolRouter("edit", { path: "a.txt", old_string: "nope", new_string: "x" })
+    assert.equal(r.handled, true)
+    assert.ok(r.result.includes("old_string not found"), r.result)
+  })
+})
+
+describe("M2 — transport reverse-RPC request()", () => {
+  it("request resolves when the client responds by id", async () => {
+    const c = mockClient({})
+    const p = c.server.request("session/request_permission", { sessionId: "s1" })
+    const sent = c.next()
+    assert.equal(sent.method, "session/request_permission")
+    await c.send({ jsonrpc: "2.0", id: sent.id, result: { outcome: { outcome: "selected", optionId: "approve_once" } } })
+    assert.deepEqual(await p, { outcome: { outcome: "selected", optionId: "approve_once" } })
+  })
+
+  it("request rejects on client error response", async () => {
+    const c = mockClient({})
+    const p = c.server.request("fs/read_text_file", { sessionId: "s1", path: "x" })
+    const sent = c.next()
+    await c.send({ jsonrpc: "2.0", id: sent.id, error: { code: -32602, message: "bad path" } })
+    await assert.rejects(() => p, /bad path/)
+  })
+})
+
+
 /** Minimal mock client: feeds lines to handleLine, captures outgoing JSON.
  *  Pass an external `out` array to also receive session/update notifications
  *  pushed via the injected notify (they share the same capture). */
 function mockClient(handlers, out = []) {
   const server = createAcpServer(handlers, { write: (s) => out.push(JSON.parse(s)), log: () => {} })
   return {
+    server, // expose transport (notify/request) for reverse-RPC tests
     out,
     handleLine: (line) => server.handleLine(line),
     send: async (obj) => { await server.handleLine(JSON.stringify(obj)) },

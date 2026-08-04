@@ -28,15 +28,67 @@ export const ACP_ERRORS = {
  */
 export function createAcpServer(handlers, { write = (s) => process.stdout.write(s), log = () => {} } = {}) {
   const state = { closed: false, inputClosed: false, inflight: new Set() }
+  const pending = new Map() // agent-initiated requests awaiting a client response (request_permission, fs/*)
+  let nextReqId = 1
   const send = (obj) => { if (!state.closed) write(JSON.stringify(obj) + "\n") }
   const notify = (method, params) => send({ jsonrpc: "2.0", method, params })
+
+  /**
+   * Agent-initiated JSON-RPC request: send with an id and await the client's
+   * response. Used for `session/request_permission` and `fs/read_text_file` /
+   * `fs/write_text_file` (reverse-RPC). Times out defensively — a silent
+   * client must never hang the agent loop.
+   */
+  function request(method, params, { timeoutMs = 60000 } = {}) {
+    return new Promise((resolve, reject) => {
+      const id = `rpc-${nextReqId++}`
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        reject(new Error(`ACP client did not respond to ${method} within ${timeoutMs}ms`))
+      }, timeoutMs)
+      pending.set(id, { resolve, reject, timer })
+      send({ jsonrpc: "2.0", id, method, params })
+    })
+  }
 
   // stdin EOF only means "no more requests" — in-flight handlers must still
   // deliver their responses (e.g. session/new building an agent). Closed only
   // after the last handler settles.
   const drainIfDone = () => { if (state.inputClosed && state.inflight.size === 0) state.closed = true }
 
-  async function handleLine(line) {
+  // Inbound requests are serialized (FIFO): ACP sessions have ordering
+  // dependencies (prompt must follow new), and a naive client may fire lines
+  // back-to-back without awaiting responses. Each line's handler is awaited
+  // before the next line is processed — ordering is guaranteed end-to-end.
+  // EXCEPTION: responses to agent-initiated requests (request_permission /
+  // fs/*) resolve the pending waiter IMMEDIATELY, outside the queue — the
+  // prompt handler awaiting them blocks the queue, so queuing them would
+  // deadlock (client response waits for queue, queue waits for handler).
+  let inbound = Promise.resolve()
+  function handleLine(line) {
+    let msg
+    try { msg = JSON.parse(line) } catch { /* malformed → queued path emits the parse error in order */ }
+    if (msg && typeof msg === "object" && msg.method === undefined && msg.id !== undefined) {
+      resolveClientResponse(msg)
+      return
+    }
+    const task = inbound.then(() => processLine(line)).catch(() => {})
+    inbound = task
+    state.inflight.add(task)
+    task.finally(() => { state.inflight.delete(task); drainIfDone() }).catch(() => {})
+    return task
+  }
+
+  function resolveClientResponse(msg) {
+    const waiter = pending.get(String(msg.id))
+    if (!waiter) return
+    pending.delete(String(msg.id))
+    clearTimeout(waiter.timer)
+    if (msg.error) waiter.reject(Object.assign(new Error(msg.error.message ?? "ACP client error"), { code: msg.error.code }))
+    else waiter.resolve(msg.result ?? {})
+  }
+
+  async function processLine(line) {
     let msg
     try {
       msg = JSON.parse(line)
@@ -44,34 +96,30 @@ export function createAcpServer(handlers, { write = (s) => process.stdout.write(
       send({ jsonrpc: "2.0", id: null, error: ACP_ERRORS.PARSE })
       return
     }
-    // Client-side notifications (no id) are out of v1 scope — ignore silently.
-    if (!msg || typeof msg !== "object" || msg.method === undefined) return
+    if (!msg || typeof msg !== "object") return
+    // Responses were already handled out-of-band in handleLine; anything left
+    // here with no method is a stray notification — ignore silently.
+    if (msg.method === undefined) return
     const handler = handlers[msg.method]
     if (!handler) {
       if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, error: ACP_ERRORS.METHOD_NOT_FOUND })
       return
     }
-    const p = (async () => {
-      try {
-        const result = await handler(msg.params ?? {}, { notify, send, log })
-        if (msg.id !== undefined) {
-          if (result && typeof result === "object" && result.error) {
-            send({ jsonrpc: "2.0", id: msg.id, error: result.error })
-          } else {
-            send({ jsonrpc: "2.0", id: msg.id, result })
-          }
-        }
-      } catch (e) {
-        log(`[acp] handler error: ${e?.message ?? e}`)
-        if (msg.id !== undefined) {
-          send({ jsonrpc: "2.0", id: msg.id, error: { ...ACP_ERRORS.INTERNAL, message: e?.message ?? String(e) } })
+    try {
+      const result = await handler(msg.params ?? {}, { notify, send, log })
+      if (msg.id !== undefined) {
+        if (result && typeof result === "object" && result.error) {
+          send({ jsonrpc: "2.0", id: msg.id, error: result.error })
+        } else {
+          send({ jsonrpc: "2.0", id: msg.id, result })
         }
       }
-    })()
-    state.inflight.add(p)
-    // Track completion after the handler settles (keep the drain bookkeeping
-    // outside the IIFE — inflight must reflect the request until it finishes).
-    p.finally(() => { state.inflight.delete(p); drainIfDone() }).catch(() => {})
+    } catch (e) {
+      log(`[acp] handler error: ${e?.message ?? e}`)
+      if (msg.id !== undefined) {
+        send({ jsonrpc: "2.0", id: msg.id, error: { ...ACP_ERRORS.INTERNAL, message: e?.message ?? String(e) } })
+      }
+    }
   }
 
   /** Wire stdin + shutdown handlers. Returns the notify fn for out-of-band pushes. */
@@ -90,5 +138,5 @@ export function createAcpServer(handlers, { write = (s) => process.stdout.write(
   }
 
   // handleLine/_state exposed for tests (drive without a real stdin).
-  return { start, notify, handleLine, _state: state }
+  return { start, notify, request, handleLine, _state: state }
 }
