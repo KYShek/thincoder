@@ -50,7 +50,7 @@ Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补�
 | `session/cancel` | ✅ | 中断当前轮（复用 signal 中断机制） |
 | `session/set_mode` | ✅ | plan/normal 模式切换（映射 configOption mode）；**与 `set_config_option` 冲突时 last-write-wins**——两路径收敛到同一内部模式状态 |
 | `session/set_config_option` | ✅ | model / thinking 统一分发（映射 thincoder /model、/think 语义） |
-| `session/close`、`logout` | ❌ | `session/close` → **返回成功空响应（no-op）+ stderr 日志**（"session {id} closed by client"），进程由客户端负责终止；`logout` 不支持（无账号体系）。进程退出时 pipe 自然关闭，客户端据此判定会话结束 |
+| `session/close` | ✅ **no-op stub** | 返回成功空响应 `{}` + stderr 日志（"session {id} closed by client"）；进程由客户端负责终止；`logout` ❌（无账号体系）。进程退出时 pipe 自然关闭 |
 
 ### 3.2 Client-side reverse-RPC（agent → IDE）—— 5/9
 
@@ -140,11 +140,12 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
    // dispatch.mjs runOne 中 item.tool.execute(...) 调用前：
    //   有 toolRouter → 先试路由；handled=true 用 result 作为工具结果，handled=false 走本地执行
    ```
+   - **插入点**：`src/agent/dispatch.mjs` 的 `runOne` 内、`item.tool.execute(...)` 调用前（约 155 行）：`if (callbacks.toolRouter) { const r = await callbacks.toolRouter(name, args); if (r?.handled) { result = r.result; skip execute } }`
    - read/glob/grep/ls：**不路由**（本地读，性能优先）
    - write：`fs/write_text_file` 全量写（构造新内容直接写，无需读回）
    - edit/apply_patch：**先 `fs/read_text_file` 读回 client 当前全文 → 本地应用现有 diff 逻辑（复用 tool 实现）→ `fs/write_text_file` 全量写回**——读回保证与 IDE buffer 一致（防止客户端已改过文件），IDE 呈现 diff
      - **已知风险（TOCTOU）**：读回与写入之间用户在 IDE 改了 buffer → 写入静默覆盖用户改动。缓解：IDE diff 审查（用户在保存前可见并拒绝）；后续可选演进：写入带 base revision 校验（协议不稳定面，非 v1 必需）。**记录为接受风险**
-   - delete：**写空内容 `""`**（`fs/write_text_file`，客户端按其删除语义解释）——行为定死不二义
+   - delete：**不路由——本地执行**（schema v1 无 fs/delete 方法；写空依赖客户端解释约定，不可靠。kimi 同款：AcpKaos 仅路由 read/write，delete 走本地。结果返回 + 客户端收到 session/update 后自行刷新）
    - 工具结果返回客户端确认后的写入结果
 2. **审批**——**复用现有 `callbacks.onPermissionRequest` 通道**（dispatch.mjs:113 已存在，不存在→deny）：
    - ACP 模式：bridge 提供 `onPermissionRequest = (name, args) → session/request_permission`（请求带工具名+格式化参数，等待 `allow_once`/`deny_once` 响应）
@@ -163,7 +164,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
   - `role: "assistant"` 无 tool_calls → `agent_message_chunk`
   - `role: "assistant"` 含 tool_calls → `tool_call` 事件（IDE 显示工具调用卡片）
   - `role: "tool"` 结果 → 跟随其 assistant 消息的 tool_call_update/结果文本
-  - 机读注入（reminder/interrupt/transient）**不重放**——客户端只应看到真实对话
+  - 机读注入（reminder/interrupt/transient）**不重放**——过滤规则：`content` 以 `[System reminder:` 或 `[User interrupt:` 开头（复用 session 既有 transient 标记，见 src/session.mjs LEGACY_TRANSIENT_PREFIXES）——客户端只应看到真实对话
   - **字段名**：运行时用 `agent._fullHistory`；从磁盘读用 `data.history`（saveSession 写入源为 `_fullHistory ?? history`）
 - `session/resume`：不重放历史，仅恢复 cwd + configOptions（model/thinking/mode）+ 当前会话上下文
 - `session/list` 枚举存档槽位——**槽位数量 unlimited（src/session.mjs 现有语义："Each project keeps unlimited session slots"），按实际存档全量返回**（更正早期"5 槽位"错误说法）。**sessionId ↔ 槽位映射**：ACP sessionId = 槽位号（数字字符串，如 `"3"`），list 返回 `{ id: "3", cwd, updatedAt }`；load/resume/delete 按 id 解析槽位
@@ -198,7 +199,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 5 | cancel 中断 | prompt 进行中发 `session/cancel` | 当前轮停止，后续无事件 |
 | 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` → `session/load {deleted-id}` | list 返回全部槽位（unlimited）；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现；**再 load 已删/不存在 id → 错误**（-32602） |
 | 7 | resume 与配置 | `session/resume {id}`（跳过重放）→ `session/set_config_option {configId:"mode", value:"plan"}` → `session/set_mode {mode:"normal"}` | resume 恢复 cwd+configOptions 无历史事件；set_config_option/set_mode 生效并发出 `current_mode_update` / `config_option_update`；**resume 不存在 id → 错误** |
-| 8 | 错误映射 | 非法 JSON / 未知方法 / 未鉴权 prompt / 畸形 mcpServers / 活跃回合中再发 prompt | -32600 / -32601 / -32000 / mcpServers 忽略+warn 不报错 / **并发 prompt 排队串行**（与 TUI 输入队列语义一致，不拒绝） |
+| 8 | 错误映射 | ① 非法 JSON → -32600；② 未知方法 → -32601；③ 未鉴权 prompt → -32000；④ 畸形 mcpServers → 忽略+warn（不报错）；⑤ 活跃回合中再发 prompt → **排队串行**（与 TUI 输入队列语义一致，不拒绝）；⑥ `session/close` → 成功 `{}` + stderr 日志 | 每项独立断言，错误码符合 JSON-RPC |
 
 ## 7. 不做项（明确裁剪）
 
@@ -224,6 +225,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 ## 9. 里程碑
 
 - M1：传输层 + initialize/authenticate/session/new + prompt 流式（无工具）——Zed 能对话
-- M2：工具调用 + request_permission + fs 反向 RPC——Zed 能完整干活
-- M3：session/load/resume/list + config_options + cancel——日常使用闭环
+- M2：工具调用 + request_permission + fs 反向 RPC——**Zed 能单次干活**（单会话内工具+审批+diff；会话持久化在 M3）
+- M3：session/load/resume/list/delete + config_options + cancel——**日常使用闭环**（会话持久化+配置）
 - M4：测试完备 + 文档（ides.md 集成指南）——发布 0.13.0
+- **checklist 对应**：`.thincoder/checklist.md`（用户故事 1-4 + M1-M4 已播种）
