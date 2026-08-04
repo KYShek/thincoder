@@ -209,6 +209,12 @@ Code conventions: pure `.mjs`, no semicolons, no npm dependencies allowed (inclu
 
 ## Changelog
 
+### 0.12.10 (2026-08)
+- **Code-quality pass (advisor subsystem):**
+  - **Drop 11 unused exports** — internal-use symbols no longer leak through the module API (advisor table headers/constants, plan reminders, token-UUID helper, shrinkOversized).
+  - **Advisor tool-timeout timer is now cleared** when the tool wins the race (no dangling timers); static import replaces a dynamic import on the hot path.
+  - **Advisor re-review no longer trusts git output** — the follow-up path previously injected a `git diff HEAD` snapshot: once fixes were committed the diff was empty and the model read "no changes" as "no fixes", misreporting fixed items as unfixed. The follow-up now injects **no git information at all** — verification is `read`-only, evidence must quote this round's read output (line numbers from the stale prior table are not evidence), and dead snapshot-dedup fields were removed.
+
 ### 0.12.9 (2026-08)
 - **Prompt-system quality pass (both CLI and VS Code extension, byte-identical sync):**
   - **Advisor-after-code rule moved from system.md to discipline.md** — engineering mode no longer receives the conflicting "call advisor after changing code" instruction (its review-timing rules say do not call unprompted). Standard mode behavior unchanged.
