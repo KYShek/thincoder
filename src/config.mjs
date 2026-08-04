@@ -43,7 +43,8 @@ const DEFAULTS = {
   agent: {
     maxTurns: 100,
     subagentTurns: 100,
-    subagentModel: null,  // default model for subagents: "provider:model" | provider name | model name (parent provider); null = inherit parent provider
+    subagentModel: null,  // default subagent model: "provider:model" | provider name | model name (parent provider); null = inherit parent provider
+    subagentModels: {},   // per-type override: { explore, plan, coder, "eng-coder" } — priority: subagent tool model arg > this[role] > subagentModel > parent provider
     goalTurns: 200,
     compactThreshold: 100000,
     verifyGuard: false,  // push model back to verify when files were mutated but verify not run (opt-in)

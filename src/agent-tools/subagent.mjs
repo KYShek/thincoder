@@ -16,6 +16,16 @@ import { validateDesignToken } from "./advisor.mjs"
  */
 
 /**
+ * Effective subagent model override for a role (CLI parity shared with VS Code):
+ * priority — subagent tool `model` arg > config.agent.subagentModels[role] > config.agent.subagentModel > null (inherit parent).
+ */
+export function effectiveSubagentModel(parent, role, modelArg) {
+  if (modelArg) return modelArg
+  const cfg = parent.config?.agent ?? {}
+  return cfg.subagentModels?.[role] ?? cfg.subagentModel ?? null
+}
+
+/**
  * Resolve the sub-agent's provider from a model override string (shared with the
  * VS Code port). Forms accepted:
  *   "provider:model"  → the named provider with the named model
@@ -82,8 +92,8 @@ export const subagentTool = {
       throw new Error("Engineering mode is not active — use role='coder' for implementation tasks.")
     }
 
-    // Provider/model override: subagent `model` arg > agent.subagentModel config > parent provider
-    const childProvider = resolveChildProvider(parent, args.model ?? parent.config?.agent?.subagentModel ?? null)
+    // Provider/model override: tool `model` arg > subagentModels[role] > subagentModel > parent provider
+    const childProvider = resolveChildProvider(parent, effectiveSubagentModel(parent, role, args.model))
 
     // eng-coder token gate: the design review must have passed and the caller must
     // present the exact token advisor issued — otherwise the child is not authorized to code.

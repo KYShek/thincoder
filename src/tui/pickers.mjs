@@ -389,5 +389,32 @@ export function createPickers(ctx) {
     await persistRaw((raw) => { raw.providers = agent.providers })
   }
 
+
+  /** Slot-bound model picker: two-level provider → model selection that RETURNS
+   *  { provider, model } instead of writing main-session state — used by /submodel
+   *  to write into a subagent slot (global or per-role). Esc → null. */
+  async function pickModelForSlot() {
+    const providers = agent.providers
+    if (!providers.length) return null
+    const picked = showPicker("Select provider", providers.map((p) => ({
+      type: "item",
+      text: `${p.name.padEnd(12)} ${p.model}`,
+      action: "open-models",
+      provider: p.name,
+    })))
+    const e = await picked
+    if (!e?.provider) return null
+    const providerConfig = providers.find((p) => p.name === e.provider)
+    if (!providerConfig) return null
+    const entries = buildModelEntriesForProvider(e.provider, providerConfig)
+    fetchModelsForProvider(e.provider, entries).catch((err) => {
+      pushLine(`[model] fetch models failed: ${err.message}`, C.error)
+    })
+    const me = await showPicker(`${e.provider} models`, entries)
+    if (!me?.model) return null
+    return { provider: e.provider, model: me.model }
+  }
+
+   return { showPicker, closePicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey, pickModelForSlot }
   return { showPicker, closePicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey }
 }

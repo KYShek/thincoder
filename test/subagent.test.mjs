@@ -53,4 +53,20 @@ test("resolveChildProvider: env key fallback when provider has no apiKey", async
     if (prev === undefined) delete process.env.DEEPSEEK_API_KEY
     else process.env.DEEPSEEK_API_KEY = prev
   }
+
+test("effectiveSubagentModel: tool arg > type-level > global > null", async () => {
+  const { effectiveSubagentModel } = await import("../src/agent-tools/subagent.mjs")
+  const parent = {
+    config: {
+      agent: { subagentModel: "global-model", subagentModels: { coder: "type-model" } },
+    },
+  }
+  assert.equal(effectiveSubagentModel(parent, "coder", "arg-model"), "arg-model", "tool arg wins")
+  assert.equal(effectiveSubagentModel(parent, "coder", null), "type-model", "type-level wins over global")
+  assert.equal(effectiveSubagentModel(parent, "explore", null), "global-model", "global fallback")
+  assert.equal(effectiveSubagentModel(parent, "explore", undefined), "global-model")
+  const bare = { config: { agent: {} } }
+  assert.equal(effectiveSubagentModel(bare, "coder", null), null, "null = inherit parent")
+})
+
 })

@@ -341,7 +341,7 @@ export async function startTUI(agent, opts = {}) {
   const { persistRaw, syncProviderField, maskKey } = createConfigHelpers(agent)
 
   // Model picker + generic picker: implemented in pickers.mjs
-  const { closePicker, showPicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey } = createPickers({
+  const { closePicker, showPicker, popPicker, renderPickerLines, openModelPicker, selectModel, setProviderKey, pickModelForSlot } = createPickers({
     agent, state, render, ansi, C, pushLine, pushLabel, persistRaw, askQuestion, maskKey,
   })
 
@@ -363,6 +363,7 @@ export async function startTUI(agent, opts = {}) {
     openModelPicker: () => openModelPicker(),
     selectModel,
     setProviderKey,
+    pickModelForSlot,
     runDistill,
     exit: () => { cleanup(); setTimeout(() => process.exit(0), 100) },
   })

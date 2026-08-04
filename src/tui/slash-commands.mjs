@@ -25,6 +25,7 @@ import { handleAutoCommand } from "./cmd-auto.mjs"
 import { handleAdvisorCommand } from "./cmd-advisor.mjs"
 import { handleThinkCommand } from "./cmd-think.mjs"
 import { handleModelCommand } from "./cmd-model.mjs"
+import { handleSubmodelCommand } from "./cmd-submodel.mjs"
 import { handleShellCommand } from "./cmd-shell.mjs"
 import { handleConfigCommand } from "./cmd-config.mjs"
 import { handleExtractCommand } from "./cmd-extract.mjs"
@@ -40,6 +41,7 @@ export const SLASH_COMMANDS = [
   { name: "/eng", group: "Agent", desc: "toggle engineering mode — strict methodology enforcement" },
   { name: "/advisor", group: "Agent", desc: "advisor settings (toggle, model, thinking, guard)" },
   { name: "/model", group: "Agent", desc: "select model & manage providers" },
+  { name: "/submodel", group: "Agent", desc: "subagent model per type (explore/plan/coder/eng-coder)" },
   { name: "/shell", group: "System", desc: "bash tool shell (git-bash/pwsh path; win11 cmd encoding fix)" },
   { name: "/goal", group: "Agent", desc: "set/view/cancel long-term goal" },
   { name: "/think", group: "Agent", desc: "thinking mode & reasoning effort" },
@@ -80,6 +82,7 @@ export const HANDLERS = {
   "/advisor": handleAdvisorCommand,
   "/think": handleThinkCommand,
   "/model": handleModelCommand,
+  "/submodel": handleSubmodelCommand,
   "/shell": handleShellCommand,
   "/config": handleConfigCommand,
   "/upgrade": handleUpgradeCommand,
@@ -128,6 +131,10 @@ export function createSlashCommands(ctx) {
     const argIndex = parts.length - 2 // which parameter is being typed (0-based)
     const match = (cands) => cands.filter((c) => c.startsWith(last)).map((c) => `${head} ${c}`)
     if (cmd === "/model" && argIndex === 0) return match(agent.providers.map((p) => p.name))
+    if (cmd === "/submodel") {
+      if (argIndex === 0) return match(["explore", "plan", "coder", "eng-coder", "reset"])
+      if (parts[1] && !["reset"].includes(parts[1]) && argIndex === 1) return match(agent.providers.map((p) => p.name))
+    }
     if (cmd === "/think") {
       if (argIndex === 0) return match(["on", "off", "effort"])
       if (argIndex === 1 && parts[1].toLowerCase() === "effort") {
