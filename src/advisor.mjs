@@ -147,51 +147,45 @@ export function buildAdvisorFollowUp(agent, _prior) {
  */
 export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null, paths = null) {
   const prior = extractPriorIssueTable(agent.history)
-  // Design review round 1 (or no prior table): fresh session with the design prompt.
-  // Design rounds 2+ fall through to the shared continuation path below (same as code).
+
+  // Design review round 1: the dedicated full-scope review with the approval
+  // token (an independent gate — it runs even when a prior table exists, e.g.
+  // after a failed design review). Fresh session.
   if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
       { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths) },
     ]
   }
-  let session = agent._advisorSession
-  if (session) {
-    // Session exists but no prior table (last review was all-clear or none) —
-    // a follow-up "Verify Prior Table" would be meaningless; start a fresh full review
-    if (!prior) {
-      agent._advisorSession = null
-      // ALWAYS reset the round counter: no prior table means the next review is
-      // a NEW cycle — round 1 (full scope). The tool set is git-free on every
-      // round, so prompt and tools stay consistent regardless.
-      // A new review cycle also deserves its own 5-round budget.
-      agent._advisorRound = 0
-    } else {
-      // Convergence rounds (2+): replace the system prompt so the round-1
-      // "full-scope review" mandate cannot override the follow-up's narrowed scope.
-      // Without this the model re-runs a full review every round, finds new issues
-      // each time, and the protocol never converges. buildAdvisorSystemPrompt
-      // returns ROUND2 for round 2 and ROUND3 for round 3+.
-      session[0] = { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) }
-      session.push({ role: "user", content: buildAdvisorFollowUp(agent, prior) })
-      return session
-    }
-  }
-  session = [
-    { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-    { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths) },
-  ]
+
+  // Every round is a FRESH session (decision d698434): round 2+ must NOT reuse
+  // round 1's messages — the old read outputs are the top anchoring source of
+  // re-review false reports (the model quoted pre-fix file content instead of
+  // re-reading) and a token sink. The prior table + agent response table are
+  // injected through buildAdvisorFollowUp instead; the system prompt carries
+  // the round (ROUND2/ROUND3) via buildAdvisorSystemPrompt.
   if (!prior) {
-    // No prior table = new review cycle: reset the round so the prompt (ROUND1)
-    // and the tool set (constant, git-free) stay consistent. With a prior table
-    // (failed-review retry after session loss) the round is PRESERVED — the
-    // next prompt must be the convergence round the attempt count implies.
+    // No prior table = new review cycle (first review, all-clear, or session
+    // clear): reset the round so the prompt (ROUND1) and tool set stay
+    // consistent, and the cycle gets its own 5-round budget.
     agent._advisorRound = 0
-    // Tell the advisor why no prior issue table is present
-    session[1] = {
-      role: "user",
-      content: `[System reminder: no prior issue table is being carried into this review (first review, app restart, or session clear) — start with a fresh full review.]\n\n${session[1].content}`,
-    }
+    const user = buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths)
+    return [
+      { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
+      {
+        role: "user",
+        content: `[System reminder: no prior issue table is being carried into this review (first review, app restart, or session clear) — start with a fresh full review.]\n\n${user}`,
+      },
+    ]
   }
-  return session
+
+  // Convergence rounds (2+): fresh [system(ROUND2/3), user(prior table +
+  // response table + round instructions)]. buildAdvisorFollowUp carries the
+  // prior/response tables; buildAdvisorSystemPrompt selects ROUND2 for round 2,
+  // ROUND3 for rounds 3+ — a failed review retry keeps _advisorRound so the
+  // convergence prompt matches the attempt count.
+  return [
+    { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
+    { role: "user", content: buildAdvisorFollowUp(agent, prior) },
+  ]
 }

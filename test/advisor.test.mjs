@@ -586,7 +586,7 @@ test("prepareAdvisorMessages: first call creates a fresh [system, user] session"
 })
 
 
-test("prepareAdvisorMessages: design round 2+ continues the session (convergence, not fresh)", () => {
+test("prepareAdvisorMessages: design round 2+ is a FRESH session with prior-table follow-up", () => {
   const priorTable = "| # | Category | Severity | Issue | Suggestion |\n| 1 | Clarity | 🔴 | gap | fix |"
   const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
   // Round 1: fresh design session (full design-review prompt + token)
@@ -594,49 +594,44 @@ test("prepareAdvisorMessages: design round 2+ continues the session (convergence
   assert.equal(first.length, 2)
   assert.ok(first[0].content.includes("design reviewer"), "round 1 keeps the design prompt")
   assert.ok(first[1].content.includes("TOKEN1"), "round 1 carries the approval token")
-  agent._advisorSession = first
   agent._advisorRound = 1
 
-  // Round 2: continues the SAME session with a convergence follow-up
+  // Round 2: FRESH [system(ROUND2), user(prior table + round instructions)] —
+  // no reused messages: the old read data (anchoring source) is gone.
   const second = prepareAdvisorMessages(agent, "design", null)
-  assert.equal(second, first, "same array — design rounds 2+ continue, not rebuilt")
-  assert.equal(second.length, 3)
-  assert.ok(second[2].content.includes("Round 2"), "design follow-up carries round number")
+  assert.notEqual(second, first, "fresh array — no session reuse")
+  assert.equal(second.length, 2)
+  assert.ok(second[1].content.includes("Round 2"), "design follow-up carries round number")
+  assert.ok(second[1].content.includes(priorTable.slice(0, 30)), "prior table injected into the follow-up")
   assert.ok(second[0].content.includes("Verify the prior issue table"), "design round 2 system prompt narrowed to ROUND2")
   assert.ok(!second[0].content.includes("design reviewer"), "round-1 design mandate does not leak into round 2")
 
-  // Rounds 3 and 4: each appends a follow-up to the same session
+  // Rounds 3 and 4: fresh each time, strict verification
   agent._advisorRound = 2
   const third = prepareAdvisorMessages(agent, "design", null)
-  assert.equal(third, first, "round 3 continues the same session")
-  assert.ok(third[3].content.includes("Round 3"), "round 3 follow-up")
+  assert.notEqual(third, second, "round 3 is a fresh session too")
+  assert.ok(third[1].content.includes("Round 3"), "round 3 follow-up")
   agent._advisorRound = 3
   const fourth = prepareAdvisorMessages(agent, "design", null)
-  assert.ok(fourth[4].content.includes("Round 4"), "round 4 follow-up")
+  assert.ok(fourth[1].content.includes("Round 4"), "round 4 follow-up")
   assert.ok(fourth[0].content.includes("Strictly verify only the prior issue table"), "design round 3+ system prompt is ROUND3")
 })
 
-test("prepareAdvisorMessages: later calls append a follow-up to the SAME session", () => {
+test("prepareAdvisorMessages: convergence rounds are FRESH sessions with prior-table follow-up", () => {
   const priorTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |"
-  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
-  const first = prepareAdvisorMessages(agent)
-  const firstSystemPrompt = first[0].content // snapshot: second === first (same array), direct compare is tautological
-  agent._advisorSession = first // runAdvisorReview persists it after a successful review
-  agent._advisorRound = 1
-
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 1, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
   const second = prepareAdvisorMessages(agent)
-  assert.equal(second, first, "same array — conversation continues, not rebuilt")
-  assert.equal(second.length, 3)
-  assert.equal(second[2].role, "user")
-  assert.ok(second[2].content.includes("Round 2"), "follow-up carries round number")
-  assert.ok(second[2].content.includes("Agent Response"), "follow-up asks for the response table")
-  assert.notEqual(second[0].content, firstSystemPrompt, "system prompt replaced for round 2 — round-1 full-scope mandate must not leak in")
+  assert.equal(second.length, 2, "fresh [system, user] — no old read data in context")
+  assert.equal(second[1].role, "user")
+  assert.ok(second[1].content.includes("Round 2"), "follow-up carries round number")
+  assert.ok(second[1].content.includes("Agent Response"), "follow-up asks for the response table")
+  assert.ok(second[1].content.includes(priorTable.slice(0, 30)), "prior table injected")
   assert.ok(second[0].content.includes("Verify the prior issue table"), "round 2 system prompt is the narrowed ROUND2")
 
   agent._advisorRound = 2
   const third = prepareAdvisorMessages(agent)
-  assert.ok(third[3].content.includes("Round 3"))
-  assert.ok(third[3].content.includes("Strict"), "round 3+ is strict verification")
+  assert.ok(third[1].content.includes("Round 3"))
+  assert.ok(third[1].content.includes("Strict"), "round 3+ is strict verification")
   assert.ok(third[0].content.includes("Strictly verify only the prior issue table"), "round 3 system prompt is ROUND3 — do not look for new issues")
   assert.ok(third[0].content.includes("Do NOT look for new issues"))
 })
@@ -755,6 +750,34 @@ test("advisorToolsFor: ZERO git tools; read-only set (code_search replaces execu
   const withoutMemory = mod._advisorToolsFor({})
   assert.ok(!withoutMemory.byName.has("code_search"), "no memory → code_search omitted (5 tools)")
   assert.equal(withoutMemory.schemas.length, 5)
+})
+
+test("verifyCitations: matches real file content, flags stale/missing citations", async () => {
+  const { extractCitations, verifyCitations, appendCitationReport } = await import("../src/advisor/run.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "cit-"))
+  const { writeFileSync } = await import("node:fs")
+  writeFileSync(join(dir, "a.mjs"), "line one\nconst x = 42\nline three\n", "utf8")
+  const text = [
+    "| 1 | a.mjs | 🔴 | bug | Unfixed |",
+    "Evidence: `a.mjs:2: const x = 42` — still present.",
+    "Stale claim: `a.mjs:2: const y = 99` — from the prior table.",
+    "Missing file: `nope.mjs:1: anything`.",
+  ].join("\n")
+  const citations = extractCitations(text)
+  assert.equal(citations.length, 3, "all file:line: content references extracted")
+  const { total, matched, failed } = verifyCitations(text, dir)
+  assert.equal(total, 3)
+  assert.equal(matched.length, 1, "only the real line matches")
+  assert.equal(failed.length, 2, "stale content and missing file fail")
+  const report = appendCitationReport(text, dir)
+  assert.ok(report.includes("[host-verified] 1/3 citations match current file state"), "report header")
+  assert.ok(report.includes("nope.mjs:1"), "missing file listed")
+})
+
+test("appendCitationReport: no citations → text unchanged", async () => {
+  const { appendCitationReport } = await import("../src/advisor/run.mjs")
+  const t = "Everything is fine."
+  assert.equal(appendCitationReport(t, process.cwd()), t)
 })
 
 test("prepareAdvisorMessages: all-clear review resets the round — prompt and tool set agree", () => {

@@ -1,7 +1,9 @@
 /**
  * advisor/run.mjs — advisor execution: tool loop, provider resolution, and the review entry point.
- * Message building lives in advisor.mjs; git collection in advisor/repos.mjs.
+ * Message building lives in advisor.mjs.
  */
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { chat } from "../provider/core.mjs"
 import { findProvider } from "../config.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
@@ -313,7 +315,18 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
 
   try {
     const result = await runAdvisorToolLoop(provider, messages, onOutput, signal, agent, advisorCwd)
-    
+
+    // Host-verified citations (decision d698434): mechanically check every
+    // `file:line: content` reference in the review against the CURRENT file
+    // state. LLMs cannot self-enforce the evidence rule — the model may quote
+    // the prior table instead of re-reading (three consecutive false reports
+    // cited pre-fix line content). Unverified citations must not support a
+    // push-back; the parent agent sees the verification report.
+    let final = result
+    if (!result.trimStart().startsWith("Advisor:")) {
+      final = appendCitationReport(result, advisorCwd)
+    }
+
     // Log review statistics for observability
     const elapsed = Math.round((Date.now() - startTime) / 1000)
     const toolCallCount = messages.filter((m) => m.role === "tool").length
@@ -322,19 +335,7 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
       kind: "text",
       text: `\n[advisor] Review completed: ${elapsed}s, ${toolCallCount} tool calls, ~${Math.round(tokensUsed / 1000)}k tokens\n`,
     })
-    
-    // Only persist the session on success — timeout/interrupt/empty results
-    // would poison the next review call (the conversation is truncated mid-review,
-    // and the model picks up from a broken state, burning more rounds).
-    // Design reviews persist the session too: their rounds 2+ continue it.
-    if (!result.trimStart().startsWith("Advisor:")) {
-      // Assign only for fresh sessions; re-assignment of the same reference on
-      // continued sessions is a no-op but communicating intent matters.
-      agent._advisorSession = messages
-    } else {
-      agent._advisorSession = null
-    }
-    return result
+    return final
   } catch (e) {
     if (e.name === "AbortError" && signal?.reason?.interrupt) throw e
     
@@ -357,3 +358,59 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
     return `Advisor: review failed (${errorType}) — ${e.message || "unknown error"}. ${retryAdvice}`
   }
 }
+
+// ────────────────────────────────────────
+// Host-verified citations (decision d698434)
+// ────────────────────────────────────────
+
+const CITATION_RE = /([\w./\\-]+\.\w+):(\d+):\s*([^`\n]{4,})/g
+
+/** Extract `file:line: content` citations from a review text. */
+export function extractCitations(text) {
+  const out = []
+  for (const m of text.matchAll(CITATION_RE)) {
+    out.push({ file: m[1], line: Number(m[2]), content: m[3].trim() })
+  }
+  return out
+}
+
+/**
+ * Mechanically verify citations against the CURRENT file state: read the file,
+ * take the exact line, check it CONTAINS the quoted content. Reports
+ * N/M matched + the mismatches. Unverified citations cannot support a
+ * push-back — the evidence rule becomes a host fact, not a prompt wish.
+ */
+export function verifyCitations(text, cwd) {
+  const citations = extractCitations(text)
+  const matched = []
+  const failed = []
+  for (const c of citations) {
+    try {
+      const line = readFileSync(join(cwd, c.file), "utf8").split("\n")[c.line - 1] ?? ""
+      if (line.includes(c.content)) matched.push(c)
+      else failed.push(c)
+    } catch {
+      failed.push({ ...c, reason: "file unreadable" })
+    }
+  }
+  return { total: citations.length, matched, failed }
+}
+
+/** Append the verification report to the review text (visible to the parent agent). */
+export function appendCitationReport(text, cwd) {
+  const { total, matched, failed } = verifyCitations(text, cwd)
+  if (total === 0) return text // no citations — nothing to verify
+  const lines = [
+    "",
+    "---",
+    `[host-verified] ${matched.length}/${total} citations match current file state.`,
+  ]
+  if (failed.length > 0) {
+    lines.push("Citations that do NOT match the current file state (treat their claims as unverified):")
+    for (const f of failed.slice(0, 10)) {
+      lines.push(`- ${f.file}:${f.line}: ${f.content.slice(0, 80)}${f.reason ? ` (${f.reason})` : ""}`)
+    }
+  }
+  return text + lines.join("\n")
+}
+
