@@ -122,6 +122,7 @@ Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_
   "agent": {
     "maxTurns": 100, // tool-loop cap
     "subagentModel": null, // default subagent provider/model override: "provider:model" | provider name | model name; null = inherit parent provider. Per-call: subagent tool `model` arg
+    "subagentModels": {}, // per-type override: { "explore": "...", "plan": "...", "coder": "...", "eng-coder": "..." }; priority: tool model arg > this > subagentModel > parent provider
     "compactThreshold": 100000, // context compaction threshold (approx. tokens)
   },
   "memory": {
