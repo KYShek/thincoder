@@ -48,7 +48,7 @@ Zed / JetBrains / Paseo（桌面+Web+移动自托管编排器）全通——补�
 | `session/delete` | ✅ | 删除会话存档（schema v1 有、kimi 未实现——客户端清理会话的必需能力） |
 | `session/prompt` | ✅ | 接受 text/image/resource 块；流式 `agent_message_chunk` |
 | `session/cancel` | ✅ | 中断当前轮（复用 signal 中断机制） |
-| `session/set_mode` | ✅ | plan/normal 模式切换（映射 configOption mode） |
+| `session/set_mode` | ✅ | plan/normal 模式切换（映射 configOption mode）；**与 `set_config_option` 冲突时 last-write-wins**——两路径收敛到同一内部模式状态 |
 | `session/set_config_option` | ✅ | model / thinking 统一分发（映射 thincoder /model、/think 语义） |
 | `session/close`、`logout` | ❌ | `session/close` → **返回成功空响应（no-op）+ stderr 日志**（"session {id} closed by client"），进程由客户端负责终止；`logout` 不支持（无账号体系）。进程退出时 pipe 自然关闭，客户端据此判定会话结束 |
 
@@ -92,7 +92,7 @@ bin/thincoder.mjs  ── "acp" 子命令 ──▶ src/acp.mjs
 |---|---|
 | `bin/thincoder.mjs` | 注册 `"acp"` 子命令（`thincoder acp` → `src/acp.mjs`） |
 | `src/agent/dispatch.mjs` | 工具循环注入 `toolRouter`（`runOne` 内 `item.tool.execute(...)` 调用前拦截）；**权限无需改**——`callbacks.onPermissionRequest` 通道已存在（113 行），ACP bridge 直接提供即可 |
-| `src/session.mjs` | 新增 `deleteSlot(cwd, slot)` 导出（删除槽位文件 + manifest 条目）——**新能力，现有代码无删除函数**；会话枚举复用现有 `listSessions()` |
+| `src/session.mjs` | 新增 `deleteSlot(cwd, slot)` 导出（删除槽位文件 + manifest 条目）——**新能力，现有代码无删除函数**；会话枚举复用现有 **`listSlots(cwd)`**（返回 `{ slot, isActive, timestamp, date, messageCount, turnCount, firstMessage, activeProvider, updatedAt, updatedDate, title }`）——ACP `session/list` 映射：`id: String(slot)`、`updatedAt: updatedAt`、`cwd` 由 AcpSession 实例跟踪注入（listSlots 不含 cwd） |
 
 ### 4.1 传输层（自写，零依赖）
 
@@ -123,7 +123,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | runAgent 内部 | ACP 通知（session/update 事件块，schema v1） |
 |---|---|
 | `callbacks.onToken(text)` | `agent_message_chunk` |
-| `callbacks.onReasoning` | **`agent_thought_chunk`**（schema v1 专用事件块，非 message chunk） |
+| `callbacks.onReasoning` | **`agent_thought_chunk`**（schema v1 已实证——schema.json const 枚举含 `agent_thought_chunk`，评审 #7 已核实） |
 | 工具开始/结果（tool loop 内） | `tool_call` / `tool_call_update` |
 | plan mode 切换 | `plan` 事件块 |
 | `callbacks.onUsage` | `usage_update`（token 统计） |
@@ -144,7 +144,7 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
    - write：`fs/write_text_file` 全量写（构造新内容直接写，无需读回）
    - edit/apply_patch：**先 `fs/read_text_file` 读回 client 当前全文 → 本地应用现有 diff 逻辑（复用 tool 实现）→ `fs/write_text_file` 全量写回**——读回保证与 IDE buffer 一致（防止客户端已改过文件），IDE 呈现 diff
      - **已知风险（TOCTOU）**：读回与写入之间用户在 IDE 改了 buffer → 写入静默覆盖用户改动。缓解：IDE diff 审查（用户在保存前可见并拒绝）；后续可选演进：写入带 base revision 校验（协议不稳定面，非 v1 必需）。**记录为接受风险**
-   - delete：`fs/write_text_file` 空内容（或由客户端删除语义决定）
+   - delete：**写空内容 `""`**（`fs/write_text_file`，客户端按其删除语义解释）——行为定死不二义
    - 工具结果返回客户端确认后的写入结果
 2. **审批**——**复用现有 `callbacks.onPermissionRequest` 通道**（dispatch.mjs:113 已存在，不存在→deny）：
    - ACP 模式：bridge 提供 `onPermissionRequest = (name, args) → session/request_permission`（请求带工具名+格式化参数，等待 `allow_once`/`deny_once` 响应）
@@ -158,7 +158,13 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 ### 4.5 会话持久化
 
 - `session/load`/`resume` 读 thincoder 会话存档（src/session.mjs，双线历史 JSON）
-- **重放范围**（session/load）：人读线（`_fullHistory`）全量消息按序重放为 `user_message_chunk` / `agent_message_chunk`（含工具调用摘要卡片）；机读注入（reminder/interrupt/transient）**不重放**——客户端只应看到真实对话
+- **重放范围**（session/load）：人读线全量消息按序重放；**role → 事件块映射**（schema v1）：
+  - `role: "user"`（含多模态）→ `user_message_chunk`
+  - `role: "assistant"` 无 tool_calls → `agent_message_chunk`
+  - `role: "assistant"` 含 tool_calls → `tool_call` 事件（IDE 显示工具调用卡片）
+  - `role: "tool"` 结果 → 跟随其 assistant 消息的 tool_call_update/结果文本
+  - 机读注入（reminder/interrupt/transient）**不重放**——客户端只应看到真实对话
+  - **字段名**：运行时用 `agent._fullHistory`；从磁盘读用 `data.history`（saveSession 写入源为 `_fullHistory ?? history`）
 - `session/resume`：不重放历史，仅恢复 cwd + configOptions（model/thinking/mode）+ 当前会话上下文
 - `session/list` 枚举存档槽位——**槽位数量 unlimited（src/session.mjs 现有语义："Each project keeps unlimited session slots"），按实际存档全量返回**（更正早期"5 槽位"错误说法）。**sessionId ↔ 槽位映射**：ACP sessionId = 槽位号（数字字符串，如 `"3"`），list 返回 `{ id: "3", cwd, updatedAt }`；load/resume/delete 按 id 解析槽位
 - `session/delete`：新增 `deleteSlot(cwd, slot)` 导出（删槽位文件 + manifest 条目）——**新能力**，现有 session.mjs 无删除函数
@@ -190,8 +196,8 @@ runAgent 的 callbacks 已有 6 个钩子——直接映射：
 | 3 | 工具审批回环 | prompt 触发 bash → mock 收到 `session/request_permission`（含工具名+参数）→ 回 `allow_once` | 审批通过后收到 `tool_call`/`tool_call_update` → 工具结果 → `agent_message_chunk` 继续 |
 | 4 | fs 反向 RPC | write 工具触发 | mock 收到 `fs/read_text_file`（旧内容）→ 回内容 → 收到 `fs/write_text_file`（新内容）→ 回确认 → write 工具结果 = 客户端确认值 |
 | 5 | cancel 中断 | prompt 进行中发 `session/cancel` | 当前轮停止，后续无事件 |
-| 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` | list 返回全部槽位（unlimited）；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现 |
-| 7 | resume 与配置 | `session/resume {id}`（跳过重放）→ `session/set_config_option {configId:"mode", value:"plan"}` → `session/set_mode {mode:"normal"}` | resume 恢复 cwd+configOptions 无历史事件；set_config_option/set_mode 生效并发出 `current_mode_update` / `config_option_update` |
+| 6 | 会话存档 | `session/list` → `session/load {id}` → `session/delete {id}` → `session/load {deleted-id}` | list 返回全部槽位（unlimited）；load 重放人读线消息（无机读注入）；delete 后槽位释放、list 不再出现；**再 load 已删/不存在 id → 错误**（-32602） |
+| 7 | resume 与配置 | `session/resume {id}`（跳过重放）→ `session/set_config_option {configId:"mode", value:"plan"}` → `session/set_mode {mode:"normal"}` | resume 恢复 cwd+configOptions 无历史事件；set_config_option/set_mode 生效并发出 `current_mode_update` / `config_option_update`；**resume 不存在 id → 错误** |
 | 8 | 错误映射 | 非法 JSON / 未知方法 / 未鉴权 prompt / 畸形 mcpServers / 活跃回合中再发 prompt | -32600 / -32601 / -32000 / mcpServers 忽略+warn 不报错 / **并发 prompt 排队串行**（与 TUI 输入队列语义一致，不拒绝） |
 
 ## 7. 不做项（明确裁剪）
