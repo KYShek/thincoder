@@ -42,5 +42,5 @@ export const C = {
   dim: ansi.gray,
   warn: ansi.fg(3),
   advisor: `${ESC}[92m`,  // bright green — visible on dark backgrounds
-  fold: `${ESC}[2m${ESC}[37m`,   // dim white — fold hints
+  fold: ansi.bold + ansi.fg(6),   // bold cyan — fold markers must stay visible on light AND dark themes (dim white vanished on light backgrounds)
 }

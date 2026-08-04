@@ -166,21 +166,24 @@ describe("long-message folding (render-conversation)", () => {
     const folded = buildConvLines(state, cols)
     // 12-line threshold: full block = 1 + 15 + 1 = 17 lines → folded to 3
     assert.equal(folded.length, 3, "long dim message folded to [hint, first, last]")
-    assert.match(folded[0].text, /▶ … 15 more lines — click to expand/, "▶ hint at the block HEAD")
+    assert.ok(folded[0].text.includes("▶ … 15 more lines — "), "▶ hint at the block HEAD")
+    assert.ok(folded[0].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
     assert.equal(folded[1].text, "L1")
     assert.equal(folded[2].text, "last")
     const toggleKey = folded[0]._foldToggle
     assert.ok(toggleKey?.startsWith("long-"), "fold key is long-<srcIndex>")
 
-    // Expand: add the key → full block + a ▼ COLLAPSE marker; cache key must change
+    // Expand: add the key → ▼ marker at the HEAD + full content; cache key must change
     const keyBefore = convCacheKey(state)
     state.expandedBlocks.add(toggleKey)
     const keyAfter = convCacheKey(state)
     assert.notEqual(keyBefore, keyAfter, "expandedBlocks participates in the cache key")
     const expanded = buildConvLines(state, cols)
-    assert.equal(expanded.length, 18, "expanded to full content + collapse marker")
-    assert.equal(expanded[17].text, `  ▼ … 17 lines — click to collapse`, "▼ collapse marker at the tail")
-    assert.equal(expanded[17]._foldToggle, toggleKey, "collapse marker shares the fold key")
+    assert.equal(expanded.length, 18, "expanded to collapse marker + full content")
+    assert.ok(expanded[0].text.includes("▼ … 17 lines — "), "▼ marker at the HEAD, before the content")
+    assert.equal(expanded[0]._foldToggle, toggleKey, "collapse marker shares the fold key")
+    assert.equal(expanded[1].text, "L1", "content follows the marker")
+    assert.ok(expanded[0].text.includes("\x1b[4mclick to collapse\x1b[24m"), "click phrase underlined")
 
     // Collapse again: delete the key → back to 3 lines (bidirectional)
     state.expandedBlocks.delete(toggleKey)
@@ -201,14 +204,15 @@ describe("long-message folding (render-conversation)", () => {
       // Folded: [▶ hint (head), first, last]
       const folded = buildConvLines(state, 80)
       assert.equal(folded.length, 3, `${JSON.stringify(color)} folds to 3`)
-      assert.match(folded[0].text, /▶ … 20 more lines — click to expand/, "▶ hint at the head")
+      assert.ok(folded[0].text.includes("▶ … 20 more lines — "), "▶ hint at the head")
+      assert.ok(folded[0].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
       const key = folded[0]._foldToggle
 
-      // Expanded: full + ▼ collapse marker
+      // Expanded: ▼ marker at the HEAD, then full content
       state.expandedBlocks.add(key)
       const expanded = buildConvLines(state, 80)
-      assert.equal(expanded.length, 23, `${JSON.stringify(color)} expands to 22 + collapse marker`)
-      assert.match(expanded[22].text, /▼ … 22 lines — click to collapse/)
+      assert.equal(expanded.length, 23, `${JSON.stringify(color)} expands to marker + 22 lines`)
+      assert.ok(expanded[0].text.includes("▼ … 22 lines — "), "▼ at the head, before the content")
 
       // Collapsed back
       state.expandedBlocks.delete(key)
@@ -227,16 +231,17 @@ describe("long-message folding (render-conversation)", () => {
     // Folded: [▶ hint (head), dim0, dim1]
     const folded = buildConvLines(state, 80)
     assert.equal(folded.length, 3)
-    assert.match(folded[0].text, /▶ … 7 more lines — click to expand/)
+    assert.ok(folded[0].text.includes("▶ … 7 more lines — "))
     const foldKey = folded[0]._foldToggle
     assert.ok(foldKey?.startsWith("fold-"))
 
-    // Expanded: all 9 lines + ▼ collapse marker
+    // Expanded: ▼ marker at the HEAD, then all 9 lines
     state.expandedBlocks.add(foldKey)
     const expanded = buildConvLines(state, 80)
-    assert.equal(expanded.length, 10, "9 lines + collapse marker")
-    assert.match(expanded[9].text, /▼ … 9 lines — click to collapse/)
-    assert.equal(expanded[9]._foldToggle, foldKey)
+    assert.equal(expanded.length, 10, "collapse marker + 9 lines")
+    assert.ok(expanded[0].text.includes("▼ … 9 lines — "))
+    assert.equal(expanded[0]._foldToggle, foldKey)
+    assert.equal(expanded[1].text, "dim0", "content follows the marker")
   })
 
   it("short lines are not folded", async () => {

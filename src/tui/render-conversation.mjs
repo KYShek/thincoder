@@ -15,8 +15,16 @@ export function convCacheKey(state) {
   return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state._advisorThink?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}|${exp}`
 }
 
+/** Fold marker line: bold-cyan icon + "click to …" phrase underlined (clickable affordance). */
+function foldHintLine(text, foldKey, srcIdx) {
+  // Underline just the actionable phrase — link/button convention
+  const withUnderline = text.replace(/(click to (?:expand|collapse))/, "\x1b[4m$1\x1b[24m")
+  return { text: `  ${withUnderline}`, color: C.fold, _foldToggle: foldKey, _src: srcIdx }
+}
+
 function highlightSearchMatches(text, query, matchesInLine, globalCurrentIndex, allMatches, lineIndex) {
   if (!matchesInLine || matchesInLine.length === 0 || !query) return text
+
   let result = ""
   let lastEnd = 0
   for (const startIdx of matchesInLine) {
@@ -73,19 +81,19 @@ function buildConvLines(state, cols) {
     if (folded && block.length > LONG_FOLD_LINES) {
       // Folded state: the ▶ hint sits at the block HEAD — a clear click target
       // (the old mid-block position was easy to miss), then first/last for context.
-      convLines.push({ text: `  ▶ … ${block.length - 2} more lines — click to expand`, color: C.fold, _foldToggle: longKey, _src: i })
+      convLines.push(foldHintLine(`▶ … ${block.length - 2} more lines — click to expand`, longKey, i))
       convLines.push(block[0])
       convLines.push(block[block.length - 1])
     } else if (block.length > LONG_FOLD_LINES) {
-      // EXPANDED long block: full content + a ▼ collapse marker at the tail
-      // (bidirectional folding — click the marker to fold it back). DIM blocks
-      // must not re-trigger the consecutive-dim folding below (folding stacked on
-      // folding — reported regression), so their lines carry _skipDimFold.
+      // EXPANDED long block: the ▼ collapse marker ALSO sits at the block HEAD,
+      // directly before the content (reported: a tail marker felt disconnected
+      // from the content). DIM blocks must not re-trigger the consecutive-dim
+      // folding below (folding stacked on folding — reported regression).
       if (l.color === C.dim) {
         for (const line of block) line._skipDimFold = true
       }
+      convLines.push(foldHintLine(`▼ … ${block.length} lines — click to collapse`, longKey, i))
       convLines.push(...block)
-      convLines.push({ text: `  ▼ … ${block.length} lines — click to collapse`, color: C.fold, _foldToggle: longKey, _src: i })
     } else {
       convLines.push(...block)
     }
@@ -134,15 +142,15 @@ function buildConvLines(state, cols) {
         const foldKey = `fold-${foldCounter++}`
         if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
           // ▶ hint at the block HEAD (clear click target), then first two lines
-          folded.push({ text: `  ▶ … ${blockLen - 2} more lines — click to expand`, color: C.fold, _foldToggle: foldKey })
+          folded.push(foldHintLine(`▶ … ${blockLen - 2} more lines — click to expand`, foldKey))
           folded.push(convLines[i])
           if (blockLen > 2) folded.push(convLines[i + 1])
           i = j
           continue
         }
-        // EXPANDED consecutive-dim block: keep every line + a ▼ collapse marker at the tail
+        // EXPANDED consecutive-dim block: ▼ marker at the HEAD, then every line
+        folded.push(foldHintLine(`▼ … ${blockLen} lines — click to collapse`, foldKey))
         for (let k = i; k < j; k++) folded.push(convLines[k])
-        folded.push({ text: `  ▼ … ${blockLen} lines — click to collapse`, color: C.fold, _foldToggle: foldKey })
         i = j
         continue
       }
