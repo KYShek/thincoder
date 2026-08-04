@@ -49,7 +49,8 @@ export async function handleSubmodelCommand(ctx, args = []) {
         }
         cfg.subagentModels ??= {}
         delete cfg.subagentModels[type]
-        await persist((a) => { a.subagentModels ??= {}; delete a.subagentModels[type] })
+        if (Object.keys(cfg.subagentModels).length === 0) delete cfg.subagentModels
+        await persist((a) => { a.subagentModels ??= {}; delete a.subagentModels[type]; if (Object.keys(a.subagentModels).length === 0) delete a.subagentModels })
         pushLine(`Subagent type ${type}: reset to inherit (${slotDisplay(agent, type).source === "global" ? `global: ${slotDisplay(agent, type).value}` : "parent provider"}).`, C.text)
       } else {
         cfg.subagentModel = null
@@ -84,6 +85,8 @@ export async function handleSubmodelCommand(ctx, args = []) {
   }
 
   // ── Picker menu: global + 4 role slots ──
+  // for(;;) loop relies on showPicker's async/Promise suspension — every iteration
+  // awaits a user choice; Esc (null) exits. Mirrors openModelPicker's menu-loop pattern.
   for (;;) {
     const g = slotDisplay(agent, null)
     const entries = [
@@ -102,8 +105,8 @@ export async function handleSubmodelCommand(ctx, args = []) {
 
     if (picked.action === "resetall") {
       cfg.subagentModel = null
-      cfg.subagentModels = {}
-      await persist((a) => { a.subagentModel = null; a.subagentModels = {} })
+      delete cfg.subagentModels
+      await persist((a) => { a.subagentModel = null; delete a.subagentModels })
       pushLine("All subagent model overrides cleared — inherit parent provider.", C.text)
       continue
     }
@@ -147,7 +150,8 @@ export async function handleSubmodelCommand(ctx, args = []) {
       if (role) {
         cfg.subagentModels ??= {}
         delete cfg.subagentModels[role]
-        await persist((a) => { a.subagentModels ??= {}; delete a.subagentModels[role] })
+        if (Object.keys(cfg.subagentModels).length === 0) delete cfg.subagentModels
+        await persist((a) => { a.subagentModels ??= {}; delete a.subagentModels[role]; if (Object.keys(a.subagentModels).length === 0) delete a.subagentModels })
       } else {
         cfg.subagentModel = null
         await persist((a) => { a.subagentModel = null })

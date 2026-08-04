@@ -3,11 +3,17 @@ import { existsSync } from "node:fs"
 import { C } from "./ansi.mjs"
 
 /** Platform shell candidates: { name, value (config.shell payload), detect() }.
- *  detect() returns truthy when the shell is available (static check, never throws). */
+ *  detect() returns truthy when the shell is available (static check, never throws).
+ *  The candidate list + detection is cached at module level — shell availability does
+ *  not change during a session, and re-running spawnSync on every /shell would freeze
+ *  the TUI (up to 3 × timeout per open). */
+let _shellCandidatesCache = null
 function platformShellCandidates() {
+  if (_shellCandidatesCache) return _shellCandidatesCache
   const win = process.platform === "win32"
   const commandExists = (cmd) => {
     try {
+      // 'command -v' is a POSIX shell builtin; sh -c runs it (Windows uses `where`)
       const r = spawnSync(win ? "where" : "sh", win ? [cmd] : ["-c", `command -v ${cmd}`], { encoding: "utf8", timeout: 3000 })
       return r.status === 0 && r.stdout.trim().length > 0
     } catch { return false }
@@ -23,7 +29,7 @@ function platformShellCandidates() {
   if (win) {
     candidates.push({ name: "PowerShell (pwsh)", value: "pwsh", detect: () => commandExists("pwsh") })
     candidates.push({ name: "Windows PowerShell (powershell)", value: "powershell", detect: () => commandExists("powershell") })
-    const gb = GIT_BASH_PATHS.find((p) => p && existsSync(p))
+    const gb = GIT_BASH_PATHS.find((p) => existsSync(p))
     if (gb) candidates.push({ name: `Git Bash (${gb})`, value: gb, detect: () => true })
     candidates.push({ name: "WSL bash (wsl)", value: "wsl", detect: () => commandExists("wsl") })
   } else {
@@ -31,6 +37,7 @@ function platformShellCandidates() {
       candidates.push({ name: sh, value: sh, detect: () => commandExists(sh) })
     }
   }
+  _shellCandidatesCache = candidates
   return candidates
 }
 

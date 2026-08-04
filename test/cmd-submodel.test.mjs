@@ -48,7 +48,7 @@ test("/submodel <type> with no value shows the slot", async () => {
 test("/submodel reset clears global; reset <type> clears only that type", async () => {
   const { ctx, agent } = makeCtx({ subagentModel: "deepseek:x", subagentModels: { coder: "glm:glm-5.2" } })
   await handleSubmodelCommand(ctx, ["reset", "coder"])
-  assert.equal(agent.config.agent.subagentModels.coder, undefined)
+  assert.equal(agent.config.agent.subagentModels, undefined, "empty subagentModels object removed from config")
   assert.equal(agent.config.agent.subagentModel, "deepseek:x", "global kept")
   await handleSubmodelCommand(ctx, ["reset"])
   assert.equal(agent.config.agent.subagentModel, null)
