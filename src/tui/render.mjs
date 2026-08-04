@@ -42,15 +42,26 @@ export function stringWidth(text) {
   return w
 }
 
-/** Slice by display width */
+/** Slice by display width — ANSI sequences count as zero width and are kept whole. */
 export function sliceByWidth(text, maxWidth) {
   let w = 0
   let out = ""
-  for (const ch of text) {
-    const cw = charWidth(ch.codePointAt(0))
+  let i = 0
+  while (i < text.length) {
+    // Copy any ANSI sequence verbatim (zero display width, never sliced mid-sequence)
+    const m = text.slice(i).match(ANSI_SEQUENCE)
+    if (m && m.index === 0) {
+      out += m[0]
+      i += m[0].length
+      continue
+    }
+    const cp = text.codePointAt(i)
+    const ch = String.fromCodePoint(cp)
+    const cw = charWidth(cp)
     if (w + cw > maxWidth) break
     w += cw
     out += ch
+    i += ch.length
   }
   return out
 }
@@ -192,7 +203,9 @@ export function layoutInput(chars, cursor, width) {
  * Display-layer only — raw tool results the model sees are unchanged; dirty displays already in session
  * are also cleaned during replay.
  */
-const ANSI_SEQUENCE_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/g
+const ANSI_SEQUENCE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#][0-9]?/
+// Global variant for replace()/split(); the non-global one keeps match.index for slicing
+const ANSI_SEQUENCE_RE = new RegExp(ANSI_SEQUENCE.source, "g")
 export function sanitizeDisplay(s) {
   return s
     .replace(ANSI_SEQUENCE_RE, "")

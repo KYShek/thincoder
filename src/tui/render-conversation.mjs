@@ -8,10 +8,14 @@ import { renderMarkdownInline, renderMarkdownHeading } from "./markdown.mjs"
 
 let _convCache = { key: "", cols: 0, lines: [] }
 
-/** Render markdown markers to ANSI, then pad the line tail back to the pre-render
- *  display width. Markers (`` ` ``, `**`, `~~`) vanish on render — without the
- *  compensation, table rows containing them display shorter than the column widths
- *  computed by formatTables and the borders misalign (reported regression). */
+/**
+ * Render markdown markers to ANSI, then pad the line tail back to the pre-render
+ * display width. Markers (`` ` ``, `**`, `~~`) vanish on render — without the
+ * compensation, table rows containing them display shorter than the column widths
+ * computed by formatTables and the borders misalign (reported regression).
+ * @param {string} text — plain text line (no ANSI yet), already wrapped
+ * @returns {string} ANSI-rendered line whose display width equals stringWidth(text)
+ */
 function renderMarkdownPreservingWidth(text) {
   const rendered = renderMarkdownInline(renderMarkdownHeading(text))
   const diff = stringWidth(text) - stringWidth(rendered)

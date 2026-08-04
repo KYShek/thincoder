@@ -34,31 +34,34 @@ test("wrapText: 按宽度折行，保留空行", () => {
   assert.deepEqual(wrapText("a\n\nb", 10), ["a", "", "b"])
 })
 
-test("sanitizeDisplay: 控制字符不破坏终端网格（\\r 覆盖、\\t 超宽、ANSI/响铃冲屏）", async () => {
-  const { sanitizeDisplay } = await import("../src/tui/render.mjs")
-
-test("stringWidth: ANSI escape sequences occupy zero display width", async () => {
-  const { stringWidth } = await import("../src/tui/render.mjs")
+test("stringWidth: ANSI escape sequences occupy zero display width", () => {
   assert.equal(stringWidth("\x1b[1mbold\x1b[22m"), 4, "bold markers invisible")
   assert.equal(stringWidth("\x1b[7mcode\x1b[27m"), 4, "reverse-video markers invisible")
   assert.equal(stringWidth("plain"), 5)
   assert.equal(stringWidth("\x1b[1m\x1b[36mcyan bold\x1b[22m\x1b[39m"), 9)
 })
 
-test("markdown table cells with inline markers keep row width (borders align)", async () => {
-  const { formatTables, stringWidth } = await import("../src/tui/render.mjs")
-  const { renderMarkdownInline } = await import("../src/tui/markdown.mjs")
-  const table = "| 名称 | 说明 |\n|---|---|\n| `code` | **bold** 文本 |\n| ~~del~~ | plain |"
-  const out = formatTables(table, 80)
-  const baseWidths = out.map((l) => stringWidth(l))
-  const rendered = out.map((l) => renderMarkdownInline(l))
-  // Without compensation the marker lines display shorter; with stringWidth
-  // stripping ANSI, the rendered width must equal the computed width (the
-  // renderer pads the tail back — see renderMarkdownPreservingWidth).
-  for (let i = 0; i < out.length; i++) {
-    assert.ok(stringWidth(rendered[i]) <= baseWidths[i], `row ${i} rendered width ${stringWidth(rendered[i])} <= computed ${baseWidths[i]}`)
+test("markdown tables with inline markers align end-to-end (buildConvLines row widths match formatTables)", async () => {
+  const { formatTables } = await import("../src/tui/render.mjs")
+  const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
+  // Inline markers, headings, and combined heading+inline in table cells
+  const table = "| 名称 | 说明 |\n|---|---|\n| `code` | **bold** 文本 |\n| ~~del~~ | plain |\n| ## **H** | `x` 尾 |"
+  const base = formatTables(table, 80).map((l) => stringWidth(l))
+  const state = {
+    lines: [{ text: table, color: C.text }],
+    streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+    foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
+  }
+  const conv = buildConvLines(state, 80)
+  assert.equal(conv.length, base.length, "same row count")
+  for (let i = 0; i < base.length; i++) {
+    assert.equal(stringWidth(conv[i].text), base[i],
+      `row ${i}: rendered width must equal the computed width (markers vanish on render — compensation pads the tail)`)
   }
 })
+
+test("sanitizeDisplay: 控制字符不破坏终端网格（\\r 覆盖、\\t 超宽、ANSI/响铃冲屏）", async () => {
+  const { sanitizeDisplay } = await import("../src/tui/render.mjs")
 
   assert.equal(sanitizeDisplay("1\tconst a = 1;\r"), "1    const a = 1;")
   assert.equal(sanitizeDisplay("abc\rdef"), "abc\ndef")
