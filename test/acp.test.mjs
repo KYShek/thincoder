@@ -214,6 +214,11 @@ describe("session — FIFO queue + cancel", () => {
   it("cancel flips the signal the agent loop observes", () => {
     const s = createAcpSession({ id: "s1", agent: {}, notify: () => {}, run: async () => {} })
     assert.equal(s.agent !== undefined, true)
+    s.cancel()
+    // The session's internal signal is exposed via the fake run capture below.
+  })
+})
+
 describe("M3 — replayHistory edge cases", () => {
   it("replays EVERY tool in a multi-tool batch (no orphan updates)", () => {
     const events = []
@@ -248,11 +253,6 @@ describe("M3 — replayHistory edge cases", () => {
     })
     const chunks = events.filter((u) => u.sessionUpdate === "agent_message_chunk")
     assert.deepEqual(chunks.map((c) => c.content.text), ["part one", "part two"])
-  })
-})
-
-    s.cancel()
-    // The session's internal signal is exposed via the fake run capture below.
   })
 })
 
