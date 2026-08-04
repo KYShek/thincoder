@@ -69,8 +69,8 @@ export function createAcpServer(handlers, { write = (s) => process.stdout.write(
       }
     })()
     state.inflight.add(p)
-    // Track completion outside the IIFE — referencing `p` inside its own body
-    // would hit the TDZ on synchronous paths (ReferenceError).
+    // Track completion after the handler settles (keep the drain bookkeeping
+    // outside the IIFE — inflight must reflect the request until it finishes).
     p.finally(() => { state.inflight.delete(p); drainIfDone() }).catch(() => {})
   }
 

@@ -116,8 +116,9 @@ describe("acp handlers — handshake + session lifecycle (injected deps)", () =>
       notify: (m, p) => events.push({ method: m, params: p }), // notifications share the capture
       log: () => {},
       isConfigured: () => true,
-      createSession: async ({ notify }) => {
-        const s = createAcpSession({ id: "?", agent: {}, notify, run: async (a, input, cb) => { cb.onToken(`echo:${input}`); return "ok" } })
+      createSession: async ({ id, notify }) => {
+        // id must flow through to createAcpSession — it is baked into the callbacks.
+        const s = createAcpSession({ id, agent: {}, notify, run: async (a, input, cb) => { cb.onToken(`echo:${input}`); return "ok" } })
         return s
       },
     }
@@ -154,6 +155,7 @@ describe("acp handlers — handshake + session lifecycle (injected deps)", () =>
     await c.waitIdle() // handler runs on microtasks — let the full chain flush
     const chunk = c.next()
     assert.equal(chunk.method, "session/update")
+    assert.equal(chunk.params.sessionId, created.id, "notifications carry the real session id")
     assert.equal(chunk.params.update.sessionUpdate, "agent_message_chunk")
     assert.equal(chunk.params.update.content.text, "echo:hello")
     assert.equal(c.next().result.stopReason, "end_turn")
@@ -191,6 +193,44 @@ describe("acp handlers — handshake + session lifecycle (injected deps)", () =>
     assert.deepEqual(c.next().result, {})
     await c.send({ jsonrpc: "2.0", id: 5, method: "session/cancel", params: { sessionId: id } })
     assert.equal(c.next().error.code, -32602, "closed session is gone")
+  })
+
+  it("session stays usable after cancel (signal reset between turns)", async () => {
+    // Fake run: first turn honours cancel by throwing AbortError; second turn
+    // must run with a CLEAN signal (proves the reset in createAcpSession).
+    let turn = 0
+    let sawAborted = false
+    deps.createSession = async ({ id, notify }) => {
+      const s = createAcpSession({
+        id, agent: {}, notify,
+        run: async (agent, input, cb, { signal }) => {
+          turn++
+          if (turn === 1) {
+            signal.aborted = true; signal.reason = { interrupt: true, message: "cancel" }
+            const err = new Error("aborted"); err.name = "AbortError"; throw err
+          }
+          sawAborted = signal.aborted // second turn: must be false
+          cb.onToken("after-cancel")
+          return "ok"
+        },
+      })
+      return s
+    }
+    c = mockClient(buildAcpHandlers(deps).handlers, c.out)
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: process.cwd() } })
+    const id = c.next().result.id
+    // Turn 1: cancelled mid-run → the wire reports cancelled, not a hard error.
+    await c.send({ jsonrpc: "2.0", id: 3, method: "session/cancel", params: { sessionId: id } })
+    assert.deepEqual(c.next().result, {})
+    await c.send({ jsonrpc: "2.0", id: 4, method: "session/prompt", params: { sessionId: id, content: [{ type: "text", text: "go" }] } })
+    await c.send({ jsonrpc: "2.0", id: 5, method: "session/prompt", params: { sessionId: id, content: [{ type: "text", text: "again" }] } })
+    await c.waitIdle()
+    const results = c.all()
+    assert.ok(results.some((r) => r.id === 4 && r.result?.stopReason === "cancelled"), "turn 1 reports cancelled (AbortError path)")
+    assert.ok(results.some((r) => r.id === 5 && r.result?.stopReason === "end_turn"), "turn 2 runs normally")
+    assert.equal(sawAborted, false, "signal reset between turns — second turn is not aborted")
   })
 
   it("MCP servers in session/new are ignored with a warning (M2 scope)", async () => {

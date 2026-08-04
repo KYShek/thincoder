@@ -27,6 +27,10 @@ export function createAcpSession({ id, agent, notify, log = () => {}, run = runA
           return await run(agent, input, callbacks, { signal })
         } finally {
           busy = false
+          // Reset the signal after every turn — cancel() only affects the
+          // in-flight turn; the next queued prompt must start with a clean signal.
+          signal.aborted = false
+          signal.reason = null
         }
       })
       // Keep the chain alive even when a turn rejects (the next prompt still runs).

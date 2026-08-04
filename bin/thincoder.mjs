@@ -41,6 +41,7 @@ const USAGE = `thincoder - thin coding agent
 Usage:
   thincoder                 Launch the interactive TUI
   thincoder chat [--auto] <prompt>   One-shot agent run (tools enabled), streams reply to stdout; --auto approves all tool calls
+  thincoder acp             Agent Client Protocol server (stdio — Zed/JetBrains/Paseo drive sessions)
   thincoder memory list [--type=<t>]           List memory entries
   thincoder memory search <query>              Search memory
   thincoder memory put --type=<t> --title=<t> --content=<c> [--tags=<t>]
@@ -279,7 +280,7 @@ switch (command) {
     distill) COMPREPLY=( \\$(compgen -W "--yes --scope=" -- "\\$cur") ) ;;
     completion) COMPREPLY=( \\$(compgen -W "bash zsh fish" -- "\\$cur") ) ;;
     *)
-      COMPREPLY=( \\$(compgen -W "chat memory sync reindex distill upgrade completion -v --version -h --help" -- "\\$cur") ) ;;
+      COMPREPLY=( \\$(compgen -W "chat acp memory sync reindex distill upgrade completion -v --version -h --help" -- "\\$cur") ) ;;
   esac
 }
 complete -F _thincoder thincoder
@@ -298,6 +299,7 @@ _thincoder() {
     cmd)
       _values 'command' \\
         'chat[One-shot agent run with tools]' \\
+        'acp[Agent Client Protocol server for IDEs]' \\
         'memory[Manage long-term memory]' \\
         'sync[Sync team memory repo]' \\
         'reindex[Rebuild local index from markdown]' \\
@@ -332,6 +334,7 @@ complete -c thincoder -a reindex  -d 'Rebuild local index from markdown'
 complete -c thincoder -a distill  -d 'Extract knowledge from session'
 complete -c thincoder -a upgrade  -d 'Update to latest version'
 complete -c thincoder -a completion -d 'Shell completion'
+complete -c thincoder -a acp -d 'Agent Client Protocol server for IDEs'
 
 # Flags
 complete -c thincoder -s v -l version -d 'Print version'

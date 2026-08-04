@@ -13,6 +13,7 @@
  * `isConfigured` / `createSession` are injectable for tests.
  */
 import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { loadConfig } from "./config.mjs"
 import { assembleAgent } from "./cli/make-agent.mjs"
 import { createAcpServer, ACP_ERRORS } from "./acp/transport.mjs"
@@ -29,24 +30,29 @@ export function defaultIsConfigured() {
   }
 }
 
-/** M1 session factory: one agent per session, built from the process cwd (single-cwd model). */
-export async function defaultCreateSession({ notify, log }) {
+/** M1 session factory: one agent per session, built from the process cwd (single-cwd model).
+ *  `id` is the ACP session id — it is baked into the callbacks at construction time
+ *  (buildAcpCallbacks closure), so it must be known BEFORE createAcpSession runs. */
+export async function defaultCreateSession({ id, notify, log }) {
   const agent = await assembleAgent()
-  return createAcpSession({ id: "?", agent, notify, log })
+  return createAcpSession({ id, agent, notify, log })
 }
 
 /**
- * Build the ACP method handlers. Returns { handlers, sessions } (sessions exposed for tests).
- * @param {{ version?: string, notify: (method, params) => void, log?: (s: string) => void,
+ * Build the ACP method handlers. Returns { handlers, sessions, notifyRef } —
+ * notifyRef.current is set by runAcpServer once the transport exists; sessions
+ * are created lazily (session/new), by which time the reference is live.
+ * @param {{ version?: string, notify?: (method, params) => void, log?: (s: string) => void,
  *           isConfigured?: () => boolean, createSession?: (ctx) => Promise<object> }} deps
  */
 export function buildAcpHandlers({
   version = VERSION,
-  notify,
+  notify = () => {},
   log = () => {},
   isConfigured = defaultIsConfigured,
   createSession = defaultCreateSession,
 }) {
+  const notifyRef = { current: notify }
   const sessions = new Map()
   let nextId = 1
   let authenticated = false
@@ -73,17 +79,21 @@ export function buildAcpHandlers({
 
       "session/new": async (params) => {
         if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
-        const cwd = params.cwd ?? process.cwd()
-        if (cwd !== process.cwd()) {
+        if (params.cwd !== undefined && typeof params.cwd !== "string") {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: "cwd must be a string" } }
+        }
+        // Normalized comparison (case-insensitive drives on win32; trailing slashes).
+        const requested = params.cwd ? resolve(params.cwd) : process.cwd()
+        if (requested !== process.cwd()) {
           return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `v1: cwd must equal the process working directory (${process.cwd()})` } }
         }
         if (params.mcpServers?.length) {
           log(`[acp] MCP forwarding is M2 scope — ignoring ${params.mcpServers.length} server(s)`)
         }
         try {
-          const session = await createSession({ notify, log })
           const id = String(nextId++)
-          session.id = id
+          const session = await createSession({ id, notify: notifyRef.current, log })
+          // `id` is immutable after construction (baked into the callbacks) — never reassign.
           sessions.set(id, session)
           return { id, configOptions: [{ configId: "model" }, { configId: "thinking" }, { configId: "mode" }] }
         } catch (e) {
@@ -95,7 +105,8 @@ export function buildAcpHandlers({
         if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
         const found = findSession(params)
         if (found.error) return found
-        const text = (params.content ?? []).find((b) => b?.type === "text")?.text ?? ""
+        const blocks = Array.isArray(params?.content) ? params.content : []
+        const text = blocks.find((b) => b?.type === "text")?.text ?? ""
         if (!text) return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: "prompt requires a text content block" } }
         try {
           await found.session.run(text)
@@ -117,6 +128,9 @@ export function buildAcpHandlers({
       "session/close": (params) => {
         const found = findSession(params)
         if (!found.error) {
+          // Abort any in-flight turn first — the client is gone, the agent must
+          // stop consuming LLM tokens and emitting notifications.
+          found.session.cancel()
           sessions.delete(String(params.sessionId))
           log(`session ${params.sessionId} closed by client`)
         }
@@ -124,15 +138,18 @@ export function buildAcpHandlers({
       },
     },
     sessions,
+    notifyRef,
   }
 }
 
 /** `thincoder acp` — start the server and block until the client closes the pipe. */
 export async function runAcpServer() {
   const log = (...a) => process.stderr.write(a.join(" ") + "\n")
-  const handlers = {}
-  const server = createAcpServer(handlers, { log })
-  Object.assign(handlers, buildAcpHandlers({ notify: server.notify, log }).handlers)
+  // Build handlers first, then wire the transport — no window where requests
+  // hit an empty handler map. notifyRef.current becomes live with the server.
+  const built = buildAcpHandlers({ log })
+  const server = createAcpServer(built.handlers, { log })
+  built.notifyRef.current = server.notify
   log(`[acp] thincoder ${VERSION} — ACP v1 over stdio, waiting for initialize`)
   server.start()
 }
