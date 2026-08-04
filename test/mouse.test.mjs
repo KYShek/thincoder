@@ -164,14 +164,15 @@ describe("long-message folding (render-conversation)", () => {
     }
     const cols = 80
     const folded = buildConvLines(state, cols)
-    // 12-line threshold: full block = 1 + 15 + 1 = 17 lines → [blank, ▶, first, last] = 4
-    assert.equal(folded.length, 4, "long dim message folded to [blank, ▶ hint, first, last]")
+    // 12-line threshold: full block = 1 + 15 + 1 = 17 lines → [blank, ▶, first 4, last] = 7
+    assert.equal(folded.length, 7, "long dim message folded to [blank, ▶, 5 content lines]")
     assert.equal(folded[0].text, "", "blank separator BEFORE the control line")
-    assert.ok(folded[1].text.startsWith("▶ … 15 more lines — "), "▶ hint at the block HEAD, no indent")
+    assert.ok(folded[1].text.startsWith("▶ … 12 more lines — "), "▶ hint at the block HEAD, no indent")
     assert.ok(!folded[1].text.startsWith(" "), "control line is flush with content (no indent)")
     assert.ok(folded[1].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
-    assert.equal(folded[2].text, "L1")
-    assert.equal(folded[3].text, "last")
+    assert.equal(folded[2].text, "L1", "first content line")
+    assert.equal(folded[5].text, "line2", "4th content line kept")
+    assert.equal(folded[6].text, "last", "last content line kept")
     const toggleKey = folded[1]._foldToggle
     assert.ok(toggleKey?.startsWith("long-"), "fold key is long-<srcIndex>")
 
@@ -189,10 +190,10 @@ describe("long-message folding (render-conversation)", () => {
     assert.equal(expanded[2].text, "L1", "content follows the marker")
     assert.ok(expanded[1].text.includes("\x1b[4mclick to collapse\x1b[24m"), "click phrase underlined")
 
-    // Collapse again: delete the key → back to [blank, ▶, first, last] (bidirectional)
+    // Collapse again: delete the key → back to [blank, ▶, 5 content] (bidirectional)
     state.expandedBlocks.delete(toggleKey)
     const reFolded = buildConvLines(state, cols)
-    assert.equal(reFolded.length, 4, "collapsed back")
+    assert.equal(reFolded.length, 7, "collapsed back")
   })
 
   it("MAIN OUTPUT and THINKING fold bidirectionally — they are the real long content", async () => {
@@ -205,12 +206,13 @@ describe("long-message folding (render-conversation)", () => {
         streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
         foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
       }
-      // Folded: [blank, ▶ hint (head), first, last]
+      // Folded: [blank, ▶ hint (head), first 4, last]
       const folded = buildConvLines(state, 80)
-      assert.equal(folded.length, 4, `${JSON.stringify(color)} folds to [blank, ▶, first, last]`)
+      assert.equal(folded.length, 7, `${JSON.stringify(color)} folds to [blank, ▶, 5 content lines]`)
       assert.equal(folded[0].text, "", "blank separator")
-      assert.ok(folded[1].text.startsWith("▶ … 20 more lines — "), "▶ hint at the head")
+      assert.ok(folded[1].text.startsWith("▶ … 17 more lines — "), "▶ hint at the head")
       assert.ok(folded[1].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
+      assert.equal(folded[6].text, "end", "last content line kept")
       const key = folded[1]._foldToggle
 
       // Expanded: [blank, ▼ at the HEAD, then full content]
@@ -221,7 +223,7 @@ describe("long-message folding (render-conversation)", () => {
 
       // Collapsed back
       state.expandedBlocks.delete(key)
-      assert.equal(buildConvLines(state, 80).length, 4, `${JSON.stringify(color)} collapses back`)
+      assert.equal(buildConvLines(state, 80).length, 7, `${JSON.stringify(color)} collapses back`)
     }
   })
 
@@ -233,11 +235,13 @@ describe("long-message folding (render-conversation)", () => {
       streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
       foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
     }
-    // Folded: [blank, ▶ hint (head), dim0, dim1]
+    // Folded: [blank, ▶ hint (head), dim0..dim3, dim8]
     const folded = buildConvLines(state, 80)
-    assert.equal(folded.length, 4)
+    assert.equal(folded.length, 7)
     assert.equal(folded[0].text, "", "blank separator")
-    assert.ok(folded[1].text.startsWith("▶ … 7 more lines — "))
+    assert.ok(folded[1].text.startsWith("▶ … 4 more lines — "))
+    assert.equal(folded[2].text, "dim0", "first content line")
+    assert.equal(folded[6].text, "dim8", "last content line kept")
     const foldKey = folded[1]._foldToggle
     assert.ok(foldKey?.startsWith("fold-"))
 

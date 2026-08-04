@@ -58,6 +58,10 @@ function buildConvLines(state, cols) {
   if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
 
   const convLines = []
+  // Folding constants (function scope — used by both the long-message fold below
+  // and the consecutive-dim fold at the bottom)
+  const LONG_FOLD_LINES = 12
+  const FOLD_KEEP = 5 // content lines kept in the folded state (first 4 + last 1)
   for (let i = 0; i < state.lines.length; i++) {
     const l = state.lines[i]
     let text = l.text
@@ -69,12 +73,11 @@ function buildConvLines(state, cols) {
 
     // Long-message folding: ANY single line (main output C.text, thinking C.reason,
     // tool summaries C.dim — whatever wraps beyond LONG_FOLD_LINES display rows)
-    // collapses to [first, "… N more — click/expand", last]. Main output and
+    // collapses to [blank, ▶, first 4, last] — 5 content lines. Main output and
     // thinking are the REAL long content; bidirectional folding (collapse markers
     // + click toggle) keeps them readable — the 0.12.7 dim-only restriction was a
     // temporary fix for the single-direction era and is now reverted. Keyed by the
     // source-line index (`long-${i}`) so the toggle survives re-renders.
-    const LONG_FOLD_LINES = 12
     const longKey = `long-${i}`
     const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey)
     const block = []
@@ -86,12 +89,11 @@ function buildConvLines(state, cols) {
       }
     }
     if (folded && block.length > LONG_FOLD_LINES) {
-      // Folded state: blank line, then the ▶ control line at the block HEAD (flush
-      // with content — reported: indented hint looked unrelated), then first/last.
+      // Folded state: blank line, ▶ control line at the HEAD (flush with content),
+      // then 5 content lines — first 4 + last 1 (reported: 2 lines was too little).
       convLines.push(blankLine())
-      convLines.push(foldHintLine(`▶ … ${block.length - 2} more lines — click to expand`, longKey, i))
-      convLines.push(block[0])
-      convLines.push(block[block.length - 1])
+      convLines.push(foldHintLine(`▶ … ${block.length - FOLD_KEEP} more lines — click to expand`, longKey, i))
+      convLines.push(...block.slice(0, FOLD_KEEP - 1), block[block.length - 1])
     } else if (block.length > LONG_FOLD_LINES) {
       // EXPANDED long block: blank line + ▼ control line at the HEAD, directly
       // before the content. DIM blocks must not re-trigger the consecutive-dim
@@ -149,11 +151,10 @@ function buildConvLines(state, cols) {
       if (blockLen > FOLD_LINES && !hasExpandedLong) {
         const foldKey = `fold-${foldCounter++}`
         if (state.foldEnabled !== false && !state.expandedBlocks?.has(foldKey)) {
-          // Blank line + ▶ control line at the block HEAD (flush with content), then first two lines
+          // Blank + ▶ control line at the HEAD (flush with content), then 5 content lines
           folded.push(blankLine())
-          folded.push(foldHintLine(`▶ … ${blockLen - 2} more lines — click to expand`, foldKey))
-          folded.push(convLines[i])
-          if (blockLen > 2) folded.push(convLines[i + 1])
+          folded.push(foldHintLine(`▶ … ${blockLen - FOLD_KEEP} more lines — click to expand`, foldKey))
+          folded.push(...convLines.slice(i, i + FOLD_KEEP - 1), convLines[j - 1])
           i = j
           continue
         }
