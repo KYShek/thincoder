@@ -312,6 +312,8 @@ function isLegacyTransient(m) {
   )
 }
 
+export { isLegacyTransient }
+
 // ========== core read/write ==========
 
 /** Save agent state and display lines to the active slot file (atomic write) */
@@ -411,6 +413,7 @@ export function applySession(agent, data) {
   // (possibly compacted) machine line. Restore each line from its own source — the machine
   // context keeps its compaction savings across resume. Legacy files without contextHistory
   // fall back to seeding the machine line from the full history (it re-compacts when needed).
+  agent.config ??= {} // ACP test mocks may omit config; be defensive like the ??= below
   const full = Array.isArray(data.history) ? data.history : []
   const machine = Array.isArray(data.contextHistory) ? data.contextHistory : full
   agent._fullHistory = [...full]

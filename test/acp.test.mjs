@@ -214,6 +214,24 @@ describe("session — FIFO queue + cancel", () => {
   it("cancel flips the signal the agent loop observes", () => {
     const s = createAcpSession({ id: "s1", agent: {}, notify: () => {}, run: async () => {} })
     assert.equal(s.agent !== undefined, true)
+describe("M2 — Windows cwd case normalization (drive letter)", () => {
+  it("session/new accepts a differently-cased drive letter", async () => {
+    // simulate win32: injected cwd has lowercase drive; client sends uppercase
+    const fakeWin = "c:\\users\\test\\project"
+    const deps = {
+      notify: () => {}, log: () => {}, isConfigured: () => true,
+      cwd: () => fakeWin,
+      createSession: async ({ id, notify }) => createAcpSession({ id, agent: {}, notify, run: async () => "ok" }),
+    }
+    const c = mockClient(buildAcpHandlers(deps).handlers)
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "C:\\Users\\test\\project" } })
+    const r = c.next()
+    assert.ok(r.result?.id, `case-mismatched cwd accepted (normalizeCwd), got: ${JSON.stringify(r)}`)
+  })
+})
+
     s.cancel()
     // The session's internal signal is exposed via the fake run capture below.
   })

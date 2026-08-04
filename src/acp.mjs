@@ -19,16 +19,20 @@ import { assembleAgent } from "./cli/make-agent.mjs"
 import { createAcpServer, ACP_ERRORS } from "./acp/transport.mjs"
 import { createAcpSession } from "./acp/session.mjs"
 import { replayHistory } from "./acp/bridge.mjs"
-import { listSlots, loadSession, applySession, deleteSlot, sessionPath } from "./session.mjs"
+import { listSlots, loadSession, applySession, deleteSlot, sessionPath, normalizeCwd, isLegacyTransient } from "./session.mjs"
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
 
-/** Load a specific slot file (not the active one) — session/load by id. */
+/** Load a specific slot file (not the active one) — session/load by id.
+ *  Same validation as loadSession: version 1/2 + legacy-transient filtering
+ *  (pre-filtering slot files must not leak machine lines into the replay). */
 function loadSlotFile(cwd, slot) {
   const path = `${sessionPath(cwd)}.${slot}`
   try {
     const data = JSON.parse(readFileSync(path, "utf8"))
-    if (!Array.isArray(data?.history)) return null
+    if (data?.version !== 1 && data?.version !== 2) return null
+    if (!Array.isArray(data.history)) return null
+    data.history = data.history.filter((m) => !isLegacyTransient(m))
     return data
   } catch {
     return null
@@ -44,17 +48,18 @@ function applyConfigOption(agent, configId, value) {
   switch (configId) {
     case "model": {
       if (typeof value !== "string" || !value.trim()) return false
-      const [provider, model] = value.includes(":") ? value.split(":", 2) : [null, value]
-      if (provider && provider !== agent.provider?.name) {
-        // Cross-provider switch: update the runtime provider identity too.
-        if (agent.provider) agent.provider.name = provider
-      }
-      if (agent.provider) agent.provider.model = model.trim()
+      if (!agent.provider) return false // nothing to configure
+      // Split on the FIRST colon only — model names may contain colons.
+      const ci = value.indexOf(":")
+      const provider = ci >= 0 ? value.slice(0, ci) : null
+      const model = (ci >= 0 ? value.slice(ci + 1) : value).trim()
+      if (provider && provider !== agent.provider.name) agent.provider.name = provider
+      agent.provider.model = model
       return true
     }
     case "thinking": {
-      if (typeof value !== "boolean") return false
-      if (agent.provider) agent.provider.thinking = value ? { type: "enabled" } : { type: "disabled" }
+      if (typeof value !== "boolean" || !agent.provider) return false
+      agent.provider.thinking = value ? { type: "enabled" } : { type: "disabled" }
       return true
     }
     case "mode": {
@@ -132,9 +137,16 @@ export function buildAcpHandlers({
         if (params.cwd !== undefined && typeof params.cwd !== "string") {
           return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: "cwd must be a string" } }
         }
-        // Normalized comparison (case-insensitive drives on win32; trailing slashes).
+        // Normalized comparison: resolve() collapses trailing slashes, and
+        // normalizeCwd().toLowerCase() makes the check case-insensitive on
+        // Windows (drive letter + path — a client sending "c:\users\…" vs
+        // process.cwd() "C:\Users\…" must match). The ternary is load-bearing:
+        // resolve(undefined) throws TypeError. Note: `requested` never feeds
+        // any path operation — the agent always runs in getCwd() — so a
+        // case-insensitive match on case-sensitive platforms is harmless.
+        const norm = (p) => normalizeCwd(p).toLowerCase()
         const requested = params.cwd ? resolve(params.cwd) : getCwd()
-        if (requested !== getCwd()) {
+        if (norm(requested) !== norm(getCwd())) {
           return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `v1: cwd must equal the process working directory (${getCwd()})` } }
         }
         if (params.mcpServers?.length) {

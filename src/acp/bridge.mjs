@@ -55,6 +55,7 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
   const update = (sessionUpdate, extra = {}) =>
     notify("session/update", { sessionId, update: { sessionUpdate, ...extra } })
   let toolSeq = 0
+  const toolIds = new Map() // active tool name → current ACP toolCallId (defined before the literal — no expando)
 
   const toolCallId = () => `t${++toolSeq}`
   const contentBlock = (text) => ({ type: "content", content: { type: "text", text } })
@@ -72,7 +73,7 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
 
     onToolCall: (name, args) => {
       const id = toolCallId()
-      callbacks._toolIds.set(name, id)
+      toolIds.set(name, id)
       update("tool_call", {
         toolCallId: id,
         title: name,
@@ -84,8 +85,8 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
     },
 
     onToolResult: (name, result) => {
-      const id = callbacks._toolIds.get(name) ?? toolCallId()
-      callbacks._toolIds.delete(name)
+      const id = toolIds.get(name) ?? toolCallId()
+      toolIds.delete(name)
       update("tool_call_update", {
         toolCallId: id,
         status: "completed",
@@ -99,7 +100,7 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
      */
     onPermissionRequest: async (name, args) => {
       const toolCall = {
-        toolCallId: callbacks._toolIds.get(name) ?? toolCallId(),
+        toolCallId: toolIds.get(name) ?? toolCallId(),
         title: name,
         content: [contentBlock(`Requesting approval to run ${name}`), contentBlock(JSON.stringify(args ?? {}))],
       }
@@ -127,7 +128,10 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
       const base = name.includes("/") ? name.split("/").pop() : name
       const path = pathOf(args)
       if (base === "write" && path) {
-        const content = typeof args?.content === "string" ? args.content : ""
+        if (typeof args?.content !== "string") {
+          return { handled: true, result: `Error: write content must be a string (got ${typeof args?.content})` }
+        }
+        const content = args.content
         try {
           await request("fs/write_text_file", { sessionId, path, content }, { timeoutMs: 30000 })
           return { handled: true, result: `OK: wrote ${path} via IDE` }
@@ -153,7 +157,6 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
       return { handled: false } // read-only tools, delete, apply_patch stay local
     },
   }
-  callbacks._toolIds = new Map()
   return callbacks
 }
 
@@ -209,7 +212,7 @@ export function replayHistory({ sessionId, notify, history, log = () => {} }) {
         })
       } else {
         const items = blocks(m)
-        if (items.length > 0) update("agent_message_chunk", { content: items[0] })
+        for (const b of items) update("agent_message_chunk", { content: b })
         pendingToolCalls = []
       }
     } else if (m?.role === "tool" && pendingToolCalls.length > 0) {

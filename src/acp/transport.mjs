@@ -67,7 +67,20 @@ export function createAcpServer(handlers, { write = (s) => process.stdout.write(
   let inbound = Promise.resolve()
   function handleLine(line) {
     let msg
-    try { msg = JSON.parse(line) } catch { /* malformed → queued path emits the parse error in order */ }
+    try { msg = JSON.parse(line) } catch {
+      // Malformed line. If it LOOKS like a response to an agent-initiated
+      // request (has an "rpc-" id), reject the waiter NOW — the prompt handler
+      // awaiting it would otherwise hang until the timeout.
+      const m = /"id"\s*:\s*"?(rpc-\d+)"?/.exec(line)
+      if (m && pending.has(m[1])) {
+        const waiter = pending.get(m[1])
+        pending.delete(m[1])
+        clearTimeout(waiter.timer)
+        waiter.reject(new Error("ACP client sent a malformed response"))
+        return
+      }
+      // Otherwise → queued path emits the parse error in order.
+    }
     if (msg && typeof msg === "object" && msg.method === undefined && msg.id !== undefined) {
       resolveClientResponse(msg)
       return
