@@ -162,9 +162,13 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     // a follow-up "Verify Prior Table" would be meaningless; start a fresh full review
     if (!prior) {
       agent._advisorSession = null
-      // Only reset the round counter on a truly fresh start (no prior reviews at all).
-      // If _advisorRound > 0, there WAS a prior review — it just passed (all-clear).
-      if (!agent._advisorRound) agent._advisorRound = 0
+      // ALWAYS reset the round counter: no prior table means the next review is
+      // a NEW cycle — round 1 (full scope + git tool). Keeping _advisorRound > 0
+      // here would make buildAdvisorSystemPrompt still pick ROUND1 while
+      // advisorToolsFor strips git (its predicate is _advisorRound === 0),
+      // giving the model a full-scope prompt without the change-discovery tool.
+      // A new review cycle also deserves its own 5-round budget.
+      agent._advisorRound = 0
     } else {
       // Convergence rounds (2+): replace the system prompt so the round-1
       // "full-scope review" mandate cannot override the follow-up's narrowed scope.
@@ -180,10 +184,12 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
     { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths) },
   ]
-  // Fresh session. Only reset round if this is truly the first review.
-  // If _advisorRound > 0, there was a prior review that passed (all-clear).
-  if (!agent._advisorRound) agent._advisorRound = 0
   if (!prior) {
+    // No prior table = new review cycle: reset the round so the prompt (ROUND1)
+    // and the tool set (git when _advisorRound === 0) agree. With a prior table
+    // (failed-review retry after session loss) the round is PRESERVED — the
+    // next prompt must be the convergence round the attempt count implies.
+    agent._advisorRound = 0
     // Tell the advisor why no prior issue table is present
     session[1] = {
       role: "user",

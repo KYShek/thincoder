@@ -84,6 +84,10 @@ const ADVISOR_TOOLS = [readTool, globTool, grepTool, lsTool, advisorGitTool, lsp
  *   committed fixes never show in `git diff HEAD`, so "no changes" was read as
  *   "not fixed" (decision 7d49a52: verification is `read`-only). Removing the
  *   tool closes the loop the prompt could not.
+ * Predicate `_advisorRound === 0` is kept in sync with buildAdvisorSystemPrompt's
+ * ROUND1 selection (`!prior || _advisorRound === 0`): prepareAdvisorMessages
+ * resets the round to 0 whenever a review starts without a prior table, so the
+ * two predicates agree on every path (all-clear, fresh start, failed retry).
  */
 function advisorToolsFor(agent) {
   const tools = (agent._advisorRound || 0) > 0
@@ -188,7 +192,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       onOutput?.({ kind: "tool", text: `\n→ ${tc.name} ${summarizeToolArgs(args)}\n` })
       let result
       if (!tool) {
-        result = `Error: unknown tool "${tc.name}". Available: ${[...ADVISOR_TOOL_BY_NAME.keys()].join(", ")}`
+        result = `Error: unknown tool "${tc.name}". Available: ${[...toolByName.keys()].join(", ")}`
       } else {
         // Execute with timeout (clear the timer when the tool wins the race —
         // otherwise up to MAX_ADVISOR_TURNS dangling timers accumulate)
