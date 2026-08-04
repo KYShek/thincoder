@@ -116,9 +116,9 @@ describe("handleMouseClick — conversation line actions", () => {
     Object.defineProperty(process.stdout, "rows", { value: 24, configurable: true })
     try {
       // Layout (80x24, no overlays): conversation starts at row 2 (1-based).
-      // 9 dim lines fold to [blank, ▶ hint (head), dim0, dim1] = 4 conv lines;
-      // the ▶ hint is the SECOND conv line = 1-based row 3.
-      const consumed = handleMouseClick(ctx, 10, 3)
+      // 9 dim lines fold to [dim0..dim3, ▶ hint, dim8] = 6 conv lines;
+      // the ▶ hint is the 5th conv line = 1-based row 6.
+      const consumed = handleMouseClick(ctx, 10, 6)
       assert.equal(consumed, true)
       assert.ok(state.expandedBlocks?.size > 0, "expandedBlocks populated")
       assert.equal(rendered, true)
@@ -164,17 +164,15 @@ describe("long-message folding (render-conversation)", () => {
     }
     const cols = 80
     const folded = buildConvLines(state, cols)
-    // 12-line threshold: full block = 1 + 15 + 1 = 17 lines → [blank, ▶, 4 lines, …, last] = 8
-    assert.equal(folded.length, 8, "long dim message folded to [blank, ▶, first 4, …, last]")
-    assert.equal(folded[0].text, "", "blank separator BEFORE the control line")
-    assert.ok(folded[1].text.startsWith("▶ … 12 more lines — "), "▶ hint at the block HEAD, no indent")
-    assert.ok(!folded[1].text.startsWith(" "), "control line is flush with content (no indent)")
-    assert.ok(folded[1].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
-    assert.equal(folded[2].text, "L1", "first content line")
-    assert.equal(folded[5].text, "line2", "4th content line kept")
-    assert.equal(folded[6].text, "…", "ellipsis signals hidden middle")
-    assert.equal(folded[7].text, "last", "last content line kept")
-    const toggleKey = folded[1]._foldToggle
+    // 12-line threshold: full block = 1 + 15 + 1 = 17 lines → [4 lines, ▶, last] = 6
+    assert.equal(folded.length, 6, "long dim message folded to [first 4, ▶, last]")
+    assert.equal(folded[0].text, "L1", "block starts with real content (no blank separator)")
+    assert.equal(folded[3].text, "line2", "4th content line kept")
+    assert.ok(folded[4].text.startsWith("▶ … 12 more lines — "), "▶ control line at the ellipsis position, no indent")
+    assert.ok(!folded[4].text.startsWith(" "), "control line is flush with content (no indent)")
+    assert.ok(folded[4].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
+    assert.equal(folded[5].text, "last", "last content line kept")
+    const toggleKey = folded[4]._foldToggle
     assert.ok(toggleKey?.startsWith("long-"), "fold key is long-<srcIndex>")
 
     // Expand: add the key → [blank, ▼, full content]; cache key must change
@@ -191,10 +189,10 @@ describe("long-message folding (render-conversation)", () => {
     assert.equal(expanded[2].text, "L1", "content follows the marker")
     assert.ok(expanded[1].text.includes("\x1b[4mclick to collapse\x1b[24m"), "click phrase underlined")
 
-    // Collapse again: delete the key → back to [blank, ▶, 4, …, last] (bidirectional)
+    // Collapse again: delete the key → back to [4 lines, ▶, last] (bidirectional)
     state.expandedBlocks.delete(toggleKey)
     const reFolded = buildConvLines(state, cols)
-    assert.equal(reFolded.length, 8, "collapsed back")
+    assert.equal(reFolded.length, 6, "collapsed back")
   })
 
   it("MAIN OUTPUT and THINKING fold bidirectionally — they are the real long content", async () => {
@@ -207,15 +205,14 @@ describe("long-message folding (render-conversation)", () => {
         streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
         foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
       }
-      // Folded: [blank, ▶ hint (head), first 4, …, last]
+      // Folded: [first 4, ▶ hint (ellipsis position), last]
       const folded = buildConvLines(state, 80)
-      assert.equal(folded.length, 8, `${JSON.stringify(color)} folds to [blank, ▶, 4, …, last]`)
-      assert.equal(folded[0].text, "", "blank separator")
-      assert.ok(folded[1].text.startsWith("▶ … 17 more lines — "), "▶ hint at the head")
-      assert.ok(folded[1].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
-      assert.equal(folded[6].text, "…", "ellipsis signals hidden middle")
-      assert.equal(folded[7].text, "end", "last content line kept")
-      const key = folded[1]._foldToggle
+      assert.equal(folded.length, 6, `${JSON.stringify(color)} folds to [4, ▶, last]`)
+      assert.equal(folded[0].text, "line0", "block starts with real content")
+      assert.ok(folded[4].text.startsWith("▶ … 17 more lines — "), "▶ control line at the ellipsis position")
+      assert.ok(folded[4].text.includes("\x1b[4mclick to expand\x1b[24m"), "click phrase underlined")
+      assert.equal(folded[5].text, "end", "last content line kept")
+      const key = folded[4]._foldToggle
 
       // Expanded: [blank, ▼ at the HEAD, then full content]
       state.expandedBlocks.add(key)
@@ -225,7 +222,7 @@ describe("long-message folding (render-conversation)", () => {
 
       // Collapsed back
       state.expandedBlocks.delete(key)
-      assert.equal(buildConvLines(state, 80).length, 8, `${JSON.stringify(color)} collapses back`)
+      assert.equal(buildConvLines(state, 80).length, 6, `${JSON.stringify(color)} collapses back`)
     }
   })
 
@@ -237,15 +234,13 @@ describe("long-message folding (render-conversation)", () => {
       streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
       foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
     }
-    // Folded: [blank, ▶ hint (head), dim0..dim3, …, dim8]
+    // Folded: [dim0..dim3, ▶ hint, dim8]
     const folded = buildConvLines(state, 80)
-    assert.equal(folded.length, 8)
-    assert.equal(folded[0].text, "", "blank separator")
-    assert.ok(folded[1].text.startsWith("▶ … 4 more lines — "))
-    assert.equal(folded[2].text, "dim0", "first content line")
-    assert.equal(folded[6].text, "…", "ellipsis signals hidden middle")
-    assert.equal(folded[7].text, "dim8", "last content line kept")
-    const foldKey = folded[1]._foldToggle
+    assert.equal(folded.length, 6)
+    assert.equal(folded[0].text, "dim0", "block starts with real content")
+    assert.ok(folded[4].text.startsWith("▶ … 4 more lines — "))
+    assert.equal(folded[5].text, "dim8", "last content line kept")
+    const foldKey = folded[4]._foldToggle
     assert.ok(foldKey?.startsWith("fold-"))
 
     // Expanded: [blank, ▼ marker, then all 9 lines]
