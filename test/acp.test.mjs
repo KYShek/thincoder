@@ -15,7 +15,7 @@ import { createAcpServer, ACP_ERRORS } from "../src/acp/transport.mjs"
 import { buildAcpCallbacks, replayHistory } from "../src/acp/bridge.mjs"
 import { createAcpSession } from "../src/acp/session.mjs"
 import { buildAcpHandlers } from "../src/acp.mjs"
-import { saveSession, loadSession } from "../src/session.mjs"
+import { saveSession, loadSession, sessionPath } from "../src/session.mjs"
 
 describe("M2 — tools, permissions, fs routing (bridge callbacks)", () => {
   it("onToolCall/onToolResult emit tool_call + tool_call_update with matching ids", () => {
@@ -386,6 +386,94 @@ describe("M3 — persisted slots (list/load/resume/delete) + config options", ()
     assert.equal(c.next().error.code, -32602)
   })
 })
+
+describe("M4 — edge cases (⑦-⑩)", () => {
+  let c
+  let deps
+  let tmpCwd
+  beforeEach(() => {
+    tmpCwd = mkdtempSync(join(tmpdir(), "acp-m4-"))
+    const events = []
+    deps = {
+      notify: (m, p) => events.push({ method: m, params: p }),
+      log: () => {},
+      isConfigured: () => true,
+      cwd: () => tmpCwd,
+      createSession: async ({ id, notify }) => createAcpSession({
+        id, agent: { history: [], _fullHistory: [], config: {}, provider: { name: "deepseek", model: "deepseek-v4-pro" } },
+        notify, run: async (a, input, cb) => { cb.onToken(`echo:${input}`); return "ok" },
+      }),
+    }
+    c = mockClient(buildAcpHandlers(deps).handlers, events)
+  })
+
+  it("⑦ corrupt slot file load → error, not a crash", async () => {
+    // Write garbage into a slot file directly.
+    const base = sessionPath(tmpCwd)
+    const fs = await import("node:fs")
+    fs.writeFileSync(`${base}.1`, "{not valid json")
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "1" } })
+    assert.equal(c.next().error.code, -32602, "corrupt file surfaces as invalid params")
+  })
+
+  it("⑧ fs/write_text_file client error → tool result carries the error text", async () => {
+    const events = []
+    const cb = buildAcpCallbacks({
+      sessionId: "s1",
+      notify: (m, p) => events.push(p),
+      request: async (m, p) => { throw Object.assign(new Error("permission denied by editor"), { code: -32602 }) },
+    })
+    const r = await cb.toolRouter("write", { path: "a.txt", content: "x" })
+    assert.equal(r.handled, true)
+    assert.ok(r.result.includes("fs/write_text_file failed"), r.result)
+    assert.ok(r.result.includes("permission denied"), r.result)
+  })
+
+  it("⑨ delete archive does not kill the active in-memory session", async () => {
+    // Seed via saveSession (writes manifest + slot file), load it into a live
+    // session, delete the archive, prompt again.
+    const { createAgent } = await import("../src/agent.mjs")
+    const seed = createAgent({ provider: { name: "deepseek", model: "m" }, tools: [], config: {}, cwd: tmpCwd, memory: null })
+    seed.history = [{ role: "user", content: "hi" }]
+    seed._fullHistory = [...seed.history]
+    seed.title = "seed"
+    saveSession(seed, [])
+    await c.send({ jsonrpc: "2.0", id: 1, method: "authenticate" })
+    c.next()
+    await c.send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "1" } })
+    const live = (() => { for (let m = c.next(); m; m = c.next()) if (m.id === 2) return m.result })()
+    c.all() // drain replay leftovers (user_message_chunk) before the next exchange
+    await c.send({ jsonrpc: "2.0", id: 3, method: "session/delete", params: { sessionId: "1" } })
+    assert.deepEqual(c.next().result, {})
+    await c.send({ jsonrpc: "2.0", id: 4, method: "session/prompt", params: { sessionId: live.id, content: [{ type: "text", text: "still alive" }] } })
+    await c.waitIdle()
+    const msgs = c.all()
+    assert.ok(msgs.some((m) => m.id === 4 && m.result?.stopReason === "end_turn"), "active session survives archive deletion")
+  })
+
+  it("⑩ one turn with multiple parallel tools emits complete tool_call/tool_call_update sets", async () => {
+    const events = []
+    const cb = buildAcpCallbacks({
+      sessionId: "s1",
+      notify: (m, p) => events.push(p.update),
+      request: async () => ({ outcome: { outcome: "selected", optionId: "approve_once" } }),
+    })
+    // Simulate a parallel batch: two tools start, then both report results.
+    cb.onToolCall("read", { path: "a" })
+    cb.onToolCall("grep", { pattern: "x" })
+    cb.onToolResult("read", "content")
+    cb.onToolResult("grep", "hits")
+    const calls = events.filter((u) => u.sessionUpdate === "tool_call")
+    const updates = events.filter((u) => u.sessionUpdate === "tool_call_update")
+    assert.equal(calls.length, 2, "both tools announced")
+    assert.equal(updates.length, 2, "both tools finished")
+    const ids = calls.map((c) => c.toolCallId)
+    for (const u of updates) assert.ok(ids.includes(u.toolCallId), `update ${u.toolCallId} references an announced call`)
+  })
+})
+
 
 
 describe("acp handlers — handshake + session lifecycle (injected deps)", () => {
