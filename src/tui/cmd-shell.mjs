@@ -6,7 +6,9 @@ import { C } from "./ansi.mjs"
  *  /shell <path|name>     → set (e.g. "C:\\Program Files\\Git\\bin\\bash.exe", "pwsh", "cmd")
  *  /shell reset           → back to system default (cmd on Windows, /bin/sh elsewhere) */
 export async function handleShellCommand(ctx, args = []) {
-  const input = args.join(" ").trim()
+  // Strip surrounding quotes (slash args are whitespace-split; /shell "C:\Program Files\Git\bin\bash.exe"
+  // would otherwise persist the literal quote characters and spawn would fail)
+  const input = args.join(" ").trim().replace(/^["'](.+)["']$/, "$1")
   const current = ctx.agent.config.shell
   if (!input) {
     const def = process.platform === "win32"
