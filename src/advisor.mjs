@@ -129,7 +129,7 @@ export function buildAdvisorFollowUp(agent, _prior) {
     // Round-aware evidence rule: "New" entries only exist in round 2 (round 3+ forbids them).
     `STALE-CONTEXT WARNING: only fresh \`read\` results describe the current state — never judge from earlier snapshots or from \`git diff\` (committed fixes never show in \`git diff HEAD\`). Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may come from the stale prior table). Uncited findings are unverified and will be ignored.`,
     "",
-    "Do NOT re-read AGENTS.md / design docs. Verify fix status with `read` only — do not rely on git output: a clean working tree does not mean fixes are absent (they may be committed).",
+    "Do NOT re-read AGENTS.md / design docs unless a prior-table item names them. Verify fix status with `read` only — do not rely on git output: a clean working tree does not mean fixes are absent (they may be committed).",
     "",
   ]
   return parts.join("\n")
@@ -148,8 +148,9 @@ export function buildAdvisorFollowUp(agent, _prior) {
  */
 export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null, paths = null) {
   const prior = extractPriorIssueTable(agent.history)
-  // Design review: always fresh session, no convergence
-  if (reviewType === "design") {
+  // Design review round 1 (or no prior table): fresh session with the design prompt.
+  // Design rounds 2+ fall through to the shared continuation path below (same as code).
+  if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
       { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths) },

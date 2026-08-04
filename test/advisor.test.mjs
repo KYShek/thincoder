@@ -585,6 +585,37 @@ test("prepareAdvisorMessages: first call creates a fresh [system, user] session"
   assert.equal(session[1].role, "user")
 })
 
+
+test("prepareAdvisorMessages: design round 2+ continues the session (convergence, not fresh)", () => {
+  const priorTable = "| # | Category | Severity | Issue | Suggestion |\n| 1 | Clarity | 🔴 | gap | fix |"
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  // Round 1: fresh design session (full design-review prompt + token)
+  const first = prepareAdvisorMessages(agent, "design", "TOKEN1")
+  assert.equal(first.length, 2)
+  assert.ok(first[0].content.includes("design reviewer"), "round 1 keeps the design prompt")
+  assert.ok(first[1].content.includes("TOKEN1"), "round 1 carries the approval token")
+  agent._advisorSession = first
+  agent._advisorRound = 1
+
+  // Round 2: continues the SAME session with a convergence follow-up
+  const second = prepareAdvisorMessages(agent, "design", null)
+  assert.equal(second, first, "same array — design rounds 2+ continue, not rebuilt")
+  assert.equal(second.length, 3)
+  assert.ok(second[2].content.includes("Round 2"), "design follow-up carries round number")
+  assert.ok(second[0].content.includes("Verify the prior issue table"), "design round 2 system prompt narrowed to ROUND2")
+  assert.ok(!second[0].content.includes("design reviewer"), "round-1 design mandate does not leak into round 2")
+
+  // Rounds 3 and 4: each appends a follow-up to the same session
+  agent._advisorRound = 2
+  const third = prepareAdvisorMessages(agent, "design", null)
+  assert.equal(third, first, "round 3 continues the same session")
+  assert.ok(third[3].content.includes("Round 3"), "round 3 follow-up")
+  agent._advisorRound = 3
+  const fourth = prepareAdvisorMessages(agent, "design", null)
+  assert.ok(fourth[4].content.includes("Round 4"), "round 4 follow-up")
+  assert.ok(fourth[0].content.includes("Strictly verify only the prior issue table"), "design round 3+ system prompt is ROUND3")
+})
+
 test("prepareAdvisorMessages: later calls append a follow-up to the SAME session", () => {
   const priorTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |"
   const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }

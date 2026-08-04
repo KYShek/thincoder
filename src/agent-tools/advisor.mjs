@@ -129,11 +129,10 @@ export const advisorTool = {
       }
     }
 
-    // Design review: always starts from round 1 (no convergence)
-    if (reviewType === "design") {
-      agent._advisorRound = 0
-      agent._advisorSession = null
-    }
+    // Design review: NO round reset — design reviews share the 5-round convergence
+    // budget with code reviews (round advances in agent.mjs; cap in run.mjs).
+    // Session reset also removed: design rounds 2+ continue the advisor session
+    // like code reviews (prior table + round-aware prompts).
 
     // Generate the design token BEFORE the review and inject it into the advisor's prompt.
     // The advisor (LLM) decides pass/fail itself and echoes the token only on approval —

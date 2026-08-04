@@ -404,12 +404,12 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
         if (toolCall.name === "verify") agent._verifiedThisRun = true
         if (toolCall.name === "advisor") {
           agent._calledAdvisorThisRun = true
-          // Design reviews are a separate gate with no convergence protocol —
+          // All advisor calls (code and design) share the 5-round convergence
+          // budget — each advances _advisorRound toward MAX_ADVISOR_ROUNDS.
           // Always advance the round — the convergence protocol cares about
           // how many reviews have run (round 1→2→3→4→5), not how many succeeded.
           // A failed/interrupted review is still a review attempt and should use
-          // the next round's prompt on retry. Design reviews advance the round
-          // too: they share the 5-round budget with code reviews (bounded loops).
+          // the next round's prompt on retry.
           try {
             JSON.parse(toolCall.arguments || "{}")
           } catch {

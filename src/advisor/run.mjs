@@ -12,7 +12,8 @@ const MAX_ADVISOR_TURNS = 100
 // Mechanical convergence cap: the protocol assumes up to 5 rounds suffice
 // (full review, verify+fix cycles, strict verification). A 6th call means the
 // model is looping — refuse it instead of burning tokens on a review that cannot
-// converge. Design reviews are exempt (each call resets the round).
+// converge. Code AND design reviews share the 5-round budget (each advances
+// _advisorRound in agent.mjs; the cap no longer exempts design).
 // NOTE: prompts/advisor-round{1,2,3}.md advertise a 30-round BUDGET — the
 // prompt-level efficiency target, distinct from this 100-round mechanical hard
 // cap (loop guard). Keep both in sync when either changes.
@@ -322,10 +323,11 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
     // Only persist the session on success — timeout/interrupt/empty results
     // would poison the next review call (the conversation is truncated mid-review,
     // and the model picks up from a broken state, burning more rounds).
+    // Design reviews persist the session too: their rounds 2+ continue it.
     if (!result.trimStart().startsWith("Advisor:")) {
       // Assign only for fresh sessions; re-assignment of the same reference on
       // continued sessions is a no-op but communicating intent matters.
-      agent._advisorSession = reviewType === "design" ? null : messages
+      agent._advisorSession = messages
     } else {
       agent._advisorSession = null
     }

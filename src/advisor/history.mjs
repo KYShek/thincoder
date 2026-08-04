@@ -6,6 +6,8 @@ import { join } from "node:path"
 
 export const ADVISOR_MD_PATH = ".thincoder/advisor.md"
 export const ADVISOR_TABLE_HEADER = "| # | File | Severity | Issue | Suggestion |"
+// Design-review table header (advisor-design.md round 1): | # | Category | Severity | Issue | Suggestion |
+const DESIGN_TABLE_HEADER = "| # | Category | Severity | Issue | Suggestion |"
 const CONVERGENCE_TABLE_HEADER = "| # | Orig# | File | Severity | Status | Notes |"
 const AGENT_RESPONSE_HEADER = "| # | Action | Detail |"
 export const LEGACY_ADVISOR_HEADER = "| # | 文件 | 严重程度 | 问题描述 | 建议修复 |"
@@ -44,6 +46,7 @@ export function extractPriorIssueTable(history) {
     // header constants' own source code (e.g. history.mjs), producing a phantom
     // "prior issue table" and re-opening convergence rounds against stale data.
     if (!lineHasHeader(m.content, ADVISOR_TABLE_HEADER)
+      && !lineHasHeader(m.content, DESIGN_TABLE_HEADER)
       && !lineHasHeader(m.content, CONVERGENCE_TABLE_HEADER)
       && !lineHasHeader(m.content, LEGACY_ADVISOR_HEADER)) continue
     const text = m.content
