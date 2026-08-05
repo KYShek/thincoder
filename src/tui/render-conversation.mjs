@@ -133,15 +133,16 @@ function buildConvLines(state, cols) {
     }
   }
   if (state._advisorThink || state.advisorStreaming) {
+    // Full-length streaming display, same as the main agent's reasoning —
+    // the 5-line slice(-5) preview made the thinking appear pinned to one
+    // spot instead of flowing; long content scrolls via the conversation
+    // window like everything else.
     const thinkLines = state._advisorThink ? sanitizeDisplay(state._advisorThink).split("\n") : []
     const mainLines = state.advisorStreaming
       ? formatTables(sanitizeDisplay(state.advisorStreaming), cols - 3)
       : []
     const allLines = [...thinkLines.map(l => ({ text: l, color: C.reason })), ...mainLines.map(l => ({ text: l, color: C.text }))]
-    const truncated = allLines.length > 5
-    if (truncated) convLines.push({ text: "│ …", color: C.dim })
-    const shown = truncated ? allLines.slice(-5) : allLines
-    for (const { text, color } of shown) {
+    for (const { text, color } of allLines) {
       for (const wrapped of wrapText(text, cols - 3)) {
         convLines.push({ text: `│ ${wrapped}`, color })
       }

@@ -197,7 +197,24 @@ export async function runAgentTurn(ctx, text) {
         const summary = formatToolSummary(name, result)
         if (summary) pushLine(`  ${summary}`, C.dim)
       }
-      if (name === "advisor") { state.advisorStreaming = ""; state._advisorThink = "" }
+      if (name === "advisor") {
+        // The review's thinking must survive into the conversation history like
+        // the main agent's reasoning (flushStream does for state.reasoning) —
+        // discarding it left the thought process visible only mid-review, then
+        // gone. Flush BEFORE the done line so the block sits above it.
+        if (state._advisorThink) {
+          const idx = state.lines.length
+          pushLine(state._advisorThink, C.reason)
+          // Completed thinking stays expanded (user is reading it), same as
+          // the main agent's flushed reasoning.
+          state.expandedBlocks ??= new Set()
+          state.expandedBlocks.add(`long-${idx}`)
+          state._autoExpand ??= []
+          state._autoExpand.push(idx)
+        }
+        state.advisorStreaming = ""
+        state._advisorThink = ""
+      }
       // Done line for ALL tools (panel area abolished — inline only).
       if (!isSubagent) {
         const elapsed = _toolTicks[name] ? ` (${Math.round(performance.now() - _toolTicks[name])}ms)` : ""
