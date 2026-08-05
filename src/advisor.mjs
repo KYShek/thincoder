@@ -40,7 +40,7 @@ import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { extractPriorIssueTable, extractAgentResponseTable } from "./advisor/history.mjs"
-import { buildAdvisorUserMessage } from "./advisor/messages.mjs"
+import { buildAdvisorUserMessage, buildConvergenceInstructions } from "./advisor/messages.mjs"
 // Re-export for run.mjs and tests (keeps their imports from "../advisor.mjs" stable)
 export { ADVISOR_MD_PATH, extractPriorIssueTable, extractAgentResponseTable, extractConversationBackground } from "./advisor/history.mjs"
 export { buildAdvisorUserMessage } from "./advisor/messages.mjs"
@@ -104,10 +104,11 @@ export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
  * git output misled re-reviews — committed fixes never show in `git diff HEAD`,
  * so the model read "no changes" as "no fixes". Verification is `read`-only.
  */
-export function buildAdvisorFollowUp(agent, _prior) {
-  const prior = _prior ?? extractPriorIssueTable(agent.history)
+export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   const response = extractAgentResponseTable(agent.history, prior?.sinceIdx ?? 0)
-    || "(Agent did not provide a response table — perform a fresh review of the files named in the review scope)"
+    || (scopeFiles?.length
+      ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
+      : "(Agent did not provide a response table — perform a fresh review of the files named in the system prompt context)")
   const round = (agent._advisorRound || 0) + 1
   const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
 
@@ -121,23 +122,16 @@ export function buildAdvisorFollowUp(agent, _prior) {
     // verbatim instead of re-reading. The agent response table is the only
     // "to-verify" list: it carries the agent's fix CLAIMS (semantics = verify
     // fixes), without the old line numbers/content excerpts that enable
-    // verbatim restatement. When the agent did not answer, the fallback below
-    // asks for a full re-evaluation — re-injecting a sanitized prior table was
-    // considered and rejected (it would be restated all the same, and the
-    // fallback already covers the no-list case).
+    // verbatim restatement. When the agent did not answer, the fallback names
+    // the review surface (scopeFiles) so the reviewer still has a direction —
+    // re-injecting a sanitized prior table was considered and rejected (it
+    // would be restated all the same, and the fallback already covers the
+    // no-list case).
     "## Agent Response (fix claims to verify)",
     response,
     "",
     "## Instructions",
-    round === 2
-      ? "Verify each fix the agent claims in its response table against the CURRENT FILE STATE. Flag any obvious NEW issues introduced by the fixes (crashes, data loss, logic errors — not style). Produce a verification table."
-      : "Strictly verify ONLY the fixes the agent claims against the CURRENT FILE STATE (use `read` — an empty diff does not mean the fixes are absent). Do NOT look for new issues.",
-    "",
-    "IMPORTANT: the agent response table is a CLAIM — always verify current file state with `read` before judging a fix as done or undone.",
-    // Round-aware evidence rule: "New" entries only exist in round 2 (round 3+ forbids them).
-    `STALE-CONTEXT WARNING: only fresh \`read\` results describe the current state — never judge from earlier snapshots or from \`git diff\` (committed fixes never show in \`git diff HEAD\`). Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may be fabricated or stale). Uncited findings are unverified and will be ignored.`,
-    "",
-    "Do NOT re-read AGENTS.md / design docs unless a claimed fix names them. Verify fix status with `read` only — you have no git tool this round; git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).",
+    ...buildConvergenceInstructions(round, scopeFiles),
     "",
   ]
   return parts.join("\n")
@@ -175,8 +169,8 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // Guard matches buildAdvisorSystemPrompt's ROUND1 condition
   // (`!prior || _advisorRound === 0`): a stale prior table with _advisorRound 0
   // (history persists across runAgent calls) must yield a fresh round-1 review —
-  // ROUND1 system prompt + full-scope user message, never the verify-prior
-  // follow-up (which would contradict the ROUND1 system prompt).
+  // ROUND1 system prompt + full-scope user message, never the convergence
+  // (fix-claims) follow-up (which would contradict the ROUND1 system prompt).
   if (!prior || (agent._advisorRound || 0) === 0) {
     // No prior table = new review cycle (first review, all-clear, or session
     // clear): reset the round so the prompt (ROUND1) and tool set stay
@@ -197,9 +191,10 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // NO prior issue table in the context (decision 2026-08-05: it was the
   // strongest restatement anchor). buildAdvisorSystemPrompt selects ROUND2 for
   // round 2, ROUND3 for rounds 3+ — a failed review retry keeps _advisorRound
-  // so the convergence prompt matches the attempt count.
+  // so the convergence prompt matches the attempt count. scopeFiles gives the
+  // fallback (agent gave no response table) a concrete review surface.
   return [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-    { role: "user", content: buildAdvisorFollowUp(agent, prior) },
+    { role: "user", content: buildAdvisorFollowUp(agent, prior, paths ?? agent._touchedFiles ?? null) },
   ]
 }
