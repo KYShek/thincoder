@@ -15,9 +15,11 @@
  *
  * Convergence protocol:
  *   Round 1: full review → produces a numbered issue table.
- *   Agent responds with a response table per issue.
- *   Round 2: semi-convergence — verifies table + can flag obvious new issues.
- *   Round 3+: strict convergence — only checks the prior issue table.
+ *   Agent responds with a response table per issue (fix claims).
+ *   Round 2: semi-convergence — verifies the fix claims + can flag obvious new issues.
+ *   Round 3+: strict convergence — only checks the agent fix claims.
+ *   The prior issue table is NEVER injected into rounds 2+ (decision 2026-08-05) —
+ *   it was the strongest restatement anchor; only the agent's fix claims travel.
  *   Each round replaces the system prompt (ROUND1 → ROUND2 → ROUND3) so the
  *   round-1 full-scope mandate can't bleed into later rounds, plus a mechanical
  *   cap (MAX_ADVISOR_ROUNDS in run.mjs) refuses a 6th review call outright.
@@ -74,7 +76,7 @@ try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.m
  */
 export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
   // Design review: round 1 uses the dedicated design-review prompt (full scope +
-  // approval token); rounds 2+ converge like code reviews (verify prior table).
+  // approval token); rounds 2+ converge like code reviews (verify agent fix claims).
   if (reviewType === "design") {
     const prior = _prior ?? extractPriorIssueTable(agent.history)
     if (!prior || (agent._advisorRound || 0) === 0) {
@@ -145,7 +147,7 @@ export function buildAdvisorFollowUp(agent, _prior) {
  * Build the advisor conversation for this run.
  * EVERY call builds a fresh [system, user] session (decision d698434) — no
  * session reuse across rounds: round 1 = full scope (ROUND1 prompt), rounds
- * 2+ = convergence (ROUND2/ROUND3 prompt + prior-table follow-up).
+ * 2+ = convergence (ROUND2/ROUND3 prompt + fix-claims follow-up).
  * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review
  * @param {string} [reviewType] — "design" or "code" (default)
  * @param {string|null} [designToken] — design-review approval token (design only)
@@ -167,7 +169,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // Every round is a FRESH session (decision d698434): round 2+ must NOT reuse
   // round 1's messages — the old read outputs are the top anchoring source of
   // re-review false reports (the model quoted pre-fix file content instead of
-  // re-reading) and a token sink. The prior table + agent response table are
+  // re-reading) and a token sink. The agent response table (fix claims) is
   // injected through buildAdvisorFollowUp instead; the system prompt carries
   // the round (ROUND2/ROUND3) via buildAdvisorSystemPrompt.
   // Guard matches buildAdvisorSystemPrompt's ROUND1 condition

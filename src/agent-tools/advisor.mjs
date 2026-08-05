@@ -81,8 +81,8 @@ export const advisorTool = {
     "Use type='code' (default) to review code changes after implementation — pass paths=[...] to specify which files or directories to review, or documents=[...] for acceptance criteria context. " +
     "The advisor is an independent read-only sub-agent that explores the codebase, " +
     "reads files, and traces callers via grep/lsp. " +
-    "For code review: round 1 does a full review, round 2 verifies the prior table, " +
-    "round 3+ strictly checks only the prior table — convergence, not divergence. " +
+    "For code review: round 1 does a full review, round 2 verifies the agent's fix claims, " +
+    "round 3+ strictly checks only the fix claims — convergence, not divergence. " +
     "For design review: single-pass review against methodology and requirements. " +
     "Review criteria come from .thincoder/advisor.md (if present) or sensible defaults. " +
     "After the review, you MUST produce a response table (see discipline rules for format). " +
@@ -134,7 +134,7 @@ export const advisorTool = {
     // Design review: NO round reset — design reviews share the 5-round convergence
     // budget with code reviews (round advances in agent.mjs; cap in run.mjs).
     // Session reset also removed: design rounds 2+ continue the advisor session
-    // like code reviews (prior table + round-aware prompts).
+    // like code reviews (fix claims + round-aware prompts).
 
     // Generate the design token BEFORE the review and inject it into the advisor's prompt.
     // The advisor (LLM) decides pass/fail itself and echoes the token only on approval —
