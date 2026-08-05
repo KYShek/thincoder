@@ -28,10 +28,14 @@ const DEFAULT_CRITERIA = `Review the code changes, focusing on:
  * all-clear (nothing to follow up on).
  */
 export function extractPriorIssueTable(history) {
-  // allClear: exact phrases the prompts instruct the advisor to use on a clean review.
-  // NOTE: "已修复" (Fixed) is NOT here — it's a per-row Status value in convergence tables,
-  // and a mixed table must continue convergence even if some rows are Fixed.
-  const allClear = ["no 🔴", "all clear", "全部通过", "review passed", "no issues found", "no new issues"]
+  // allClear: exact phrases the prompts instruct the advisor to use on a clean
+  // round-1 review. "no new issues" is DELIBERATELY absent: verification-table
+  // outputs (round 2+) commonly conclude with "No new issues found" (round 3+
+  // instructions even SAY "do not look for new issues") — treating that phrase
+  // as all-clear would reset the convergence budget after every round-2 review
+  // (the observed "always round 2" bug: prior → null → _advisorRound reset → 1→2→1…).
+  // Convergence tables are judged ROW-LEVEL (Status column), never by phrase.
+  const allClear = ["no 🔴", "all clear", "全部通过", "review passed", "no issues found"]
   // Negative signals: a table listing SOME items as unfixed is NOT all-clear.
   // Applied when the message carries a Status column (English or Chinese convergence
   // format) — "failed"/"❌" in a round-1 Issue description must NOT trigger it.
@@ -55,7 +59,15 @@ export function extractPriorIssueTable(history) {
     // column) — Chinese legacy tables lack it, but they are issue tables, not convergence.
     const hasStatusColumn = lineHasHeader(text, CONVERGENCE_TABLE_HEADER)
       || /Status|状态/.test(text.slice(0, text.indexOf("\n") + 1))
-    if (hasStatusColumn && partiallyFixedRe.test(lower)) return { text, sinceIdx: i }
+    if (hasStatusColumn) {
+      // Convergence/verification table: pass/fail is row-level — free-text
+      // phrases like "no new issues found" / "review passed" are partial or
+      // boilerplate statements in verification outputs. Some row unfixed →
+      // convergence continues; every row fixed → all clear (fresh cycle).
+      if (partiallyFixedRe.test(lower)) return { text, sinceIdx: i }
+      return null
+    }
+    // Issue table (round 1 / design): phrase-based all-clear detection.
     if (allClear.some((s) => lower.includes(s))) return null
     // sinceIdx = the advisor call's own index; extractAgentResponseTable skips it (role !== assistant)
     return { text, sinceIdx: i }

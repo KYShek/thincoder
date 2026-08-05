@@ -146,6 +146,38 @@ test("extractPriorIssueTable: Chinese mixed 已修复/未修复 returns table", 
   assert.ok(result.text.includes("未修复"))
 })
 
+test("extractPriorIssueTable: Unfixed rows + 'no new issues' phrase → returns table (round-2 reset bug regression)", () => {
+  // Verification tables commonly conclude "No new issues found" — that phrase
+  // must NOT be read as all-clear while rows are still Unfixed. Before this
+  // fix it returned null → prior lost → _advisorRound reset → "always round 2".
+  const table = `| # | Orig# | File | Severity | Status | Notes |
+|---|-------|------|----------|--------|-------|
+| 1 | 3 | src/x.mjs | 🔴 | Unfixed | still broken |
+No new issues found.`
+  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
+  assert.notEqual(result, null, "Unfixed rows keep convergence despite the 'no new issues' closing")
+  assert.ok(result.text.includes("Unfixed"))
+})
+
+test("extractPriorIssueTable: all-fixed verification table → null (row-level pass, not phrase)", () => {
+  const table = `| # | Orig# | File | Severity | Status | Notes |
+|---|-------|------|----------|--------|-------|
+| 1 | 3 | src/x.mjs | 🔴 | Fixed | done |
+| 2 | 5 | src/y.mjs | 🟡 | Fixed | done |
+All issues resolved.`
+  assert.equal(extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }]), null)
+})
+
+test("extractPriorIssueTable: round-1 issue table with 'no new issues' phrase → table kept (phrase no longer all-clear)", () => {
+  const table = `| # | File | Severity | Issue | Suggestion |
+|---|------|----------|-------|------------|
+| 1 | src/x.mjs | 🔴 | bug A | fix A |
+No new issues found in the rest of the codebase.`
+  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
+  assert.notEqual(result, null, "issue table with real issues is not all-clear")
+})
+
+
 
 // ────────────────────────────────────────
 // extractAgentResponseTable
