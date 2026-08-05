@@ -17,6 +17,7 @@ import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable
  * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (requirements + design + referenced docs).
  *   When set, the review input is built from this list ONLY — no git-diff change-set collection.
  *   When absent, the legacy git-diff-based scope is kept (backward compatible).
+ * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review (deduped; shown under Review Scope)
  * @returns {string} the user message
  */
 export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = null, documents = null, paths = null) {
@@ -117,7 +118,9 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     parts.push("")
   }
 
-  parts.push("## Review Scope")
+  if (pathList.length > 0 || docList.length > 0) {
+    parts.push("## Review Scope")
+  }
   if (pathList.length > 0) {
     parts.push("Review these code files/directories — read them in full for context:")
     parts.push("")
@@ -189,6 +192,7 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
  * Round 2 may flag obvious new issues; round 3+ is strict verification.
  * @param {number} round — convergence round number (2+)
  * @param {string[]|null} scopeFiles — optional file list for the no-response fallback
+ * @returns {string[]} the numbered instruction lines (callers spread them)
  */
 export function buildConvergenceInstructions(round, scopeFiles = null) {
   const fileList = scopeFiles?.length

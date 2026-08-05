@@ -103,6 +103,10 @@ export function buildAdvisorSystemPrompt(agent, prior, reviewType) {
  * Deliberately NO git information injected (no diff snapshot, no git context):
  * git output misled re-reviews — committed fixes never show in `git diff HEAD`,
  * so the model read "no changes" as "no fixes". Verification is `read`-only.
+ * @param {Object} agent — the parent agent (history used for the response table)
+ * @param {Object|null} prior — prior issue table (extracted from history when null)
+ * @param {string[]|null} [scopeFiles] — review surface for the no-response fallback (cwd-relative)
+ * @returns {string} the follow-up user message
  */
 export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   // Convergence follow-up REQUIRES a prior review record. The caller usually
@@ -144,16 +148,6 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
 }
 
 /**
- * Build the advisor conversation for this run.
- * EVERY call builds a fresh [system, user] session (decision d698434) — no
- * session reuse across rounds: round 1 = full scope (ROUND1 prompt), rounds
- * 2+ = convergence (ROUND2/ROUND3 prompt + fix-claims follow-up).
- * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review
- * @param {string} [reviewType] — "design" or "code" (default)
- * @param {string|null} [designToken] — design-review approval token (design only)
- * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (passed through to buildAdvisorUserMessage)
- */
-/**
  * Resolve the review surface for the convergence fallback: explicit `paths`
  * win; otherwise the runtime mutation record (_touchedFiles, ABSOLUTE) is
  * normalized to cwd-relative so the fallback list matches the relative-path
@@ -167,6 +161,16 @@ export function resolveScopeFiles(agent, paths) {
   return null
 }
 
+/**
+ * Build the advisor conversation for this run.
+ * EVERY call builds a fresh [system, user] session (decision d698434) — no
+ * session reuse across rounds: round 1 = full scope (ROUND1 prompt), rounds
+ * 2+ = convergence (ROUND2/ROUND3 prompt + fix-claims follow-up).
+ * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review
+ * @param {string} [reviewType] — "design" or "code" (default)
+ * @param {string|null} [designToken] — design-review approval token (design only)
+ * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (passed through to buildAdvisorUserMessage)
+ */
 export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null, paths = null) {
   const prior = extractPriorIssueTable(agent.history)
 
