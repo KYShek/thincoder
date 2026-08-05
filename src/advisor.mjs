@@ -105,10 +105,19 @@ export function buildAdvisorSystemPrompt(agent, prior, reviewType) {
  * so the model read "no changes" as "no fixes". Verification is `read`-only.
  */
 export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
-  const response = extractAgentResponseTable(agent.history, prior?.sinceIdx ?? 0)
+  // Convergence follow-up REQUIRES a prior review record. The caller usually
+  // passes it; fall back to extracting it from history (compat for direct
+  // callers/tests). If there is genuinely no prior review, a nullish table
+  // would make the response-table extraction scan from index 0 and possibly
+  // match an unrelated stale table — return a round-1-style message instead.
+  const p = prior ?? extractPriorIssueTable(agent.history)
+  if (!p) {
+    return "[System reminder: convergence follow-up requested without a prior review — perform a fresh full review.]"
+  }
+  const response = extractAgentResponseTable(agent.history, p.sinceIdx)
     || (scopeFiles?.length
       ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
-      : "(Agent did not provide a response table — perform a fresh review of the files named in the system prompt context)")
+      : "(Agent did not provide a response table — perform a fresh full review; the review surface is unknown, ask the user for the file list)")
   const round = (agent._advisorRound || 0) + 1
   const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
 
@@ -144,6 +153,20 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
  * @param {string|null} [designToken] — design-review approval token (design only)
  * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (passed through to buildAdvisorUserMessage)
  */
+/**
+ * Resolve the review surface for the convergence fallback: explicit `paths`
+ * win; otherwise the runtime mutation record (_touchedFiles, ABSOLUTE) is
+ * normalized to cwd-relative so the fallback list matches the relative-path
+ * norm the reviewer sees everywhere else.
+ */
+export function resolveScopeFiles(agent, paths) {
+  if (Array.isArray(paths)) return [...new Set(paths)]
+  if (agent._touchedFiles?.length) {
+    return [...new Set(agent._touchedFiles.map((p) => (p.startsWith(agent.cwd) ? p.slice(agent.cwd.length + 1) : p)))]
+  }
+  return null
+}
+
 export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null, paths = null) {
   const prior = extractPriorIssueTable(agent.history)
 
@@ -190,11 +213,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // round 2, ROUND3 for rounds 3+ — a failed review retry keeps _advisorRound
   // so the convergence prompt matches the attempt count. scopeFiles gives the
   // fallback (agent gave no response table) a concrete review surface.
-  // _touchedFiles are ABSOLUTE — normalize to cwd-relative so the fallback list
-  // matches the relative-path norm the reviewer sees everywhere else.
-  const scopeFiles = paths ?? (agent._touchedFiles?.length
-    ? agent._touchedFiles.map((p) => (p.startsWith(agent.cwd) ? p.slice(agent.cwd.length + 1) : p))
-    : null)
+  const scopeFiles = resolveScopeFiles(agent, paths)
   return [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
     { role: "user", content: buildAdvisorFollowUp(agent, prior, scopeFiles) },

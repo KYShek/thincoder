@@ -11,7 +11,7 @@ import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable
 /**
  * Build the user message for an advisor review session.
  * @param {Object} agent — the parent agent
- * @param {Object|null} [_prior] — prior issue table
+ * @param {Object|null} [prior] — prior issue table
  * @param {string} [reviewType] — "design" or "code" (default)
  * @param {string|null} [designToken] — token injected into the design-review prompt; the advisor echoes it only on approval
  * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (requirements + design + referenced docs).
@@ -19,12 +19,12 @@ import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable
  *   When absent, the legacy git-diff-based scope is kept (backward compatible).
  * @returns {string} the user message
  */
-export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken = null, documents = null, paths = null) {
-  const prior = _prior ?? extractPriorIssueTable(agent.history)
+export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = null, documents = null, paths = null) {
+  const p = prior ?? extractPriorIssueTable(agent.history)
 
   const parts = []
   const docList = Array.isArray(documents) ? documents.filter((d) => typeof d === "string" && d.trim()) : []
-  const pathList = Array.isArray(paths) ? paths.filter((p) => typeof p === "string" && p.trim()) : []
+  const pathList = Array.isArray(paths) ? [...new Set(paths.filter((p) => typeof p === "string" && p.trim()))] : []
 
   // Design review: simplified message — focus on the design doc, not code
   if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
@@ -101,8 +101,8 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   // buildAdvisorUserMessage with a prior table. Kept to avoid breaking those.
   // Same rule as buildAdvisorFollowUp: NO prior table in the context (decision
   // 2026-08-05) — only the agent's fix claims.
-  if (prior && (agent._advisorRound || 0) > 0) {
-    const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
+  if (p && (agent._advisorRound || 0) > 0) {
+    const response = extractAgentResponseTable(agent.history, p.sinceIdx)
       || (pathList.length > 0
         ? "(Agent did not provide a response table — perform a fresh review of: " + pathList.slice(0, 10).join(", ") + ")"
         : "(Agent did not provide a response table — perform a fresh review of the files named in the system prompt context)")
@@ -163,7 +163,7 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   }
 
   // Instructions — round-aware: re-reviews skip convention discovery entirely
-  const isReReview = prior && (agent._advisorRound || 0) > 0
+  const isReReview = p && (agent._advisorRound || 0) > 0
   parts.push("## Instructions")
   parts.push("1. IMPORTANT: the review scope lists the files under review — always verify current file state with `read` before judging. Never decide based on earlier snapshots alone.")
   if (isReReview) {
