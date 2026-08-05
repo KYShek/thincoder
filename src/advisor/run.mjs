@@ -3,7 +3,7 @@
  * Message building lives in advisor.mjs.
  */
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve, sep } from "node:path"
 import { chat } from "../provider/core.mjs"
 import { findProvider, specForModel } from "../config.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
@@ -35,8 +35,10 @@ function estimateTokens(messages) {
   }, 0)
 }
 
-/** Compact early messages when context grows too large */
-async function compactMessages(messages, provider) {
+/** Compact early messages when context grows too large — LOCAL trimming only
+ *  (no LLM summarization; the provider parameter is kept for signature parity
+ *  with a future summarizer). */
+function compactMessages(messages) {
   // Keep: system prompt, last 10 assistant+tool pairs, user message
   if (messages.length <= 20) return messages
   
@@ -126,7 +128,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     const currentTokens = estimateTokens(messages)
     if (currentTokens > MAX_CONTEXT_TOKENS * 0.8) {
       onOutput?.({ kind: "text", text: `\n[Context compacted: ${currentTokens} tokens → reducing to fit window]\n` })
-      messages = await compactMessages(messages, provider)
+      messages = compactMessages(messages)
       if (estimateTokens(messages) > MAX_CONTEXT_TOKENS) {
         return `Advisor: context window limit reached (${currentTokens} tokens). Review incomplete — too many tool calls. Try a narrower scope.`
       }
@@ -136,12 +138,18 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     // seconds to tens of seconds (server-side prefill on large contexts, per
     // tool-round LLM return). A placeholder keeps the panel visibly working
     // instead of looking frozen; the first reasoning/content chunk follows.
-    onOutput?.({ kind: "think", text: "\n[thinking…]\n" })
+    // kind "text" (not "think"): the placeholder is NOT model reasoning — it
+    // must not be styled/accumulated as one.
+    onOutput?.({ kind: "text", text: "\n[thinking…]\n" })
 
     const response = await chat(provider, {
       messages,
       tools: toolSchemas,
-      signal: (signal && !signal.aborted) ? signal : null,
+      // Pass the signal UNCONDITIONALLY: a signal aborted between the check
+      // above and here must still cancel the fetch. core.mjs composes
+      // AbortSignal.any([signal, timeout]) — an already-aborted signal makes
+      // the request fail immediately instead of ignoring the interrupt.
+      signal: signal ?? null,
       onToken: onText,
       onReasoning: onThink,
     })
@@ -278,7 +286,7 @@ function extractUnfixedIssues(priorText) {
   const lines = priorText.split("\n")
   return lines
     .filter((line) => /\|\s*\d+\s*\|/.test(line)) // 匹配表格行
-    .filter((line) => !/fixed|resolved|done|✓|✔/i.test(line))
+    .filter((line) => !/\bfixed\b|\bresolved\b|\bdone\b|✓|✔/i.test(line))
     // Strip only the leading/trailing table pipes — inner pipes (escaped or
     // in-cell content) stay intact instead of garbling the cap message.
     .map((line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").trim())
@@ -382,7 +390,7 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
 // `file:line: content` citations — the file group is narrowed to source/config
 // extensions so URLs (`example.com:8080: …`) don't become false-positive
 // citations that fail as "file unreadable" in the verification report.
-const CITATION_RE = /([\w./\\-]+\.(?:mjs|cjs|js|ts|jsx|tsx|mts|cts|py|rs|go|c|h|cpp|hpp|java|rb|php|sh|bash|json|md|markdown|mdx|yaml|yml|toml|css|html|mjs)):(\d+):\s*([^`\n]{4,})/g
+const CITATION_RE = /([\w./\\-]+\.(?:mjs|cjs|js|ts|jsx|tsx|mts|cts|py|rs|go|c|h|cpp|hpp|java|rb|php|sh|bash|json|md|markdown|mdx|yaml|yml|toml|css|html)):(\d+):\s*([^`\n]{4,})/g
 
 /** Extract `file:line: content` citations from a review text. */
 export function extractCitations(text) {
@@ -403,9 +411,18 @@ export function verifyCitations(text, cwd) {
   const citations = extractCitations(text)
   const matched = []
   const failed = []
+  const root = resolve(cwd) + sep
   for (const c of citations) {
     try {
-      const line = readFileSync(join(cwd, c.file), "utf8").split("\n")[c.line - 1] ?? ""
+      // Path confinement: citation paths are LLM-generated — never trust them.
+      // A hallucinated "../config.json" would otherwise read (and leak via the
+      // report) files outside the project, including API-key configs.
+      const resolved = resolve(join(cwd, c.file))
+      if (!resolved.startsWith(root)) {
+        failed.push({ ...c, reason: "path traversal" })
+        continue
+      }
+      const line = readFileSync(resolved, "utf8").split("\n")[c.line - 1] ?? ""
       if (line.includes(c.content)) matched.push(c)
       else failed.push(c)
     } catch {

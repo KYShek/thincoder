@@ -807,6 +807,24 @@ test("verifyCitations: matches real file content, flags stale/missing citations"
   assert.ok(report.includes("nope.mjs:1"), "missing file listed")
 })
 
+test("verifyCitations: path traversal citation is rejected (never reads outside cwd)", async () => {
+  const { verifyCitations } = await import("../src/advisor/run.mjs")
+  const dir = mkdtempSync(join(tmpdir(), "cit-sec-"))
+  const secret = join(dir, "..", "cit-sec-secret.json")
+  writeFileSync(secret, '{"apiKey":"super-secret-value"}\n', "utf8")
+  try {
+    const text = '| 1 | a.mjs | 🔴 | bug | Unfixed |\nEvidence: `../cit-sec-secret.json:1: {"apiKey":"super-secret-value"}`'
+    const { total, matched, failed } = verifyCitations(text, dir)
+    assert.equal(total, 1)
+    assert.equal(matched.length, 0, "no match — traversal path must not be read")
+    assert.equal(failed[0].reason, "path traversal", "flagged as traversal")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(secret, { force: true })
+  }
+})
+
+
 test("prepareAdvisorMessages: run with code mutations PRESERVES the round on prior loss", () => {
   // Deterministic rule (user decision): a run that modified code WILL be
   // pushed back by the advisor guard — the round must keep advancing toward
