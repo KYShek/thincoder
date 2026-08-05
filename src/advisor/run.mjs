@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { chat } from "../provider/core.mjs"
-import { findProvider } from "../config.mjs"
+import { findProvider, specForModel } from "../config.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
 import { prepareAdvisorMessages } from "../advisor.mjs"
 import { extractPriorIssueTable } from "../advisor/history.mjs"
@@ -152,7 +152,12 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       return response.content.trim()
     }
 
-    // Push assistant message with tool calls
+    // Push assistant message with tool calls. reasoning_content ECHO is
+    // mandatory for reasoningEcho:"required" providers (deepseek/kimi): the
+    // server stops returning reasoning_content on later rounds when the
+    // tool-call assistant history lacks it — the observed "reasoning stops
+    // after the first tool call, returns only at the final answer" symptom.
+    // Mirrors the main agent's push (agent.mjs).
     messages.push({
       role: "assistant",
       content: response.content || null,
@@ -160,6 +165,9 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
         id: tc.id, type: "function",
         function: { name: tc.name, arguments: tc.arguments },
       })),
+      ...(response.reasoning && specForModel(provider.model).reasoningEcho === "required"
+        ? { reasoning_content: response.reasoning }
+        : {}),
     })
 
     // Execute each tool call
