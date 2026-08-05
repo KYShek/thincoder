@@ -224,13 +224,14 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     ]
   }
 
-  // Convergence rounds (2+): fresh [system(ROUND2/3), user(fix claims + round
-  // instructions)]. buildAdvisorFollowUp carries the agent's fix-claim table —
-  // NO prior issue table in the context (decision 2026-08-05: it was the
-  // strongest restatement anchor). buildAdvisorSystemPrompt selects ROUND2 for
-  // round 2, ROUND3 for rounds 3+ — a failed review retry keeps _advisorRound
-  // so the convergence prompt matches the attempt count. scopeFiles gives the
-  // fallback (agent gave no response table) a concrete review surface.
+  // Convergence rounds (2+): fresh [system(ROUND2/3), user(prior table + fix
+  // claims)]. buildAdvisorFollowUp carries BOTH the prior issue table (the
+  // only complete verification list — decision 2026-08-05, reversed) and the
+  // agent's fix-claim table (focus reference). buildAdvisorSystemPrompt
+  // selects ROUND2 for round 2, ROUND3 for rounds 3+ — a failed review retry
+  // keeps _advisorRound so the convergence prompt matches the attempt count.
+  // scopeFiles gives the fallback (agent gave no response table) a concrete
+  // review surface.
   const scopeFiles = resolveScopeFiles(agent, paths)
   return [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
