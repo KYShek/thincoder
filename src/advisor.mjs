@@ -39,7 +39,7 @@
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { extractPriorIssueTable, extractAgentResponseTable, hasReviewPassedOutput } from "./advisor/history.mjs"
+import { extractPriorIssueTable, extractAgentResponseTable } from "./advisor/history.mjs"
 import { buildAdvisorUserMessage, buildConvergenceInstructions, resolveScopeFiles } from "./advisor/messages.mjs"
 // Re-export for run.mjs and tests (keeps their imports from "../advisor.mjs" stable)
 export { ADVISOR_MD_PATH, extractPriorIssueTable, extractAgentResponseTable, extractConversationBackground } from "./advisor/history.mjs"
@@ -190,22 +190,21 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // (history persists across runAgent calls) must yield a fresh round-1 review —
   // ROUND1 system prompt + full-scope user message, never the convergence
   // (fix-claims) follow-up (which would contradict the ROUND1 system prompt).
-  // No prior table: NEW cycle (reset) OR failed/interrupted review (KEEP the
-  // round — the retry must not restart at round 1, otherwise "review → fix →
-  // re-review" loops never advance toward the 5-round cap). Distinguisher:
-  // a completed PASS carries a table header or an all-clear phrase; a failed
-  // review returns only an "Advisor: …" message. Either way the message is a
-  // fresh full review (no issue list to verify without a prior table) — only
-  // the round counter differs.
+  // No prior table: reset ONLY when this run made no code changes (user
+  // decision 2026-08-05: any loop that modified code must NOT reset — the
+  // advisor guard WILL push back, so the convergence round must keep advancing
+  // toward the cap; a run with no mutations has no push-back risk and a reset
+  // is safe). Deterministic runtime state (`_mutatedThisRun`) decides — never
+  // model output (phrases/table headers drift; three rounds of false reports
+  // proved it). Either way the message is a fresh full review (no issue list
+  // exists without a prior table) — only the round counter differs.
   if (!prior) {
-    if ((agent._advisorRound || 0) > 0 && !hasReviewPassedOutput(agent.history)) {
-      // Failed/interrupted review: KEEP the round (cap keeps advancing).
-      // The fresh full review below still applies — no table to verify against.
-    } else {
-      // New review cycle (first review, all-clear, or session clear): reset
+    if (!agent._mutatedThisRun) {
+      // New review cycle (first review, all-clear, or no code changes): reset
       // the round so the cycle gets its own 5-round budget.
       agent._advisorRound = 0
     }
+    // Mutations exist → KEEP the round (cap keeps advancing through retries).
     const user = buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths)
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },

@@ -2633,6 +2633,7 @@ test("mergeChildMutations: eng-coder mutations trigger the parent's guards", () 
     _calledAdvisorThisRun: true, // prior design review — must be invalidated
     _verifiedThisRun: true,
     _verifyPassed: true,
+    _advisorRound: 5,
   }
   const child = {
     _mutatedThisRun: true,
@@ -2645,6 +2646,7 @@ test("mergeChildMutations: eng-coder mutations trigger the parent's guards", () 
   assert.equal(parent._calledAdvisorThisRun, false, "prior advisor review invalidated — code review must run AFTER eng-coder changes")
   assert.equal(parent._verifiedThisRun, false, "prior verify invalidated")
   assert.equal(parent._verifyPassed, undefined)
+  assert.equal(parent._advisorRound, 5, "round counter PRESERVED — merged code continues the current convergence cycle (no resets in code-mutating loops)")
 })
 
 test("mergeChildMutations: child without mutations changes nothing", () => {

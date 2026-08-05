@@ -76,28 +76,6 @@ export function extractPriorIssueTable(history) {
   return null
 }
 
-/** True when the last review output was a COMPLETED PASS: carries a table
- *  header (extractPriorIssueTable judged it all-clear → cycle passed) or an
- *  all-clear phrase ("everything is fine", "no issues found", … — the round-1
- *  prompts instruct these on a clean review). Absent review output (a failed/
- *  interrupted review returns only an "Advisor: …" message with no header and
- *  no all-clear phrase) means the round counter must NOT be reset — the retry
- *  keeps its convergence round. */
-export function hasReviewPassedOutput(history) {
-  const entries = Array.isArray(history) ? history : []
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const m = entries[i]
-    if (m.role !== "tool" || typeof m.content !== "string") continue
-    const lower = m.content.toLowerCase()
-    if (lineHasHeader(m.content, ADVISOR_TABLE_HEADER)
-      || lineHasHeader(m.content, DESIGN_TABLE_HEADER)
-      || lineHasHeader(m.content, CONVERGENCE_TABLE_HEADER)
-      || lineHasHeader(m.content, LEGACY_ADVISOR_HEADER)) return true
-    if (ALL_CLEAR_PHRASES.some((s) => lower.includes(s))) return true
-  }
-  return false
-}
-
 /** True when some line of `text` starts with `header` — table headers always sit at line start. */
 function lineHasHeader(text, header) {
   return text.split("\n").some((l) => l.trimStart().startsWith(header))
