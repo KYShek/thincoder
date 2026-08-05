@@ -450,7 +450,7 @@ test("buildAdvisorUserMessage: round 2 includes convergence data (fix claims, no
     history: [{ role: "tool", tool_call_id: "a1", content: `Review:\n${issueTable}` }],
     _advisorRound: 1,
   }
-  const msg = buildAdvisorUserMessage(agent)
+  const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.js"])
   assert.ok(msg.startsWith("## Round 2 — Verify Agent Fixes + Flag New Issues"))
   assert.ok(!msg.includes("## Prior Issue Table"), "prior table is NOT injected (decision 2026-08-05)")
   assert.ok(!msg.includes(issueTable), "old issue rows are not restated")
@@ -482,7 +482,8 @@ test("buildAdvisorUserMessage: _advisorRound===0 skips convergence data", () => 
   }
   const msg = buildAdvisorUserMessage(agent)
   assert.ok(!msg.includes("## Prior Issue Table"))
-  assert.ok(msg.includes("## Review Scope"))
+  assert.ok(!msg.includes("## Review Scope"), "no empty Review Scope heading without paths/documents (decision: suppress empty sections)")
+  assert.ok(msg.includes("## Instructions"))
 })
 
 test("buildAdvisorUserMessage: includes recent conversation background", () => {
