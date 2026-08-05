@@ -738,9 +738,11 @@ test("extractConversationBackground: returns null on empty/noise-only history", 
   assert.equal(extractConversationBackground([{ role: "user", content: "[System reminder: x]" }]), null)
 })
 
-test("runAdvisorReview: documentation-only auto-skip removed", async () => {
+test("runAdvisorReview: no doc-only auto-skip — review runs (or fails explicitly), never silently passes", async () => {
   // Doc-only fast path was removed — scope is now explicit via paths/documents.
-  // runAdvisorReview without paths just tries to run (fake provider → error).
+  // With a broken provider the review must surface an explicit failure
+  // ("Advisor: review failed …"), never a pass marker. (fetch on the fake
+  // provider's undefined baseURL throws immediately — no slow network wait.)
   const { runAdvisorReview } = await import("../src/advisor/run.mjs")
   const agent = {
     config: { advisor: { enabled: true } },
@@ -751,6 +753,7 @@ test("runAdvisorReview: documentation-only auto-skip removed", async () => {
     cwd: tmpdir(),
   }
   const result = await runAdvisorReview(agent, "code", {})
+  assert.ok(result.startsWith("Advisor:"), "explicit failure/notice, not a silent pass")
   assert.ok(!result.includes("CODE_REVIEW_PASSED"), "CODE_REVIEW_PASSED should no longer appear")
 })
 

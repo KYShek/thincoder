@@ -36,27 +36,31 @@ function estimateTokens(messages) {
 }
 
 /** Compact early messages when context grows too large — LOCAL trimming only
- *  (no LLM summarization; the provider parameter is kept for signature parity
- *  with a future summarizer). */
+ *  (no LLM summarization). MUTATES in place (splice) so the caller's array
+ *  reference stays valid — a reassignment would leave the caller's logging
+ *  (tool-call count, token estimate) reading a stale array. */
 function compactMessages(messages) {
   // Keep: system prompt, last 10 assistant+tool pairs, user message
-  if (messages.length <= 20) return messages
-  
+  if (messages.length <= 20) return
+
   const system = messages[0]
   const recent = messages.slice(-20)
   const old = messages.slice(1, -20)
-  
-  // Summarize old messages
-  const summary = `Earlier exploration: ${old.length} tool calls completed. Key files examined: ${
-    old
-      .filter((m) => m.role === "tool")
-      .map((m) => m.content?.split("\n")[0]?.slice(0, 50))
-      .filter(Boolean)
-      .slice(0, 5)
-      .join(", ")
-  }`
-  
-  return [system, { role: "user", content: `[Context compacted] ${summary}` }, ...recent]
+
+  // Count actual tool messages (old.length counts user/assistant rows too)
+  const toolCount = old.filter((m) => m.role === "tool").length
+  const keyFiles = old
+    .filter((m) => m.role === "tool")
+    .map((m) => m.content?.split("\n")[0]?.slice(0, 50))
+    .filter(Boolean)
+    .slice(0, 5)
+  const filesPart = keyFiles.length > 0 ? ` Key files examined: ${keyFiles.join(", ")}` : ""
+  const summary = `Earlier exploration: ${toolCount} tool calls completed.${filesPart}`
+
+  messages.splice(0, messages.length,
+    system,
+    { role: "user", content: `[Context compacted] ${summary}` },
+    ...recent)
 }
 
 const { readTool, globTool, grepTool, lsTool } = await import("../tools/index.mjs")
@@ -128,7 +132,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     const currentTokens = estimateTokens(messages)
     if (currentTokens > MAX_CONTEXT_TOKENS * 0.8) {
       onOutput?.({ kind: "text", text: `\n[Context compacted: ${currentTokens} tokens → reducing to fit window]\n` })
-      messages = compactMessages(messages)
+      compactMessages(messages)
       if (estimateTokens(messages) > MAX_CONTEXT_TOKENS) {
         return `Advisor: context window limit reached (${currentTokens} tokens). Review incomplete — too many tool calls. Try a narrower scope.`
       }
@@ -207,13 +211,17 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => reject(new Error(`tool timeout after ${TOOL_TIMEOUT_MS}ms`)), TOOL_TIMEOUT_MS)
           })
+          let toolPromise
           try {
-            result = await Promise.race([
-              tool.execute(args, { cwd, agent, onOutput, signal }),
-              timeoutPromise,
-            ])
+            toolPromise = tool.execute(args, { cwd, agent, onOutput, signal })
+            result = await Promise.race([toolPromise, timeoutPromise])
           } finally {
             clearTimeout(timeoutId)
+            // Timeout won → toolPromise is still pending; a later rejection
+            // would surface as an unhandled rejection. The race already
+            // consumed the result/error in the normal path, so this no-op
+            // catch only fires for the abandoned-tool case.
+            toolPromise?.catch(() => {})
           }
         } catch (e) {
           const errorType = e.message.includes("timeout") ? "timeout"
