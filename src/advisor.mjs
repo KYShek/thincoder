@@ -16,10 +16,15 @@
  * Convergence protocol:
  *   Round 1: full review → produces a numbered issue table.
  *   Agent responds with a response table per issue (fix claims).
- *   Round 2: semi-convergence — verifies the fix claims + can flag obvious new issues.
- *   Round 3+: strict convergence — only checks the agent fix claims.
- *   The prior issue table is NEVER injected into rounds 2+ (decision 2026-08-05) —
- *   it was the strongest restatement anchor; only the agent's fix claims travel.
+ *   Round 2: semi-convergence — verifies the prior table + can flag obvious new issues.
+ *   Round 3+: strict convergence — only checks the prior issue table.
+ *   The prior issue table IS injected into rounds 2+ (decision 2026-08-05,
+ *   reversed) — it is the ONLY complete verification list: the agent response
+ *   table covers only issues the agent chose to answer, so skipped issues would
+ *   silently escape convergence without it. The fix-claim table travels as a
+ *   focus reference only. Restatement risk is handled mechanically:
+ *   host-verified citations reject references that do not match the current
+ *   disk state, and fresh sessions exclude old read data.
  *   Each round replaces the system prompt (ROUND1 → ROUND2 → ROUND3) so the
  *   round-1 full-scope mandate can't bleed into later rounds, plus a mechanical
  *   cap (MAX_ADVISOR_ROUNDS in run.mjs) refuses a 6th review call outright.
@@ -58,7 +63,9 @@ const ADVISOR_ROUND1 = readFileSync(join(__dirname, "prompts", "advisor-round1.m
 // buildAdvisorSystemPrompt when _advisorRound > 0.
 const ADVISOR_ROUND2 = readFileSync(join(__dirname, "prompts", "advisor-round2.md"), "utf8")
 const ADVISOR_ROUND3 = readFileSync(join(__dirname, "prompts", "advisor-round3.md"), "utf8")
-// Fallback when advisor-design.md is missing — keep in sync with the real file.
+// Fallback when advisor-design.md is missing — keep in sync with the real
+// file (table format + workflow steps; a drifted fallback would also break
+// extractPriorIssueTable's DESIGN_TABLE_HEADER matching).
 const ADVISOR_DESIGN_FALLBACK = `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
 let ADVISOR_DESIGN = ""
 try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.md"), "utf8") } catch { /* fallback below */ }
@@ -120,6 +127,12 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   const p = prior ?? extractPriorIssueTable(agent.history)
   if (!p) {
     return "[System reminder: convergence follow-up requested without a prior review — perform a fresh full review.]"
+  }
+  // Convergence semantics require round >= 2 (round 1 is the full review, not
+  // verification). A direct caller with _advisorRound 0 would otherwise get a
+  // meaningless "Round 1 — Strict Verification".
+  if ((agent._advisorRound || 0) < 1) {
+    return "[System reminder: convergence follow-up requested at round 1 — a full review is already in progress; no prior verification exists yet.]"
   }
   const noResponseFallback = scopeFiles?.length
     ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
@@ -197,7 +210,9 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // (`!prior || _advisorRound === 0`): a stale prior table with _advisorRound 0
   // (history persists across runAgent calls) must yield a fresh round-1 review —
   // ROUND1 system prompt + full-scope user message, never the convergence
-  // (fix-claims) follow-up (which would contradict the ROUND1 system prompt).
+  // follow-up (which would contradict the ROUND1 system prompt). The
+  // _advisorRound===0 half was lost in the _mutatedThisRun refactor and is
+  // restored here (regression 67ac851 → 6e15a6b window).
   // No prior table: reset ONLY when this run made no code changes (user
   // decision 2026-08-05: any loop that modified code must NOT reset — the
   // advisor guard WILL push back, so the convergence round must keep advancing
@@ -206,14 +221,13 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // model output (phrases/table headers drift; three rounds of false reports
   // proved it). Either way the message is a fresh full review (no issue list
   // exists without a prior table) — only the round counter differs.
-  if (!prior) {
+  if (!prior || (agent._advisorRound || 0) === 0) {
     if (!agent._mutatedThisRun) {
       // New review cycle (first review, all-clear, or no code changes): reset
       // the round so the cycle gets its own 5-round budget.
       agent._advisorRound = 0
-    } else {
-      // Mutations exist → KEEP the round (cap keeps advancing through retries).
     }
+    // Mutations exist → KEEP the round (cap keeps advancing through retries).
     const user = buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths)
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
