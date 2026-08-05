@@ -105,7 +105,7 @@ export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
 export function buildAdvisorFollowUp(agent, _prior) {
   const prior = _prior ?? extractPriorIssueTable(agent.history)
   const response = extractAgentResponseTable(agent.history, prior?.sinceIdx ?? 0)
-    || "(Agent did not provide a response table — re-evaluate each issue)"
+    || "(Agent did not provide a response table — perform a fresh review of the files named in the review scope)"
   const round = (agent._advisorRound || 0) + 1
   const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
 
@@ -190,11 +190,12 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
     ]
   }
 
-  // Convergence rounds (2+): fresh [system(ROUND2/3), user(prior table +
-  // response table + round instructions)]. buildAdvisorFollowUp carries the
-  // prior/response tables; buildAdvisorSystemPrompt selects ROUND2 for round 2,
-  // ROUND3 for rounds 3+ — a failed review retry keeps _advisorRound so the
-  // convergence prompt matches the attempt count.
+  // Convergence rounds (2+): fresh [system(ROUND2/3), user(fix claims + round
+  // instructions)]. buildAdvisorFollowUp carries the agent's fix-claim table —
+  // NO prior issue table in the context (decision 2026-08-05: it was the
+  // strongest restatement anchor). buildAdvisorSystemPrompt selects ROUND2 for
+  // round 2, ROUND3 for rounds 3+ — a failed review retry keeps _advisorRound
+  // so the convergence prompt matches the attempt count.
   return [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
     { role: "user", content: buildAdvisorFollowUp(agent, prior) },

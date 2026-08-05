@@ -103,7 +103,7 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   // 2026-08-05) — only the agent's fix claims.
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
-      || "(Agent did not provide a response table — re-evaluate each issue)"
+      || "(Agent did not provide a response table — perform a fresh review of the files named in the review scope)"
     const round = (agent._advisorRound || 0) + 1
     const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
     parts.push(`## Round ${round} — ${label}`)
@@ -163,10 +163,10 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   // Instructions — round-aware: re-reviews skip convention discovery entirely
   const isReReview = prior && (agent._advisorRound || 0) > 0
   parts.push("## Instructions")
-  parts.push("1. IMPORTANT: the review scope lists the files under review — always verify current file state with `read` before judging. The prior issue table (if any) is HISTORY — never decide based on it alone.")
+  parts.push("1. IMPORTANT: the review scope lists the files under review — always verify current file state with `read` before judging. Never decide based on earlier snapshots alone.")
   if (isReReview) {
     parts.push("2. STALE-CONTEXT WARNING: any diff or file content embedded in earlier messages is a historical snapshot — treat it as expired. Only fresh `read` results describe the current state. Never quote a `-` line from an earlier diff as if it were live code.")
-    parts.push("3. Verify the prior issue table against the CURRENT FILE STATE — use `read` only. You have no git tool; the review scope is defined by the file list above, not by git inspection. Git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).")
+    parts.push("3. Verify the agent fix claims against the CURRENT FILE STATE — use `read` only. You have no git tool; the review scope is defined by the file list above, not by git inspection. Git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).")
     parts.push("4. `read` the files in the Review Scope in full — ALWAYS, regardless of what `git diff` shows. Batch reads/greps in a single reply.")
     parts.push("5. Evidence rule: every 'Unfixed'/'New' finding MUST quote the exact line content from THIS round's `read` output (e.g. `run.mjs:180: timeoutId = setTimeout(...)`). Line numbers alone are NOT evidence — they may come from the stale prior table. Findings without a fresh quoted line are treated as unverified and will not be accepted.")
     parts.push("6. Produce your verification table. Do not re-read content you already have.")

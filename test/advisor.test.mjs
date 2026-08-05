@@ -782,6 +782,14 @@ test("appendCitationReport: no citations → text unchanged", async () => {
 
 test("prepareAdvisorMessages: all-clear review resets the round — prompt and tool set agree", () => {
   // Prior review passed (all-clear → no prior table) but _advisorRound > 0:
+  // the next review must be a fresh round 1 (ROUND1 prompt — git-free tool set
+  // applies to every round, so prompt and tools stay consistent).
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: "everything is fine, no issues" }], _advisorRound: 3, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const session = prepareAdvisorMessages(agent)
+  assert.equal(agent._advisorRound, 0, "round reset — new review cycle")
+  assert.ok(session[0].content.includes("code review advisor"), "ROUND1 prompt (full scope)")
+})
+
 test("prepareAdvisorMessages: _advisorRound=0 with stale prior table → fresh round 1 (no verify-prior follow-up)", () => {
   // History persists across runAgent calls: a prior table can exist while the
   // round counter is 0. The ROUND1 system prompt must not be paired with the
@@ -794,14 +802,6 @@ test("prepareAdvisorMessages: _advisorRound=0 with stale prior table → fresh r
   assert.ok(!session[1].content.includes("Verify Prior Table"), "no verify-prior follow-up at round 0")
   assert.ok(session[1].content.includes("fresh full review"), "round-1 user message")
   assert.equal(agent._advisorRound, 0, "round stays 0")
-})
-
-  // the next review must be a fresh round 1 (ROUND1 prompt — git-free tool set
-  // applies to every round, so prompt and tools stay consistent).
-  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: "everything is fine, no issues" }], _advisorRound: 3, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
-  const session = prepareAdvisorMessages(agent)
-  assert.equal(agent._advisorRound, 0, "round reset — new review cycle")
-  assert.ok(session[0].content.includes("code review advisor"), "ROUND1 prompt (full scope)")
 })
 
 test("prepareAdvisorMessages: failed-retry with prior table PRESERVES the round", () => {
