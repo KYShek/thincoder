@@ -40,7 +40,7 @@ import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { extractPriorIssueTable, extractAgentResponseTable } from "./advisor/history.mjs"
-import { buildAdvisorUserMessage, buildConvergenceInstructions } from "./advisor/messages.mjs"
+import { buildAdvisorUserMessage, buildConvergenceInstructions, resolveScopeFiles } from "./advisor/messages.mjs"
 // Re-export for run.mjs and tests (keeps their imports from "../advisor.mjs" stable)
 export { ADVISOR_MD_PATH, extractPriorIssueTable, extractAgentResponseTable, extractConversationBackground } from "./advisor/history.mjs"
 export { buildAdvisorUserMessage } from "./advisor/messages.mjs"
@@ -106,7 +106,10 @@ export function buildAdvisorSystemPrompt(agent, prior, reviewType) {
  * @param {Object} agent — the parent agent (history used for the response table)
  * @param {Object|null} prior — prior issue table (extracted from history when null)
  * @param {string[]|null} [scopeFiles] — review surface for the no-response fallback (cwd-relative)
- * @returns {string} the follow-up user message
+ * @returns {string} the follow-up user message — or a "[System reminder: …]" fresh-review
+ *   fallback when NO prior review exists at all (caller misuse; the response-table
+ *   extraction would otherwise scan history from index 0 and could match an
+ *   unrelated stale table)
  */
 export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   // Convergence follow-up REQUIRES a prior review record. The caller usually
@@ -118,10 +121,10 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   if (!p) {
     return "[System reminder: convergence follow-up requested without a prior review — perform a fresh full review.]"
   }
-  const response = extractAgentResponseTable(agent.history, p.sinceIdx)
-    || (scopeFiles?.length
-      ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
-      : "(Agent did not provide a response table — perform a fresh full review; the review surface is unknown, ask the user for the file list)")
+  const noResponseFallback = scopeFiles?.length
+    ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
+    : "(Agent did not provide a response table — perform a fresh full review; the review surface is unknown, ask the user for the file list)"
+  const response = extractAgentResponseTable(agent.history, p.sinceIdx) || noResponseFallback
   const round = (agent._advisorRound || 0) + 1
   const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
 
@@ -148,28 +151,20 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
 }
 
 /**
- * Resolve the review surface for the convergence fallback: explicit `paths`
- * win; otherwise the runtime mutation record (_touchedFiles, ABSOLUTE) is
- * normalized to cwd-relative so the fallback list matches the relative-path
- * norm the reviewer sees everywhere else.
+ * Resolve the review surface for the convergence fallback — moved to
+ * messages.mjs so the legacy path shares it (see there).
  */
-export function resolveScopeFiles(agent, paths) {
-  if (Array.isArray(paths)) return [...new Set(paths)]
-  if (agent._touchedFiles?.length) {
-    return [...new Set(agent._touchedFiles.map((p) => (p.startsWith(agent.cwd) ? p.slice(agent.cwd.length + 1) : p)))]
-  }
-  return null
-}
 
 /**
  * Build the advisor conversation for this run.
  * EVERY call builds a fresh [system, user] session (decision d698434) — no
  * session reuse across rounds: round 1 = full scope (ROUND1 prompt), rounds
  * 2+ = convergence (ROUND2/ROUND3 prompt + fix-claims follow-up).
- * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review
+ * @param {Object} agent — the parent agent
  * @param {string} [reviewType] — "design" or "code" (default)
  * @param {string|null} [designToken] — design-review approval token (design only)
  * @param {string[]|null} [documents] — design review only: explicit list of doc paths to review (passed through to buildAdvisorUserMessage)
+ * @param {string[]|null} [paths] — code review only: explicit list of file/dir paths to review
  */
 export function prepareAdvisorMessages(agent, reviewType, designToken = null, documents = null, paths = null) {
   const prior = extractPriorIssueTable(agent.history)

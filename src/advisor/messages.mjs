@@ -4,7 +4,7 @@
  * (.thincoder/advisor.md). System prompts live in advisor.mjs / prompts/.
  */
 import { readFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { resolve, join, relative } from "node:path"
 import { findReviewRepos, collectRepoSnapshots, collectChangedFiles } from "./repos.mjs"
 import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable, extractPriorIssueTable } from "./history.mjs"
 
@@ -103,9 +103,10 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   // Same rule as buildAdvisorFollowUp: NO prior table in the context (decision
   // 2026-08-05) — only the agent's fix claims.
   if (p && (agent._advisorRound || 0) > 0) {
+    const scopeFiles = resolveScopeFiles(agent, paths)
     const response = extractAgentResponseTable(agent.history, p.sinceIdx)
-      || (pathList.length > 0
-        ? "(Agent did not provide a response table — perform a fresh review of: " + pathList.slice(0, 10).join(", ") + ")"
+      || (scopeFiles?.length
+        ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
         : "(Agent did not provide a response table — perform a fresh review of the files named in the system prompt context)")
     const round = (agent._advisorRound || 0) + 1
     const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
@@ -183,6 +184,25 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   parts.push("Return your review as a markdown table (or a clear statement that everything is fine).")
 
   return parts.join("\n")
+}
+
+/**
+ * Resolve the review surface for the convergence fallback: explicit `paths`
+ * win; otherwise the runtime mutation record (_touchedFiles, ABSOLUTE) is
+ * normalized to cwd-relative so the fallback list matches the relative-path
+ * norm the reviewer sees everywhere else. Paths outside cwd are relativized
+ * with path.relative — never a mixed absolute/relative list.
+ */
+export function resolveScopeFiles(agent, paths) {
+  const normalize = (p) => {
+    const abs = p.startsWith(agent.cwd) ? p : join(agent.cwd, p)
+    return relative(agent.cwd, abs)
+  }
+  if (Array.isArray(paths)) return [...new Set(paths.map(normalize))]
+  if (agent._touchedFiles?.length) {
+    return [...new Set(agent._touchedFiles.map(normalize))]
+  }
+  return null
 }
 
 /**
