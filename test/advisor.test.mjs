@@ -804,6 +804,27 @@ test("verifyCitations: matches real file content, flags stale/missing citations"
   assert.equal(failed.length, 2, "stale content and missing file fail")
   const report = appendCitationReport(text, dir)
   assert.ok(report.includes("[host-verified] 1/3 citations match current file state"), "report header")
+
+test("prepareAdvisorMessages: failed review (no table, no all-clear) PRESERVES the round", () => {
+  // A failed/interrupted review returns only "Advisor: review failed …" — no
+  // table header, no all-clear phrase. Resetting would restart the
+  // review→fix→re-review loop at round 1 forever; the retry keeps the round so
+  // the 5-round cap keeps advancing. Message is still a fresh full review
+  // (no issue list exists without a prior table).
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: "Advisor: review failed (timeout) — retry" }], _advisorRound: 2, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const session = prepareAdvisorMessages(agent)
+  assert.equal(agent._advisorRound, 2, "round preserved — failed review is not a new cycle")
+  assert.ok(session[0].content.includes("code review advisor"), "ROUND1 prompt — fresh full review without a prior table")
+  assert.ok(session[1].content.includes("fresh full review"), "fresh-review user message")
+})
+
+test("prepareAdvisorMessages: passed review without table (all-clear phrase) resets the round", () => {
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: "Everything is fine, no issues." }], _advisorRound: 3, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const session = prepareAdvisorMessages(agent)
+  assert.equal(agent._advisorRound, 0, "all-clear → new cycle")
+  assert.ok(session[0].content.includes("code review advisor"), "ROUND1 prompt")
+})
+
   assert.ok(report.includes("nope.mjs:1"), "missing file listed")
 })
 

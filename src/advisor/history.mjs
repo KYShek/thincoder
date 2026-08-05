@@ -27,15 +27,16 @@ const DEFAULT_CRITERIA = `Review the code changes, focusing on:
  * Returns null when: no advisor call, empty output, or the last review is
  * all-clear (nothing to follow up on).
  */
+// All-clear phrases the prompts instruct the advisor to use on a clean review.
+// Module-level: shared by extractPriorIssueTable (issue-table verdict) and
+// hasReviewPassedOutput (round-reset guard). "no new issues" is DELIBERATELY
+// absent — verification-table outputs (round 2+) commonly conclude with it
+// (round 3+ instructions even SAY "do not look for new issues"); treating it
+// as all-clear would reset the convergence budget after every round-2 review
+// (the observed "always round 2" bug: prior → null → _advisorRound reset → 1→2→1…).
+const ALL_CLEAR_PHRASES = ["no 🔴", "all clear", "全部通过", "review passed", "no issues found", "everything is fine"]
+
 export function extractPriorIssueTable(history) {
-  // allClear: exact phrases the prompts instruct the advisor to use on a clean
-  // round-1 review. "no new issues" is DELIBERATELY absent: verification-table
-  // outputs (round 2+) commonly conclude with "No new issues found" (round 3+
-  // instructions even SAY "do not look for new issues") — treating that phrase
-  // as all-clear would reset the convergence budget after every round-2 review
-  // (the observed "always round 2" bug: prior → null → _advisorRound reset → 1→2→1…).
-  // Convergence tables are judged ROW-LEVEL (Status column), never by phrase.
-  const allClear = ["no 🔴", "all clear", "全部通过", "review passed", "no issues found"]
   // Negative signals: a table listing SOME items as unfixed is NOT all-clear.
   // Applied when the message carries a Status column (English or Chinese convergence
   // format) — "failed"/"❌" in a round-1 Issue description must NOT trigger it.
@@ -68,11 +69,33 @@ export function extractPriorIssueTable(history) {
       return null
     }
     // Issue table (round 1 / design): phrase-based all-clear detection.
-    if (allClear.some((s) => lower.includes(s))) return null
+    if (ALL_CLEAR_PHRASES.some((s) => lower.includes(s))) return null
     // sinceIdx = the advisor call's own index; extractAgentResponseTable skips it (role !== assistant)
     return { text, sinceIdx: i }
   }
   return null
+}
+
+/** True when the last review output was a COMPLETED PASS: carries a table
+ *  header (extractPriorIssueTable judged it all-clear → cycle passed) or an
+ *  all-clear phrase ("everything is fine", "no issues found", … — the round-1
+ *  prompts instruct these on a clean review). Absent review output (a failed/
+ *  interrupted review returns only an "Advisor: …" message with no header and
+ *  no all-clear phrase) means the round counter must NOT be reset — the retry
+ *  keeps its convergence round. */
+export function hasReviewPassedOutput(history) {
+  const entries = Array.isArray(history) ? history : []
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const m = entries[i]
+    if (m.role !== "tool" || typeof m.content !== "string") continue
+    const lower = m.content.toLowerCase()
+    if (lineHasHeader(m.content, ADVISOR_TABLE_HEADER)
+      || lineHasHeader(m.content, DESIGN_TABLE_HEADER)
+      || lineHasHeader(m.content, CONVERGENCE_TABLE_HEADER)
+      || lineHasHeader(m.content, LEGACY_ADVISOR_HEADER)) return true
+    if (ALL_CLEAR_PHRASES.some((s) => lower.includes(s))) return true
+  }
+  return false
 }
 
 /** True when some line of `text` starts with `header` — table headers always sit at line start. */

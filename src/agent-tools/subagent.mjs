@@ -224,8 +224,12 @@ export function buildChildRunOpts(ctx) {
  * pushback for review. Prior verify/advisor state is invalidated because it
  * judged an older state.
  *
- * `_advisorRound` is reset to 0: merged code is new code that deserves a fresh
- * convergence budget. Mirrors the design-review reset semantics.
+ * `_advisorRound` is NOT reset: merged code enters the CURRENT convergence
+ * cycle. Resetting here would break the review→fix→re-review loop (the parent
+ * reviews, spawns an eng-coder to fix, merges, reviews again — every merge
+ * would restart at round 1 and the 5-round cap could never be reached).
+ * `_calledAdvisorThisRun` IS cleared so the merged code triggers a fresh
+ * advisor call (the guard demands review of new mutations).
  *
  * Returns true when mutations were merged (kept for future caller checks).
  */
@@ -240,10 +244,7 @@ export function mergeChildMutations(parent, child) {
     parent._verifiedThisRun = false
     parent._verifyPassed = undefined
   }
-  // Fresh code → fresh convergence budget + stale session cleanup.
-  // _advisorRound reset ensures new code gets a full round-1 review;
-  // _advisorSession prevents cross-contamination between reviews.
-  parent._advisorRound = 0
+  // Stale session cleanup only — the round counter survives (see above).
   parent._advisorSession = null
   return true
 }

@@ -39,7 +39,7 @@
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { extractPriorIssueTable, extractAgentResponseTable } from "./advisor/history.mjs"
+import { extractPriorIssueTable, extractAgentResponseTable, hasReviewPassedOutput } from "./advisor/history.mjs"
 import { buildAdvisorUserMessage, buildConvergenceInstructions, resolveScopeFiles } from "./advisor/messages.mjs"
 // Re-export for run.mjs and tests (keeps their imports from "../advisor.mjs" stable)
 export { ADVISOR_MD_PATH, extractPriorIssueTable, extractAgentResponseTable, extractConversationBackground } from "./advisor/history.mjs"
@@ -190,11 +190,22 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // (history persists across runAgent calls) must yield a fresh round-1 review —
   // ROUND1 system prompt + full-scope user message, never the convergence
   // (fix-claims) follow-up (which would contradict the ROUND1 system prompt).
-  if (!prior || (agent._advisorRound || 0) === 0) {
-    // No prior table = new review cycle (first review, all-clear, or session
-    // clear): reset the round so the prompt (ROUND1) and tool set stay
-    // consistent, and the cycle gets its own 5-round budget.
-    agent._advisorRound = 0
+  // No prior table: NEW cycle (reset) OR failed/interrupted review (KEEP the
+  // round — the retry must not restart at round 1, otherwise "review → fix →
+  // re-review" loops never advance toward the 5-round cap). Distinguisher:
+  // a completed PASS carries a table header or an all-clear phrase; a failed
+  // review returns only an "Advisor: …" message. Either way the message is a
+  // fresh full review (no issue list to verify without a prior table) — only
+  // the round counter differs.
+  if (!prior) {
+    if ((agent._advisorRound || 0) > 0 && !hasReviewPassedOutput(agent.history)) {
+      // Failed/interrupted review: KEEP the round (cap keeps advancing).
+      // The fresh full review below still applies — no table to verify against.
+    } else {
+      // New review cycle (first review, all-clear, or session clear): reset
+      // the round so the cycle gets its own 5-round budget.
+      agent._advisorRound = 0
+    }
     const user = buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths)
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
