@@ -126,21 +126,29 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
     : "(Agent did not provide a response table — perform a fresh full review; the review surface is unknown, ask the user for the file list)"
   const response = extractAgentResponseTable(agent.history, p.sinceIdx) || noResponseFallback
   const round = (agent._advisorRound || 0) + 1
-  const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
+  const label = round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"
 
   const reminder = round === 2
-    ? "verify the fixes the agent claims and flag only obvious new issues introduced by them"
-    : "strictly verify only the fixes the agent claims — do NOT look for new issues"
+    ? "verify every item in the prior issue table and flag only obvious new issues introduced by the fixes"
+    : "strictly verify only the prior issue table — do NOT look for new issues"
   const parts = [
     `## Round ${round} — ${label}`,
     "",
     `[System reminder: this is round ${round} of the convergence protocol. ` +
       `The system prompt for this round has already narrowed the review scope — follow it: ${reminder}.]`,
     "",
-    // No prior issue table in the context — see module docstring for the
-    // rationale (decision 2026-08-05). scopeFiles names the review surface
-    // when the agent gave no response table.
-    "## Agent Response (fix claims to verify)",
+    // Prior issue table IS in the context (decision 2026-08-05, reversed):
+    // it is the ONLY complete verification list — the agent response table
+    // covers only issues the agent chose to answer, so issues the agent
+    // skipped would silently escape convergence. Restatement risk is handled
+    // mechanically: host-verified citations reject references that do not
+    // match the CURRENT disk state, and fresh sessions exclude old read data.
+    // The agent response table stays as a focus aid ("I fixed X"), not as the
+    // to-verify list.
+    "## Prior Issue Table (verify every item)",
+    p.text,
+    "",
+    "## Agent Response (fix claims — reference only)",
     response,
     "",
     "## Instructions",

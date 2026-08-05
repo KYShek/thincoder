@@ -243,7 +243,7 @@ test("buildAdvisorSystemPrompt: returns round 1 file when no prior table", () =>
   const prompt = buildAdvisorSystemPrompt(agent)
   assert.ok(prompt.includes("full-scope review"))
   assert.ok(prompt.includes("| # | File | Severity | Issue | Suggestion |"))
-  assert.ok(!prompt.includes("Verify the agent fix claims"))
+  assert.ok(!prompt.includes("Verify the prior issue table"))
   assert.ok(!prompt.includes("Strictly verify"))
 })
 
@@ -263,7 +263,7 @@ test("buildAdvisorSystemPrompt: returns round 2 file when prior table and _advis
     _advisorRound: 1, cwd: tmpdir(),
   }
   const prompt = buildAdvisorSystemPrompt(agent)
-  assert.ok(prompt.includes("Verify the agent fix claims"))
+  assert.ok(prompt.includes("Verify the prior issue table"))
   assert.ok(!prompt.includes("DO NOT look for new issues"))
 })
 
@@ -309,10 +309,10 @@ test("buildAdvisorSystemPrompt: design round 1 uses design prompt; rounds 2+ con
   const prior = { text: "| # | Category | Severity | Issue | Suggestion |\n|---|---------|----------|------|------------|" }
   const round2 = buildAdvisorSystemPrompt({ ...base, _advisorRound: 1 }, prior, "design")
   assert.ok(!round2.includes("design reviewer"), "round 2 no longer uses the design prompt")
-  assert.ok(round2.includes("Verify the agent fix claims"), "round 2 uses the convergence prompt")
+  assert.ok(round2.includes("Verify the prior issue table"), "round 2 uses the convergence prompt")
   // Round 3+ → strict verification
   const round3 = buildAdvisorSystemPrompt({ ...base, _advisorRound: 2 }, prior, "design")
-  assert.ok(round3.includes("Strictly verify only the agent fix claims"), "round 3+ strict verification")
+  assert.ok(round3.includes("Strictly verify only the prior issue table"), "round 3+ strict verification")
 })
 
 
@@ -434,7 +434,7 @@ test("buildAdvisorSystemPrompt: _advisorRound===0 forces full review despite sta
   }
   const prompt = buildAdvisorSystemPrompt(agent)
   assert.ok(prompt.includes("full-scope review"))
-  assert.ok(!prompt.includes("Verify the agent fix claims"))
+  assert.ok(!prompt.includes("Verify the prior issue table"))
 })
 
 // ────────────────────────────────────────
@@ -483,10 +483,10 @@ test("buildAdvisorUserMessage: round 2 includes convergence data (fix claims, no
     _advisorRound: 1,
   }
   const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.js"])
-  assert.ok(msg.startsWith("## Round 2 — Verify Agent Fixes + Flag New Issues"))
-  assert.ok(!msg.includes("## Prior Issue Table"), "prior table is NOT injected (decision 2026-08-05)")
-  assert.ok(!msg.includes(issueTable), "old issue rows are not restated")
-  assert.ok(msg.includes("## Agent Response"), "fix claims are the to-verify list")
+  assert.ok(msg.startsWith("## Round 2 — Verify Prior Table + Flag New Issues"))
+  assert.ok(msg.includes("## Prior Issue Table"), "prior table IS injected — the only complete verification list")
+  assert.ok(msg.includes(issueTable), "issue rows restated for verification")
+  assert.ok(msg.includes("## Agent Response"), "fix claims present as a reference")
   assert.ok(msg.includes("## Review Scope"))
 })
 
@@ -629,14 +629,15 @@ test("prepareAdvisorMessages: design round 2+ is a FRESH session with prior-tabl
   assert.ok(first[1].content.includes("TOKEN1"), "round 1 carries the approval token")
   agent._advisorRound = 1
 
-  // Round 2: FRESH [system(ROUND2), user(fix claims + round instructions)] —
-  // no reused messages and NO prior table (decision 2026-08-05).
+  // Round 2: FRESH [system(ROUND2), user(prior table + fix claims)] —
+  // no reused messages; the prior table IS injected (decision 2026-08-05,
+  // reversed: it is the only complete verification list).
   const second = prepareAdvisorMessages(agent, "design", null)
   assert.notEqual(second, first, "fresh array — no session reuse")
   assert.equal(second.length, 2)
   assert.ok(second[1].content.includes("Round 2"), "design follow-up carries round number")
-  assert.ok(!second[1].content.includes(priorTable.slice(0, 30)), "prior table NOT injected into the follow-up")
-  assert.ok(second[0].content.includes("Verify the agent fix claims"), "design round 2 system prompt narrowed to ROUND2")
+  assert.ok(second[1].content.includes(priorTable.slice(0, 30)), "prior table injected into the follow-up")
+  assert.ok(second[0].content.includes("Verify the prior issue table"), "design round 2 system prompt narrowed to ROUND2")
   assert.ok(!second[0].content.includes("design reviewer"), "round-1 design mandate does not leak into round 2")
 
   // Rounds 3 and 4: fresh each time, strict verification
@@ -647,25 +648,25 @@ test("prepareAdvisorMessages: design round 2+ is a FRESH session with prior-tabl
   agent._advisorRound = 3
   const fourth = prepareAdvisorMessages(agent, "design", null)
   assert.ok(fourth[1].content.includes("Round 4"), "round 4 follow-up")
-  assert.ok(fourth[0].content.includes("Strictly verify only the agent fix claims"), "design round 3+ system prompt is ROUND3")
+  assert.ok(fourth[0].content.includes("Strictly verify only the prior issue table"), "design round 3+ system prompt is ROUND3")
 })
 
-test("prepareAdvisorMessages: convergence rounds are FRESH sessions with fix-claims follow-up (no prior table)", () => {
+test("prepareAdvisorMessages: convergence rounds are FRESH sessions with prior-table follow-up", () => {
   const priorTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |"
   const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 1, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
   const second = prepareAdvisorMessages(agent)
   assert.equal(second.length, 2, "fresh [system, user] — no old read data in context")
   assert.equal(second[1].role, "user")
   assert.ok(second[1].content.includes("Round 2"), "follow-up carries round number")
-  assert.ok(second[1].content.includes("Agent Response"), "follow-up asks for the response table")
-  assert.ok(!second[1].content.includes(priorTable.slice(0, 30)), "prior table NOT injected (no restatement anchor)")
-  assert.ok(second[0].content.includes("Verify the agent fix claims"), "round 2 system prompt is the narrowed ROUND2")
+  assert.ok(second[1].content.includes("Agent Response"), "follow-up includes the response table as reference")
+  assert.ok(second[1].content.includes(priorTable.slice(0, 30)), "prior table IS injected — the complete verification list")
+  assert.ok(second[0].content.includes("Verify the prior issue table"), "round 2 system prompt is the narrowed ROUND2")
 
   agent._advisorRound = 2
   const third = prepareAdvisorMessages(agent)
   assert.ok(third[1].content.includes("Round 3"))
   assert.ok(third[1].content.includes("Strict"), "round 3+ is strict verification")
-  assert.ok(third[0].content.includes("Strictly verify only the agent fix claims"), "round 3 system prompt is ROUND3 — do not look for new issues")
+  assert.ok(third[0].content.includes("Strictly verify only the prior issue table"), "round 3 system prompt is ROUND3 — do not look for new issues")
   assert.ok(third[0].content.includes("Do NOT look for new issues"))
 })
 
@@ -706,7 +707,7 @@ test("buildAdvisorFollowUp: injects NO git information (read-only verification b
       history: [{ role: "tool", tool_call_id: "tc1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
     }
     const followUp = buildAdvisorFollowUp(agent)
-    assert.ok(!followUp.includes("Prior Issue Table"), "no prior table in the convergence context (decision 2026-08-05)")
+    assert.ok(followUp.includes("Prior Issue Table"), "prior table injected — the complete verification list")
     assert.ok(!followUp.includes("Git Context"), "no git context injected")
     assert.ok(!followUp.includes("## Current Changes"), "no diff-snapshot section injected")
     assert.ok(!followUp.includes("git status"), "no git status injected")
@@ -881,7 +882,7 @@ test("prepareAdvisorMessages: failed-retry with prior table PRESERVES the round"
   const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 2, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
   const session = prepareAdvisorMessages(agent)
   assert.equal(agent._advisorRound, 2, "round preserved for the convergence prompt")
-  assert.ok(session[0].content.includes("Strictly verify only the agent fix claims"), "ROUND3 prompt — convergence continues")
+  assert.ok(session[0].content.includes("Strictly verify only the prior issue table"), "ROUND3 prompt — convergence continues")
 })
 
 test("runAdvisorReview: cap blocks design reviews too after 5 rounds (bounded loop)", async () => {

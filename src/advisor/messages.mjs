@@ -100,8 +100,8 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   // flow routes convergence rounds through buildAdvisorFollowUp (fresh session,
   // decision d698434); this block only fires for direct external callers of
   // buildAdvisorUserMessage with a prior table. Kept to avoid breaking those.
-  // Same rule as buildAdvisorFollowUp: NO prior table in the context (decision
-  // 2026-08-05) — only the agent's fix claims.
+  // Same rule as buildAdvisorFollowUp: prior table IS injected (decision
+  // 2026-08-05, reversed) — it is the only complete verification list.
   if (p && (agent._advisorRound || 0) > 0) {
     const scopeFiles = resolveScopeFiles(agent, paths)
     const response = extractAgentResponseTable(agent.history, p.sinceIdx)
@@ -109,10 +109,13 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
         ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
         : "(Agent did not provide a response table — perform a fresh review of the files named in the system prompt context)")
     const round = (agent._advisorRound || 0) + 1
-    const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
+    const label = round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"
     parts.push(`## Round ${round} — ${label}`)
     parts.push("")
-    parts.push("## Agent Response (fix claims to verify)")
+    parts.push("## Prior Issue Table (verify every item)")
+    parts.push(p.text)
+    parts.push("")
+    parts.push("## Agent Response (fix claims — reference only)")
     parts.push(response)
     parts.push("")
     parts.push("---")
@@ -219,10 +222,10 @@ export function buildConvergenceInstructions(round, scopeFiles = null) {
     ? ` The review surface is: ${scopeFiles.slice(0, 10).join(", ")}.`
     : ""
   return [
-    `1. IMPORTANT: verify the agent fix claims against the CURRENT FILE STATE with \`read\` — never decide based on earlier snapshots alone.${fileList}`,
+    `1. IMPORTANT: verify EVERY item of the prior issue table against the CURRENT FILE STATE with \`read\` — never decide based on earlier snapshots alone.${fileList}`,
     "2. STALE-CONTEXT WARNING: any diff or file content from earlier messages is a historical snapshot — treat it as expired. Only fresh `read` results describe the current state.",
     "3. You have no git tool; git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).",
-    "4. `read` the files named in the agent response (or the review surface above) in full — ALWAYS. Batch reads/greps in a single reply.",
+    "4. `read` the files named in the prior table (or the review surface above) in full — ALWAYS. Batch reads/greps in a single reply.",
     "5. Evidence rule: every 'Unfixed'/'New' finding MUST quote the exact line content from THIS round's `read` output (e.g. `run.mjs:180: timeoutId = setTimeout(...)`). Line numbers alone are NOT evidence — they may be stale or fabricated. Findings without a fresh quoted line are treated as unverified and will not be accepted.",
     "6. Produce your verification table. Do not re-read content you already have.",
     round === 2

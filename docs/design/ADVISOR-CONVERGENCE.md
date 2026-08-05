@@ -42,8 +42,8 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 ### 4. 会话生命周期
 
 - **收敛轮 fresh session（2026-08-04 决策变更）**：round 2+ **不复用** round 1 的会话数组——每轮构建全新 `[system(ROUND2/3 提示词), user(agent 响应表 + Review Scope + follow-up 指令)]`。**旧 read 输出（上一轮读到的文件全文）从物理上不在上下文里**——它是复评误报的最大锚定源（模型引用旧文件内容而非重新 read），也是 token 浪费源（大文件全文滞留触发频繁压缩）。"保留探索上下文"与证据规则（"只有本轮 read 才算数"）天然冲突，已废除。
-- **后轮上下文不含 prior 表（2026-08-05 决策变更）**：prior 表（旧问题清单）**完全退出** round 2+ 的用户消息——它是最强的复述锚（模型逐字引用旧表内容/行号冒充新证据，实证：连续多轮评审引用修复前的旧行内容）。替代信息通道是 **agent 响应表**（`| # | Action | Detail |`，agent 对每个问题的处置声明）：它是"待验证清单"（验证 agent 声称的修复是否属实），语义与收敛目标一致，且不含旧行号/旧内容摘录。agent 未提供响应表时沿用既有 fallback（"re-evaluate each issue"——评审者按 scope 自行核查），**不再注入脱敏 prior 表**（脱敏表同样会被复述，且 fallback 已覆盖无清单场景）。prior 表仍用于轮次判断：`extractPriorIssueTable` 存在 → round 2+，缺失 → round 1。
-- 顺带收益：**跨主题污染消除**——评审历史里残留的旧主题 prior 表不再进入后轮上下文，评审者只能 read scope 文件。
+- **后轮上下文包含 prior 表（2026-08-05 决策变更，反转）**：prior 表（旧问题清单）**重新注入** round 2+ 的用户消息——它是**唯一完整的验证清单**：agent 响应表只覆盖 agent 选择回答的问题，agent 遗漏/回避的问题若无 prior 表会**在收敛中静默通过**（验证目标被 agent 自我声明绑架）。当初移除的理由（复述锚定/跨主题污染/token）已被后续防线化解：**复述** → host-verified citations 机械拦截（引用与磁盘不符即标记）+ fresh session 排除旧 read 数据（prior 表是唯一旧信息源，其余干净）；**跨主题污染** → 确定性轮次判定（`_mutatedThisRun`，无修改 → 重置 → round 1 无 prior）；**token** → prior 表 <5KB 可忽略。agent 响应表保留为**聚焦参考**（"我修了 X"），不再是验证清单。
+- prior 表仍用于轮次判断：`extractPriorIssueTable` 存在 → round 2+，缺失 → round 1。
 - `agent._advisorSession` 字段保留（初始化兼容）但**不再作为会话延续读取**；run.mjs 不再写它。
 - run 结束（`runAgent`）重置 `_advisorRound`。
 - 审查失败不产生可泄漏的半成品上下文（每轮 fresh，天然免疫）。
