@@ -103,7 +103,9 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   // 2026-08-05) — only the agent's fix claims.
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
-      || "(Agent did not provide a response table — perform a fresh review of the files named in the review scope)"
+      || (pathList.length > 0
+        ? "(Agent did not provide a response table — perform a fresh review of: " + pathList.slice(0, 10).join(", ") + ")"
+        : "(Agent did not provide a response table — perform a fresh review of the files named in the system prompt context)")
     const round = (agent._advisorRound || 0) + 1
     const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
     parts.push(`## Round ${round} — ${label}`)

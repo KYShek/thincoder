@@ -70,24 +70,24 @@ try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.m
 /**
  * Build the system prompt for an advisor review session.
  * @param {Object} agent — the parent agent
- * @param {Object|null} [_prior] — prior issue table (from extractPriorIssueTable)
+ * @param {Object|null} [prior] — prior issue table (from extractPriorIssueTable)
  * @param {string} [reviewType] — "design" for design review, undefined/"code" for code review
  * @returns {string} the system prompt
  */
-export function buildAdvisorSystemPrompt(agent, _prior, reviewType) {
+export function buildAdvisorSystemPrompt(agent, prior, reviewType) {
   // Design review: round 1 uses the dedicated design-review prompt (full scope +
   // approval token); rounds 2+ converge like code reviews (verify agent fix claims).
   if (reviewType === "design") {
-    const prior = _prior ?? extractPriorIssueTable(agent.history)
-    if (!prior || (agent._advisorRound || 0) === 0) {
+    const p = prior ?? extractPriorIssueTable(agent.history)
+    if (!p || (agent._advisorRound || 0) === 0) {
       return ADVISOR_DESIGN || ADVISOR_DESIGN_FALLBACK
     }
     const round = (agent._advisorRound || 0) + 1
     if (round === 2) return ADVISOR_ROUND2
     return ADVISOR_ROUND3
   }
-  const prior = _prior ?? extractPriorIssueTable(agent.history)
-  if (!prior || (agent._advisorRound || 0) === 0) return ADVISOR_ROUND1
+  const p = prior ?? extractPriorIssueTable(agent.history)
+  if (!p || (agent._advisorRound || 0) === 0) return ADVISOR_ROUND1
   const round = (agent._advisorRound || 0) + 1
   if (round === 2) return ADVISOR_ROUND2
   return ADVISOR_ROUND3
@@ -112,21 +112,18 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   const round = (agent._advisorRound || 0) + 1
   const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
 
+  const reminder = round === 2
+    ? "verify the fixes the agent claims and flag only obvious new issues introduced by them"
+    : "strictly verify only the fixes the agent claims — do NOT look for new issues"
   const parts = [
     `## Round ${round} — ${label}`,
     "",
-    `[System reminder: this is round ${round} of the convergence protocol. The system prompt for this round has already narrowed the review scope — follow it: ${round === 2 ? "verify the fixes the agent claims and flag only obvious new issues introduced by them" : "strictly verify only the fixes the agent claims — do NOT look for new issues"}.]`,
+    `[System reminder: this is round ${round} of the convergence protocol. ` +
+      `The system prompt for this round has already narrowed the review scope — follow it: ${reminder}.]`,
     "",
-    // No prior issue table in the convergence context (decision 2026-08-05):
-    // it was the strongest re-statement anchor — reviewers quoted the old table
-    // verbatim instead of re-reading. The agent response table is the only
-    // "to-verify" list: it carries the agent's fix CLAIMS (semantics = verify
-    // fixes), without the old line numbers/content excerpts that enable
-    // verbatim restatement. When the agent did not answer, the fallback names
-    // the review surface (scopeFiles) so the reviewer still has a direction —
-    // re-injecting a sanitized prior table was considered and rejected (it
-    // would be restated all the same, and the fallback already covers the
-    // no-list case).
+    // No prior issue table in the context — see module docstring for the
+    // rationale (decision 2026-08-05). scopeFiles names the review surface
+    // when the agent gave no response table.
     "## Agent Response (fix claims to verify)",
     response,
     "",
@@ -193,8 +190,13 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // round 2, ROUND3 for rounds 3+ — a failed review retry keeps _advisorRound
   // so the convergence prompt matches the attempt count. scopeFiles gives the
   // fallback (agent gave no response table) a concrete review surface.
+  // _touchedFiles are ABSOLUTE — normalize to cwd-relative so the fallback list
+  // matches the relative-path norm the reviewer sees everywhere else.
+  const scopeFiles = paths ?? (agent._touchedFiles?.length
+    ? agent._touchedFiles.map((p) => (p.startsWith(agent.cwd) ? p.slice(agent.cwd.length + 1) : p))
+    : null)
   return [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-    { role: "user", content: buildAdvisorFollowUp(agent, prior, paths ?? agent._touchedFiles ?? null) },
+    { role: "user", content: buildAdvisorFollowUp(agent, prior, scopeFiles) },
   ]
 }
