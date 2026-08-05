@@ -20,6 +20,19 @@ import { join, relative, dirname } from "node:path";
 const MAX_FILE_READ_BYTES = 10_000_000
 const MAX_IMAGE_BYTES = 15_000_000
 
+// ────────────────────────────────────────
+// Dirty-file tracking (read-before-insert guard)
+// ────────────────────────────────────────
+// insert_after anchors on LINE NUMBERS — the most drift-prone addressing.
+// Every write tool marks the file dirty; insert_after refuses to run on a
+// dirty file until the agent reads it again (fresh line numbers). This turns
+// the "read after edit" discipline into a structural guarantee: a stale
+// after_line can never silently land in the wrong place again.
+const dirtyPaths = new Set()
+export function markDirty(abs) { dirtyPaths.add(abs) }
+export function clearDirty(abs) { dirtyPaths.delete(abs) }
+export function isDirty(abs) { return dirtyPaths.has(abs) }
+
 export const readTool = {
   name: "read",
   description: DESC("read"),
@@ -41,6 +54,8 @@ export const readTool = {
     const st = await stat(abs).catch(() => null)
     if (st && st.size > MAX_FILE_READ_BYTES) throw new Error(`File too large (${Math.round(st.size / 1_000_000)}MB > 10MB limit). Use bash with head/tail or grep for targeted extraction.`)
     const content = normalizeEOL(await readFile(abs, "utf8"))
+    // A read refreshes the agent's view — line numbers are fresh again.
+    clearDirty(abs)
     const lines = content.split("\n")
     const offset = Math.max(1, args.offset ?? 1)
     const limit = Math.min(args.limit ?? MAX_READ_LINES, MAX_READ_LINES)
@@ -129,6 +144,7 @@ export const writeTool = {
     const st = await stat(abs).catch(() => null)
     if (st?.isDirectory()) throw new Error(`Path is a directory: ${args.path}`)
     await writeFile(abs, args.content, "utf8")
+    markDirty(abs)
     const diff = gitDiffOne(ctx.cwd, abs)
     return `Wrote ${args.content.length} chars to ${args.path}${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },
@@ -175,6 +191,7 @@ export const editTool = {
       // Functional replacement: avoid $-substitution patterns in new_string (match string / backreference) being expanded
       : content.replace(args.old_string, () => args.new_string)
     await writeFile(abs, updated, "utf8")
+    markDirty(abs)
     const diff = gitDiffOne(ctx.cwd, abs)
     return `Edited ${args.path}: replaced ${args.replace_all ? occurrences : 1} occurrence(s)${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },
@@ -199,6 +216,17 @@ export const insertAfterTool = {
   touchedPaths(args) { return args.path ? [args.path] : [] },
   async execute(args, ctx) {
     const abs = resolveInCwd(ctx, args.path)
+    // Read-before-insert guard: after_line anchors are line numbers, and any
+    // write since the last read made them stale. Refuse instead of silently
+    // inserting at a drifted position (the failure mode that corrupted test
+    // structure repeatedly). after_regex callers get the same gate — a stale
+    // target line is just as wrong, and the rule is simpler to reason about.
+    if (isDirty(abs)) {
+      throw new Error(
+        `${args.path} was modified since your last read — line numbers may be stale.\n` +
+        `Read the file again (read tool) to refresh line numbers, then retry insert_after.`
+      )
+    }
     const text = normalizeEOL(await readFile(abs, "utf8"))
     const lines = text.split("\n")
 
@@ -232,6 +260,7 @@ export const insertAfterTool = {
     lines.splice(targetLine, 0, args.content)
     const updated = lines.join("\n")
     await writeFile(abs, updated, "utf8")
+    markDirty(abs)
     const diff = gitDiffOne(ctx.cwd, abs)
     return `Inserted after line ${targetLine} in ${args.path}${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },
@@ -317,6 +346,7 @@ export const hashlineEditTool = {
     lines.splice(pos, target.length, ...newLines)
     const updated = lines.join("\n")
     await writeFile(abs, updated, "utf8")
+    markDirty(abs)
     const diff = gitDiffOne(ctx.cwd, abs)
     return `Edited ${args.path}: replaced ${target.length} line(s) at L${pos + 1} with ${newLines.length} line(s)${diff ? "\n" + diff : ""}${await autoSyntaxCheck(abs)}`
   },

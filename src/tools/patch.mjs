@@ -3,6 +3,7 @@ import {
   autoSyntaxCheck,
   resolveInCwd
 } from "./shared.mjs";
+import { markDirty } from "./file.mjs";
 import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
@@ -150,6 +151,8 @@ export const applyPatchTool = {
       throw renameError
     }
     const summary = planned.map((p) => `  ${p.isNew ? "created " : "modified"} ${p.path}`).join("\n")
+    // Mark every touched file dirty — insert_after must not run on stale line numbers.
+    for (const p of planned) markDirty(p.abs)
     const syntaxChecks = await Promise.all(planned.map(async (p) => {
       const r = await autoSyntaxCheck(p.abs)
       return r ? `${p.path}:${r.replace("Syntax: ", "")}` : ""
@@ -197,6 +200,7 @@ export const deleteTool = {
     }
     if (tracked && !args.force) throw new Error(`"${args.path}" is git-tracked. Set force=true to delete anyway.`)
     await unlink(abs)
+    markDirty(abs)
     return `Deleted ${args.path}`
   },
 }

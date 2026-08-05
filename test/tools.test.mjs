@@ -1218,6 +1218,7 @@ test("insert_after: invalid regex gives helpful error", async () => {
   const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
   try {
     await byName.write.execute({ path: "f.mjs", content: "hello\nworld\n" }, ctx)
+    await byName.read.execute({ path: "f.mjs" }, ctx) // clear the dirty flag (read-before-insert guard)
 
     await assert.rejects(
       () => byName.insert_after.execute({
@@ -1231,6 +1232,42 @@ test("insert_after: invalid regex gives helpful error", async () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("insert_after: refuses on a dirty file (modified since last read) — stale line-number guard", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-insert-dirty-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    await byName.write.execute({ path: "f.mjs", content: "line1\nline2\n" }, ctx)
+
+    // write marks the file dirty → insert_after must refuse (line numbers stale)
+    await assert.rejects(
+      () => byName.insert_after.execute({ path: "f.mjs", after_line: 1, content: "x" }, ctx),
+      /was modified since your last read/
+    )
+
+    // read clears the dirty flag → insert_after works again
+    await byName.read.execute({ path: "f.mjs" }, ctx)
+    const out = await byName.insert_after.execute({ path: "f.mjs", after_line: 1, content: "inserted" }, ctx)
+    assert.ok(out.includes("Inserted after line 1"), "fresh read → insert allowed")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("insert_after: fresh file (never written this session) works without a prior read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-insert-fresh-"))
+  const ctx = { cwd: dir }
+  const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+  try {
+    writeFileSync(join(dir, "g.mjs"), "a\nb\n", "utf8") // created outside the tool chain — not dirty
+    const out = await byName.insert_after.execute({ path: "g.mjs", after_line: 1, content: "mid" }, ctx)
+    assert.ok(out.includes("Inserted after line 1"), "non-dirty file inserts immediately")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 
 // ---------------------------------------------------------------- grep regex validation
 

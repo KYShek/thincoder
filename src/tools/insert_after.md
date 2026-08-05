@@ -11,3 +11,4 @@ Notes:
 - Use this instead of `edit` when you're adding a new function, import, or block — no need to fabricate surrounding context for exact matching.
 - The inserted content becomes its own line; it's equivalent to `lines.splice(targetLine, 0, content)`.
 - Returns a diff of the change.
+- **Read-before-insert guard**: if the file was modified by any write tool (write/edit/insert_after/hashline_edit/apply_patch/delete) since your last `read`, this tool REFUSES with an error — line numbers may be stale. Read the file again, then retry. This prevents after_line from silently landing at a drifted position.
