@@ -234,7 +234,10 @@ export function buildChildRunOpts(ctx) {
  * Returns true when mutations were merged (kept for future caller checks).
  */
 export function mergeChildMutations(parent, child) {
-  if (!child._mutatedThisRun) return false
+  // A child claiming mutations without any touched file is a misbehaving
+  // child (or a bookkeeping bug) — do not propagate an empty mutation claim
+  // to the parent's guard state.
+  if (!child._mutatedThisRun || !(child._touchedFiles?.length)) return false
   parent._mutatedThisRun = true
   for (const abs of child._touchedFiles ?? []) {
     if (!parent._touchedFiles.includes(abs)) parent._touchedFiles.push(abs)

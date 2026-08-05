@@ -804,6 +804,8 @@ test("verifyCitations: matches real file content, flags stale/missing citations"
   assert.equal(failed.length, 2, "stale content and missing file fail")
   const report = appendCitationReport(text, dir)
   assert.ok(report.includes("[host-verified] 1/3 citations match current file state"), "report header")
+  assert.ok(report.includes("nope.mjs:1"), "missing file listed")
+})
 
 test("prepareAdvisorMessages: run with code mutations PRESERVES the round on prior loss", () => {
   // Deterministic rule (user decision): a run that modified code WILL be
@@ -821,9 +823,6 @@ test("prepareAdvisorMessages: run without mutations resets the round (no push-ba
   const session = prepareAdvisorMessages(agent)
   assert.equal(agent._advisorRound, 0, "no mutations → reset is safe (guard cannot push back)")
   assert.ok(session[0].content.includes("code review advisor"), "ROUND1 prompt")
-})
-
-  assert.ok(report.includes("nope.mjs:1"), "missing file listed")
 })
 
 test("appendCitationReport: no citations → text unchanged", async () => {

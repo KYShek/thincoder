@@ -203,8 +203,9 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
       // New review cycle (first review, all-clear, or no code changes): reset
       // the round so the cycle gets its own 5-round budget.
       agent._advisorRound = 0
+    } else {
+      // Mutations exist → KEEP the round (cap keeps advancing through retries).
     }
-    // Mutations exist → KEEP the round (cap keeps advancing through retries).
     const user = buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths)
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },

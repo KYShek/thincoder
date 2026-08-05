@@ -28,12 +28,15 @@ const DEFAULT_CRITERIA = `Review the code changes, focusing on:
  * all-clear (nothing to follow up on).
  */
 // All-clear phrases the prompts instruct the advisor to use on a clean review.
-// Module-level: shared by extractPriorIssueTable (issue-table verdict) and
-// hasReviewPassedOutput (round-reset guard). "no new issues" is DELIBERATELY
-// absent — verification-table outputs (round 2+) commonly conclude with it
-// (round 3+ instructions even SAY "do not look for new issues"); treating it
-// as all-clear would reset the convergence budget after every round-2 review
-// (the observed "always round 2" bug: prior → null → _advisorRound reset → 1→2→1…).
+// Used ONLY by extractPriorIssueTable (issue-table verdict — a phrase-free
+// issue table with rows is never all-clear). The round-reset guard no longer
+// depends on model output at all: prepareAdvisorMessages decides by the
+// deterministic _mutatedThisRun flag (user decision 2026-08-05). "no new
+// issues" is DELIBERATELY absent — verification-table outputs (round 2+)
+// commonly conclude with it (round 3+ instructions even SAY "do not look for
+// new issues"); treating it as all-clear would reset the convergence budget
+// after every round-2 review (the observed "always round 2" bug: prior → null
+// → _advisorRound reset → 1→2→1…).
 const ALL_CLEAR_PHRASES = ["no 🔴", "all clear", "全部通过", "review passed", "no issues found", "everything is fine"]
 
 export function extractPriorIssueTable(history) {
