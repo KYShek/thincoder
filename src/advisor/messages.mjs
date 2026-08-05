@@ -99,17 +99,16 @@ export function buildAdvisorUserMessage(agent, _prior, reviewType, designToken =
   // flow routes convergence rounds through buildAdvisorFollowUp (fresh session,
   // decision d698434); this block only fires for direct external callers of
   // buildAdvisorUserMessage with a prior table. Kept to avoid breaking those.
+  // Same rule as buildAdvisorFollowUp: NO prior table in the context (decision
+  // 2026-08-05) — only the agent's fix claims.
   if (prior && (agent._advisorRound || 0) > 0) {
     const response = extractAgentResponseTable(agent.history, prior.sinceIdx)
       || "(Agent did not provide a response table — re-evaluate each issue)"
     const round = (agent._advisorRound || 0) + 1
-    const label = round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"
+    const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
     parts.push(`## Round ${round} — ${label}`)
     parts.push("")
-    parts.push("## Prior Issue Table")
-    parts.push(prior.text)
-    parts.push("")
-    parts.push("## Agent Response")
+    parts.push("## Agent Response (fix claims to verify)")
     parts.push(response)
     parts.push("")
     parts.push("---")

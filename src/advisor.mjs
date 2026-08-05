@@ -107,29 +107,35 @@ export function buildAdvisorFollowUp(agent, _prior) {
   const response = extractAgentResponseTable(agent.history, prior?.sinceIdx ?? 0)
     || "(Agent did not provide a response table — re-evaluate each issue)"
   const round = (agent._advisorRound || 0) + 1
-  const label = round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"
+  const label = round === 2 ? "Verify Agent Fixes + Flag New Issues" : "Strict Verification"
 
   const parts = [
     `## Round ${round} — ${label}`,
     "",
-    `[System reminder: this is round ${round} of the convergence protocol. The system prompt for this round has already narrowed the review scope — follow it: ${round === 2 ? "verify the prior table and flag only obvious new issues introduced by the fixes" : "strictly verify only the prior table — do NOT look for new issues"}.]`,
+    `[System reminder: this is round ${round} of the convergence protocol. The system prompt for this round has already narrowed the review scope — follow it: ${round === 2 ? "verify the fixes the agent claims and flag only obvious new issues introduced by them" : "strictly verify only the fixes the agent claims — do NOT look for new issues"}.]`,
     "",
-    "## Prior Issue Table",
-    prior?.text ?? "(no prior table — review from scratch)",
-    "",
-    "## Agent Response",
+    // No prior issue table in the convergence context (decision 2026-08-05):
+    // it was the strongest re-statement anchor — reviewers quoted the old table
+    // verbatim instead of re-reading. The agent response table is the only
+    // "to-verify" list: it carries the agent's fix CLAIMS (semantics = verify
+    // fixes), without the old line numbers/content excerpts that enable
+    // verbatim restatement. When the agent did not answer, the fallback below
+    // asks for a full re-evaluation — re-injecting a sanitized prior table was
+    // considered and rejected (it would be restated all the same, and the
+    // fallback already covers the no-list case).
+    "## Agent Response (fix claims to verify)",
     response,
     "",
     "## Instructions",
     round === 2
-      ? "Verify each item in the prior table. Flag any obvious NEW issues introduced by the fixes (crashes, data loss, logic errors — not style). Produce a verification table."
-      : "Strictly verify ONLY the items in the prior table against the CURRENT FILE STATE (use `read` — an empty diff does not mean the fixes are absent). Do NOT look for new issues.",
+      ? "Verify each fix the agent claims in its response table against the CURRENT FILE STATE. Flag any obvious NEW issues introduced by the fixes (crashes, data loss, logic errors — not style). Produce a verification table."
+      : "Strictly verify ONLY the fixes the agent claims against the CURRENT FILE STATE (use `read` — an empty diff does not mean the fixes are absent). Do NOT look for new issues.",
     "",
-    "IMPORTANT: the prior issue table is HISTORY — always verify current file state with `read` before judging an item as fixed or unfixed.",
+    "IMPORTANT: the agent response table is a CLAIM — always verify current file state with `read` before judging a fix as done or undone.",
     // Round-aware evidence rule: "New" entries only exist in round 2 (round 3+ forbids them).
-    `STALE-CONTEXT WARNING: only fresh \`read\` results describe the current state — never judge from earlier snapshots or from \`git diff\` (committed fixes never show in \`git diff HEAD\`). Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may come from the stale prior table). Uncited findings are unverified and will be ignored.`,
+    `STALE-CONTEXT WARNING: only fresh \`read\` results describe the current state — never judge from earlier snapshots or from \`git diff\` (committed fixes never show in \`git diff HEAD\`). Read the files to verify. Any "Unfixed" entry${round === 2 ? ' (and any "New" entry)' : ""} MUST quote the exact line content from THIS round's \`read\` output (e.g. \`run.mjs:180: timeoutId = setTimeout(...)\`); line numbers alone are NOT evidence (they may be fabricated or stale). Uncited findings are unverified and will be ignored.`,
     "",
-    "Do NOT re-read AGENTS.md / design docs unless a prior-table item names them. Verify fix status with `read` only — you have no git tool this round; git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).",
+    "Do NOT re-read AGENTS.md / design docs unless a claimed fix names them. Verify fix status with `read` only — you have no git tool this round; git output in earlier messages is historical and untrustworthy (committed fixes never show in a diff).",
     "",
   ]
   return parts.join("\n")
