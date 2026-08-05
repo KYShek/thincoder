@@ -136,7 +136,9 @@ function buildConvLines(state, cols) {
     // Full-length streaming display, same as the main agent's reasoning —
     // the 5-line slice(-5) preview made the thinking appear pinned to one
     // spot instead of flowing; long content scrolls via the conversation
-    // window like everything else.
+    // window like everything else. The wrapText pass is a redundant safety
+    // net for formatTables output (already width-fitted) but required for the
+    // raw think lines — kept unified for both.
     const thinkLines = state._advisorThink ? sanitizeDisplay(state._advisorThink).split("\n") : []
     const mainLines = state.advisorStreaming
       ? formatTables(sanitizeDisplay(state.advisorStreaming), cols - 3)

@@ -6,7 +6,11 @@ import { ansi, C } from "./ansi.mjs"
 /** Tool execution start timestamps (performance.now ms), keyed by tool name. */
 const _toolTicks = Object.create(null)
 
-/** Per-tool streaming preview line limits — tools with verbose output get more lines */
+/** Per-tool streaming preview line limits — tools with verbose output get more lines.
+ *  NOTE: `advisor` is intentionally NOT pruned by the live-line mechanism: its
+ *  streaming returns early (kind-split into _advisorThink/advisorStreaming) and
+ *  is rendered full-length in render-conversation. The entry is kept for
+ *  symmetry with the map's other tools. */
 const LIVE_LINE_LIMITS = {
   bash: 10,
   advisor: 15,
@@ -56,6 +60,12 @@ export async function runAgentTurn(ctx, text) {
   }, 1000)
   render()
 
+  // NOTE: advisor buffers (_advisorThink/advisorStreaming) are cleared here too.
+  // Timing safety: onToolResult flushes _advisorThink into history and empties
+  // the buffers BEFORE onTurnEnd can call flushStream (tool result is
+  // dispatched inside executeToolCalls; onTurnEnd fires after the turn loop
+  // resumes). If a future change calls flushStream mid-advisor-execution the
+  // in-progress thinking WOULD be lost — keep the ordering, or flush here too.
   const flushStream = () => {
     if (state.reasoning) {
       const idx = state.lines.length
@@ -202,6 +212,9 @@ export async function runAgentTurn(ctx, text) {
         // the main agent's reasoning (flushStream does for state.reasoning) —
         // discarding it left the thought process visible only mid-review, then
         // gone. Flush BEFORE the done line so the block sits above it.
+        // NOTE (rendering): the flushed block has NO "│ " gutter prefix while
+        // the live streaming view adds one — same convention as the main
+        // agent's reasoning (live gutter, history plain). Intentional.
         if (state._advisorThink) {
           const idx = state.lines.length
           pushLine(state._advisorThink, C.reason)
@@ -234,6 +247,9 @@ export async function runAgentTurn(ctx, text) {
       if (name === "advisor") {
         // Accumulate to buffer — formatTables + wrapText in render-conversation
         // handles markdown formatting, same as main agent response.
+        // NOTE: the advisor tool ALWAYS emits {kind, text} objects (run.mjs's
+        // emit() wrapper) — a raw string chunk is never think; if that ever
+        // changes, plain-string think would land in advisorStreaming.
         const raw = typeof chunk === "string" ? chunk : String(chunk?.text ?? "")
         const kind = typeof chunk === "string" ? "text" : (chunk?.kind ?? "text")
         if (kind === "think") {
