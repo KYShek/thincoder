@@ -181,6 +181,11 @@ export async function executeToolCalls(agent, toolByName, toolCalls, callbacks, 
     } catch (error) {
       // Persist to ~/.thincoder/tool-errors/ for post-mortem; only pass message to the model (stack traces confuse LLMs and may leak paths)
       logToolError(item.toolCall.name, item.args, error)
+      // User interrupt (Ctrl+C / Ctrl+I) must propagate, not become a tool error:
+      // swallowing it here would make the parent keep looping while the user
+      // asked to stop — worst case with subagents, where the child runs its
+      // whole turn budget and the interrupt appears to do nothing.
+      if (signal?.aborted) throw error
       runHooks("PostToolUseFailure", { agent, toolName: item.toolCall.name, toolArgs: item.args, error }).catch(() => {})
       // Build contextual error: tool name + key args so the model can reason about what went wrong
       const ctxParts = []

@@ -2590,6 +2590,38 @@ test("dispatch: normal mode has no design gate", async () => {
   assert.equal(results[0].ok, true, results[0].result)
 })
 
+test("dispatch: aborted signal propagates tool errors (user interrupt is not swallowed)", async () => {
+  const agent = { planMode: false, config: {}, history: [], _touchedFiles: [], cwd: tmpdir(), _role: null }
+  const bombTool = {
+    name: "bomb",
+    readonly: true,
+    async execute() { throw new DOMException("Aborted", "AbortError") },
+  }
+  const ctrl = new AbortController()
+  ctrl.abort()
+  // When the user aborted (Ctrl+C), a tool error inside the batch must REJECT
+  // executeToolCalls — swallowing it into a tool result would let the agent
+  // loop continue while the user asked to stop.
+  await assert.rejects(
+    executeToolCalls(agent, new Map([["bomb", bombTool]]), [{ name: "bomb", arguments: "{}" }], {}, 0, ctrl.signal),
+    /Aborted/,
+  )
+})
+
+test("dispatch: plain tool error is returned as a result even when signal is live", async () => {
+  const agent = { planMode: false, config: {}, history: [], _touchedFiles: [], cwd: tmpdir(), _role: null }
+  const failTool = {
+    name: "fail",
+    readonly: true,
+    async execute() { throw new Error("disk full") },
+  }
+  const ctrl = new AbortController()
+  const results = await executeToolCalls(agent, new Map([["fail", failTool]]), [{ name: "fail", arguments: "{}" }], {}, 0, ctrl.signal)
+  assert.equal(results[0].ok, false)
+  assert.ok(results[0].result.includes("disk full"), "normal tool errors stay as model-visible results")
+})
+
+
 // ────────────────────────────────────────
 // mergeChildMutations — engineering-mode mechanical code gate
 // ────────────────────────────────────────

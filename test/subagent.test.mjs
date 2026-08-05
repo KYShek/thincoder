@@ -53,6 +53,7 @@ test("resolveChildProvider: env key fallback when provider has no apiKey", async
     if (prev === undefined) delete process.env.DEEPSEEK_API_KEY
     else process.env.DEEPSEEK_API_KEY = prev
   }
+})
 
 test("effectiveSubagentModel: tool arg > type-level > global > null", async () => {
   const { effectiveSubagentModel } = await import("../src/agent-tools/subagent.mjs")
@@ -69,4 +70,22 @@ test("effectiveSubagentModel: tool arg > type-level > global > null", async () =
   assert.equal(effectiveSubagentModel(bare, "coder", null), null, "null = inherit parent")
 })
 
+test("buildChildRunOpts: propagates the parent abort signal to the child", async () => {
+  const { buildChildRunOpts } = await import("../src/agent-tools/subagent.mjs")
+  const ctrl = new AbortController()
+  const opts = buildChildRunOpts({
+    depth: 2,
+    signal: ctrl.signal,
+    agent: { config: { agent: { subagentTurns: 42 } } },
+  })
+  assert.equal(opts.depth, 3, "depth increments")
+  assert.equal(opts.maxTurns, 42, "subagentTurns from config")
+  assert.equal(opts.signal, ctrl.signal, "parent signal passed to the child — Ctrl+C must abort the child's LLM calls")
 })
+
+test("buildChildRunOpts: no parent signal → null (child runs unbounded by interrupt)", async () => {
+  const { buildChildRunOpts } = await import("../src/agent-tools/subagent.mjs")
+  const opts = buildChildRunOpts({ depth: 0, agent: { config: { agent: {} } } })
+  assert.equal(opts.signal, null)
+})
+

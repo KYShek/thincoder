@@ -180,7 +180,7 @@ export const subagentTool = {
         ? (name, args) => ctx.callbacks.onToolCall(`${relayPrefix}${name}`, args)
         : null,
     }
-    const childRunOpts = { depth: (ctx.depth ?? 0) + 1, maxTurns: ctx.agent?.config?.agent?.subagentTurns ?? DEFAULT_SUBAGENT_TURNS }
+    const childRunOpts = buildChildRunOpts(ctx)
     let report = await runAgent(child, input, childOpts, childRunOpts)
 
     // Report too short = incomplete handoff: send back for expansion once (inspired by kimi-code's summaryPolicy: min 200 chars, retry 1 time).
@@ -201,6 +201,20 @@ export const subagentTool = {
 
     return report
   },
+}
+
+/**
+ * Child agent run options — the parent's abort signal MUST propagate to the
+ * child: without it, Ctrl+C aborts the parent's controller but the child keeps
+ * running its full turn budget (up to subagentTurns) while the parent awaits —
+ * the interrupt appears to do nothing.
+ */
+export function buildChildRunOpts(ctx) {
+  return {
+    depth: (ctx.depth ?? 0) + 1,
+    maxTurns: ctx.agent?.config?.agent?.subagentTurns ?? DEFAULT_SUBAGENT_TURNS,
+    signal: ctx.signal ?? null,
+  }
 }
 
 /**
