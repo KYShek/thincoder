@@ -132,6 +132,12 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       }
     }
     
+    // LLM generation silence: the reasoning phase produces no SSE bytes for
+    // seconds to tens of seconds (server-side prefill on large contexts, per
+    // tool-round LLM return). A placeholder keeps the panel visibly working
+    // instead of looking frozen; the first reasoning/content chunk follows.
+    onOutput?.({ kind: "think", text: "\n[thinking…]\n" })
+
     const response = await chat(provider, {
       messages,
       tools: toolSchemas,
