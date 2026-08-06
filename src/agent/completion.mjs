@@ -6,6 +6,7 @@
  */
 import { isDocFile } from "../advisor/repos.mjs"
 import { pushReal } from "../context.mjs"
+import { MAX_ADVISOR_ROUNDS } from "../advisor/run.mjs"
 
 /** True when this run mutated at least one CODE file. Mirrors agent.mjs:hasCodeMutations. */
 function hasCodeMutations(agent) {
@@ -121,8 +122,13 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
   const cfg = agent.config?.advisor
   const advisorReview = cfg?.enabled && cfg?.guard !== false
   if (depth === 0 && advisorReview && !agent.config?.agent?.engineering) {
+    // Cap sync: beyond MAX_ADVISOR_ROUNDS the advisor tool refuses to review
+    // (run.mjs convergence cap) — pushing back further would loop forever
+    // (fix → pushback → cap-refused call → fix …). The cap message from the
+    // last accepted review stands; the user decides manually.
     if (agent._mutatedThisRun && !agent._calledAdvisorThisRun && hasCodeMutations(agent)
-        && advisorPushbacks < MAX_ADVISOR_PUSHBACKS) {
+        && advisorPushbacks < MAX_ADVISOR_PUSHBACKS
+        && (agent._advisorRound || 0) < MAX_ADVISOR_ROUNDS) {
       advisorPushbacks++
       pushReal(agent, { role: "assistant", content: response.content })
       agent.history.push({

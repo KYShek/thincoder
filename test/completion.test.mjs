@@ -118,3 +118,37 @@ test("handleCompletion: no pending tasks → no pushback, no counter touched", (
   assert.equal(agent._taskPushbacks ?? 0, 0)
 })
 
+test("handleCompletion: advisor guard pushes back BELOW the convergence cap", () => {
+  const agent = baseAgent({
+    config: { agent: {}, advisor: { enabled: true } },
+    _mutatedThisRun: true,
+    _touchedFiles: ["src/a.mjs"],
+    _calledAdvisorThisRun: false,
+    _advisorRound: 2,
+  })
+  const cr = handleCompletion(agent, baseResponse, 0, 0, 0, false, 0, {})
+  assert.equal(cr.action, "continue", "mutations without a review → reminder injected")
+  const last = agent.history.at(-1)
+  assert.ok(last.content.startsWith("[System reminder: you changed code"), last.content)
+  assert.ok(last.content.includes("round 3"), "round number = _advisorRound + 1")
+})
+
+test("handleCompletion: advisor guard does NOT push back at/after the convergence cap", () => {
+  // Cap sync regression (observed "round 7" loop): beyond MAX_ADVISOR_ROUNDS the
+  // advisor tool refuses reviews (run.mjs cap), so pushing back would loop
+  // forever — fix → pushback → cap-refused call → fix → … The guard must let
+  // the run finish; the cap message from the last accepted review stands.
+  const agent = baseAgent({
+    config: { agent: {}, advisor: { enabled: true } },
+    _mutatedThisRun: true,
+    _touchedFiles: ["src/a.mjs"],
+    _calledAdvisorThisRun: false,
+    _advisorRound: 5, // MAX_ADVISOR_ROUNDS
+  })
+  const cr = handleCompletion(agent, baseResponse, 0, 0, 0, false, 0, {})
+  assert.equal(cr.action, "done", "cap reached → no more pushback")
+  const last = agent.history.at(-1)
+  assert.ok(!last.content.startsWith("[System reminder: you changed code"), "no advisor reminder after cap")
+})
+
+
