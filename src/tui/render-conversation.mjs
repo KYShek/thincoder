@@ -27,7 +27,9 @@ export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
   // expandedBlocks participates: expanding/folding a block must invalidate the cache
   const exp = state.expandedBlocks ? [...state.expandedBlocks].sort().join(",") : ""
-  const blocksSig = (state._advisorBlocks ?? []).map((b) => `${b.kind}:${b.text.length}`).join(",")
+  // Content prefix in the signature: same kind+length with different content
+  // would otherwise collide (stale render); 8 chars disambiguate in practice.
+  const blocksSig = (state._advisorBlocks ?? []).map((b) => `${b.kind}:${b.text?.length ?? 0}:${String(b.text ?? "").slice(0, 8)}`).join(",")
   return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${blocksSig}|${state.foldEnabled !== false ? "f" : "u"}|${exp}`
 }
 
@@ -98,11 +100,12 @@ function buildConvLines(state, cols) {
 
     // Long-message folding: ANY single line (main output C.text, thinking C.reason,
     // tool summaries C.dim — whatever wraps beyond LONG_FOLD_LINES display rows)
-    // collapses to [blank, ▶, first 4, last] — 5 content lines. Main output and
-    // thinking are the REAL long content; bidirectional folding (collapse markers
-    // + click toggle) keeps them readable — the 0.12.7 dim-only restriction was a
-    // temporary fix for the single-direction era and is now reverted. Keyed by the
-    // source-line index (`long-${i}`) so the toggle survives re-renders.
+    // collapses to [first 4, ▶, last]; expanded long blocks render as
+    // [blank, ▼, every line]. Main output and thinking are the REAL long
+    // content; bidirectional folding (collapse markers + click toggle) keeps
+    // them readable — the 0.12.7 dim-only restriction was a temporary fix for
+    // the single-direction era and is now reverted. Keyed by the source-line
+    // index (`long-${i}`) so the toggle survives re-renders.
     const longKey = `long-${i}`
     const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey)
     const block = []
@@ -162,7 +165,12 @@ function buildConvLines(state, cols) {
         : formatTables(sanitizeDisplay(block.text), cols - 3)
       for (const line of rows) {
         for (const wrapped of wrapText(line, cols - 3)) {
-          convLines.push({ text: `│ ${wrapped}`, color })
+          // kind:"text" (the final review prose) gets the same lightweight
+          // markdown styling as the main agent response — **bold**, `code`,
+          // ~~strike~~ would otherwise show as raw markers. Applied AFTER
+          // wrapping so the ANSI never skews width math (same as line 113).
+          const rendered = block.kind === "text" ? renderMarkdownPreservingWidth(wrapped) : wrapped
+          convLines.push({ text: `│ ${rendered}`, color })
         }
       }
     }
