@@ -767,6 +767,13 @@ test("stripTags: out-of-range numeric entities do not throw (RangeError guard)",
   assert.equal(stripTags("x &#999999999999; y"), "x &#999999999999; y", "invalid entity kept as-is")
   assert.equal(stripTags("&#x110000;"), "&#x110000;", "out-of-Unicode hex entity kept as-is")
   assert.equal(stripTags("&#65;&#x42; ok"), "AB ok", "valid numeric entities still decode")
+
+test("htmlToText: malformed numeric entities do not throw (mirrors stripTags guard)", async () => {
+  const { htmlToText } = await import("../src/tools/shared.mjs")
+  assert.equal(htmlToText("x &#999999999999; y"), "x &#999999999999; y", "out-of-range entity kept as-is")
+  assert.equal(htmlToText("&#65;&#x42; ok"), "AB ok", "valid numeric entities still decode")
+})
+
 })
 
 test("isDestructiveCommand: long-form --recursive delete is destructive", async () => {

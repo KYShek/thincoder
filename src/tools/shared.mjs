@@ -39,6 +39,9 @@ export function isPrivateHost(hostname) {
   }
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (m) {
+    // Octet range is NOT validated (999.10.0.1 parses but matches no private
+    // prefix → treated as public). Intentional: the guard checks known-private
+    // prefixes; invalid IPs are harmless false-negatives for SSRF purposes.
     const [a, b] = [Number(m[1]), Number(m[2])]
     if (a === 10 || (a === 172 && b >= 16 && b <= 31) || a === 192 && b === 168 || a === 169 && b === 254 || a === 0) return true
   }
@@ -149,7 +152,7 @@ export async function autoSyntaxCheck(abs) {
 }
 
 /** Resolve realpath by walking up the directory tree */
-export function realpathNearest(abs) {
+function realpathNearest(abs) {
   let cur = abs
   const tail = []
   while (!existsSync(cur)) {
@@ -162,15 +165,18 @@ export function realpathNearest(abs) {
   catch { return abs }
 }
 
+// cwd is effectively constant per CLI session — the cache never grows in
+// practice. A long-running server with rotating cwds would leak; revisit with
+// an LRU if that usage ever appears.
 const realCwdCache = new Map()
 /** Resolve cwd to realpath, cached */
-export function realCwd(cwd) {
+function realCwd(cwd) {
   if (!realCwdCache.has(cwd)) realCwdCache.set(cwd, realpathNearest(resolve(cwd)))
   return realCwdCache.get(cwd)
 }
 
 /** Assert that a resolved path is inside cwd; throws on escape */
-export function assertInside(cwd, resolved, p) {
+function assertInside(cwd, resolved, p) {
   // relative() returns platform-native separators; ".." + sep therefore
   // matches both / and \ traversal on the respective platform.
   const rel = relative(cwd, resolved)
@@ -212,12 +218,11 @@ function blankQuoted(command) {
     const ch = command[i]
     if (quote) {
       if (ch === "\\" && quote !== "'") { out += " "; i++; out += " "; continue }
-      if (ch === quote) quote = null
+      if (ch === quote) { quote = null; out += " "; continue }
       // Backticks are COMMAND SUBSTITUTION — the content executes, so it must
       // stay visible to the redirection check (echo `cat > /tmp/x` writes a
       // file). Only ' and " are literal regions.
-      if (quote !== "`") out += " "
-      else out += ch
+      out += quote === "`" ? ch : " "
     } else if (ch === "'" || ch === '"' || ch === "`") {
       quote = ch
       out += " "
@@ -309,8 +314,8 @@ export function htmlToText(html) {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<li[^>]*>/gi, "- ")
     .replace(/<[^>]+>/g, "")
-    .replace(/&#0*(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#0*(\d+);/g, (m, n) => decodeNumericEntity(m, n))
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => decodeNumericEntity(m, parseInt(h, 16)))
     .replace(/&nbsp;|&ensp;/g, " ")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
