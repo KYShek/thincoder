@@ -75,11 +75,8 @@ function _advisorSummary(result) {
   const critical = (text.match(/\| \d+ \|.*\| 🔴/g) || []).length
   const advisory = (text.match(/\| \d+ \|.*\| 🟡/g) || []).length
   const style = (text.match(/\| \d+ \|.*\| 🔵/g) || []).length
-  // Passed = zero critical ROWS in the review table (the protocol's verdict)
-  // OR an explicit pass phrase. A bare "no 🔴" inside quoted code is not
-  // enough — the table row count is the source of truth.
-  // Phrase forms: "no 🔴", "all resolved/fixed", "the review passes",
-  // "no issues found", "no critical issues".
+  // Protocol: zero 🔴 rows in the review table = pass (phrase fallback for
+  // table-free summaries like "No issues found").
   if (critical === 0 && (/\| \d+ \|/.test(text)
     || /no\s+🔴|all.*(?:resolved|fixed|pass)|pass(?:es|ed)?\b|no\s+(?:critical\s+)?issues?/im.test(text))) {
     return "advisor: passed"

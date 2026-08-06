@@ -224,12 +224,10 @@ export async function runAgentTurn(ctx, text) {
           const idx = state.lines.length
           // Strip the live "[thinking…]" placeholder(s) — they are wait
           // indicators, not review content; the history keeps only real
-          // thinking. The regex is built FROM the exported constant so the
-          // cleanup can never drift from the emission text; multiline flag
-          // strips every round-trip placeholder, not just the first.
-          const esc = ADVISOR_THINKING_PLACEHOLDER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-          const placeholderRe = new RegExp(`^\\s*${esc}\\s*\\n?`, "gm")
-          const cleaned = state._advisorThink.replace(placeholderRe, "")
+          // thinking. Literal replaceAll of the shared constant: no regex
+          // anchoring/greediness edge cases (consecutive placeholders, the
+          // embedded newlines), and emission/cleanup can never drift.
+          const cleaned = state._advisorThink.replaceAll(ADVISOR_THINKING_PLACEHOLDER, "").replace(/\n{3,}/g, "\n\n")
           if (cleaned) {
             pushLine(cleaned, C.reason)
             // Completed thinking stays expanded (user is reading it), same as
@@ -343,7 +341,11 @@ export async function runAgentTurn(ctx, text) {
         // pushback messages appear in the conversation at the right spot.
         const last = agent.history.at(-1)
         if (last?.role === "user" && typeof last.content === "string" && last.content.startsWith("[System reminder:")) {
-          pushLine(last.content, C.warn)
+          // Reminders can embed long prior tables — show only the first lines
+          // (the full text is in agent.history); 3 lines + ellipsis.
+          const lines = last.content.split("\n")
+          const shown = lines.length > 3 ? lines.slice(0, 3).join("\n") + "\n…" : last.content
+          pushLine(shown, C.warn)
         }
         if (++n % 5 !== 0) return
         try { saveSessionImpl(agent, state.lines) } catch (e) { console.error(`[session] incremental save failed: ${e.message}`) }

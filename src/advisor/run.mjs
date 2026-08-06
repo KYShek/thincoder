@@ -59,7 +59,7 @@ function compactMessages(messages) {
   const toolCount = old.filter((m) => m.role === "tool").length
   const keyFiles = old
     .filter((m) => m.role === "tool")
-    .map((m) => m.content?.split("\n")[0]?.slice(0, 50))
+    .map((m) => m.content?.split("\n")[0]?.slice(0, 50)) // first line of tool results typically names the file that was read/grepped
     .filter(Boolean)
     .slice(0, 5) // cap at 5 to keep the compaction message short
   const filesPart = keyFiles.length > 0 ? ` Key files examined: ${keyFiles.join(", ")}` : ""
@@ -281,7 +281,7 @@ function resolveAdvisorProvider(agent) {
     try {
       const provider = findProvider(agent.providers ?? [agent.provider], cfg.provider)
       const result = cfg.model ? { ...provider, model: cfg.model } : { ...provider }
-      if (cfg.thinking === null) result.thinking = undefined  // explicitly off
+      if (cfg.thinking === null || cfg.thinking === false) result.thinking = undefined  // explicitly off
       else if (cfg.thinking !== undefined) result.thinking = cfg.thinking
       if (cfg.reasoningEffort !== undefined) result.reasoningEffort = cfg.reasoningEffort
       return result
@@ -407,71 +407,6 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
     return `Advisor: review failed (${errorType}) — ${e.message || "unknown error"}. ${retryAdvice}`
   }
 }
-
-// ────────────────────────────────────────
-// Host-verified citations (decision d698434)
-// ────────────────────────────────────────
-
-// `file:line: content` citations — the file group is narrowed to source/config
-// extensions so URLs (`example.com:8080: …`) don't become false-positive
-// citations that fail as "file unreadable" in the verification report.
-const CITATION_RE = /([\w./\\-]+\.(?:mjs|cjs|js|ts|jsx|tsx|mts|cts|py|rs|go|c|h|cpp|hpp|java|rb|php|sh|bash|json|md|markdown|mdx|yaml|yml|toml|css|html)):(\d+):\s*([^`\n]{4,})/g
-
-/** Extract `file:line: content` citations from a review text. */
-export function extractCitations(text) {
-  const out = []
-  for (const m of text.matchAll(CITATION_RE)) {
-    out.push({ file: m[1], line: Number(m[2]), content: m[3].trim() })
-  }
-  return out
-}
-
-/**
- * Mechanically verify citations against the CURRENT file state: read the file,
- * take the exact line, check it CONTAINS the quoted content. Reports
- * N/M matched + the mismatches. Unverified citations cannot support a
- * push-back — the evidence rule becomes a host fact, not a prompt wish.
- */
-export function verifyCitations(text, cwd) {
-  const citations = extractCitations(text)
-  const matched = []
-  const failed = []
-  const root = resolve(cwd) + sep
-  for (const c of citations) {
-    try {
-      // Path confinement: citation paths are LLM-generated — never trust them.
-      // A hallucinated "../config.json" would otherwise read (and leak via the
-      // report) files outside the project, including API-key configs.
-      const resolved = resolve(join(cwd, c.file))
-      if (!resolved.startsWith(root)) {
-        failed.push({ ...c, reason: "path traversal" })
-        continue
-      }
-      const line = readFileSync(resolved, "utf8").split("\n")[c.line - 1] ?? ""
-      if (line.includes(c.content)) matched.push(c)
-      else failed.push(c)
-    } catch {
-      failed.push({ ...c, reason: "file unreadable" })
-    }
-  }
-  return { total: citations.length, matched, failed }
-}
-
-/** Append the verification report to the review text (visible to the parent agent). */
-export function appendCitationReport(text, cwd) {
-  const { total, matched, failed } = verifyCitations(text, cwd)
-  if (total === 0) return text // no citations — nothing to verify
-  const lines = [
-    "",
-    "---",
-    `[host-verified] ${matched.length}/${total} citations match current file state.`,
-  ]
-  if (failed.length > 0) {
-    lines.push("Citations that do NOT match the current file state (treat their claims as unverified):")
-    for (const f of failed.slice(0, 10)) {
-      lines.push(`- ${f.file}:${f.line}: ${f.content.slice(0, 80)}${f.reason ? ` (${f.reason})` : ""}`)
-    }
-  }
-  return text + lines.join("\n")
-}
-
+// Host-verified citations — moved to citations.mjs (kept re-exported here for
+// import compatibility: tests and callers import from run.mjs).
+export { extractCitations, verifyCitations, appendCitationReport } from "./citations.mjs"
