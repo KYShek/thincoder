@@ -118,7 +118,8 @@ export function handleCompletion(agent, response, depth, turn, guardPushbacks, h
   }
 
   // --- advisor guard: review of mutated files before completion ---
-  // OPT-IN via advisor.enabled + guard!==false, and NEVER in engineering mode.
+  // Active by default when advisor.enabled is set (opt-out via guard: false),
+  // and NEVER in engineering mode.
   const cfg = agent.config?.advisor
   const advisorReview = cfg?.enabled && cfg?.guard !== false
   if (depth === 0 && advisorReview && !agent.config?.agent?.engineering) {

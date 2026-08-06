@@ -268,7 +268,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
         result = (
           truncated +
           `\n… (truncated: ${remainingLines} more lines, ${result.length} chars total)\n` +
-          `To see more content, use: read(path, offset=${keptLines}, limit=200)`
+          `To see more content, use: read(path, offset=${keptLines + 1}, limit=200)`
         )
       }
       
