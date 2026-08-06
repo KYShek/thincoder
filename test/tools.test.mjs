@@ -746,18 +746,35 @@ test("bash 护栏：重定向检测引号感知——脚本内比较运算符不
   ]) {
     assert.equal(hasFileRedirection(ok), false, `不应误判: ${ok}`)
   }
-  // 拦截：引号外的真实重定向（含 heredoc）
+  // 拦截：引号外的真实重定向（含 heredoc、fd 前缀、反引号命令替换）
   for (const blocked of [
     "echo hi > out.txt",
     "echo hi >> out.txt",
     "cat < input.txt",
     "echo ok && node app.js > log.txt",
     "cat << EOF",
-    "node app.js 2> err.txt".replace("2> ", "> "), // fd 前缀形式也拦
+    "node app.js 2> err.txt",
+    "node app.js 1>> log.txt",
+    "echo `cat > /tmp/evil`", // 反引号是命令替换——内容执行，> 必须拦
+    "grep x file `echo y > z`",
   ]) {
     assert.equal(hasFileRedirection(blocked), true, `应拦截: ${blocked}`)
   }
 })
+
+test("stripTags: out-of-range numeric entities do not throw (RangeError guard)", async () => {
+  const { stripTags } = await import("../src/tools/shared.mjs")
+  assert.equal(stripTags("x &#999999999999; y"), "x &#999999999999; y", "invalid entity kept as-is")
+  assert.equal(stripTags("&#x110000;"), "&#x110000;", "out-of-Unicode hex entity kept as-is")
+  assert.equal(stripTags("&#65;&#x42; ok"), "AB ok", "valid numeric entities still decode")
+})
+
+test("isDestructiveCommand: long-form --recursive delete is destructive", async () => {
+  const { isDestructiveCommand } = await import("../src/tools/shared.mjs")
+  assert.equal(isDestructiveCommand("rm --recursive /tmp/x"), true)
+  assert.equal(isDestructiveCommand("rm -rf /tmp/x"), true)
+})
+
 
 // ---------------------------------------------------------------- skills 系统
 

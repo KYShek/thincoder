@@ -79,6 +79,9 @@ export function truncate(text, max = MAX_OUTPUT_CHARS) {
 }
 
 /** Streaming decoder: encoding sniffing ASCII→UTF-8→GBK.
+ *  KNOWN LIMITATION (accepted): the fallback is hardcoded to GBK (Chinese) —
+ *  Shift-JIS/EUC-KR pages decode as mojibake. Real-world usage is dominated
+ *  by UTF-8; a charset-aware variant would need the Content-Type header.
  *  Each call creates an independent decoder instance — must not be shared across parallel streams (internal decoder state accumulates). */
 export function makeDecoder() {
   let decoder = null
@@ -168,6 +171,8 @@ export function realCwd(cwd) {
 
 /** Assert that a resolved path is inside cwd; throws on escape */
 export function assertInside(cwd, resolved, p) {
+  // relative() returns platform-native separators; ".." + sep therefore
+  // matches both / and \ traversal on the respective platform.
   const rel = relative(cwd, resolved)
   if (isAbsolute(rel) || rel === ".." || rel.startsWith(".." + sep)) {
     throw new Error(`Access denied outside working directory: ${p}`)
@@ -208,7 +213,11 @@ function blankQuoted(command) {
     if (quote) {
       if (ch === "\\" && quote !== "'") { out += " "; i++; out += " "; continue }
       if (ch === quote) quote = null
-      out += " "
+      // Backticks are COMMAND SUBSTITUTION — the content executes, so it must
+      // stay visible to the redirection check (echo `cat > /tmp/x` writes a
+      // file). Only ' and " are literal regions.
+      if (quote !== "`") out += " "
+      else out += ch
     } else if (ch === "'" || ch === '"' || ch === "`") {
       quote = ch
       out += " "
@@ -219,19 +228,22 @@ function blankQuoted(command) {
   return out
 }
 
-/** Detect shell output/input redirection (> >> < followed by filename) outside quoted regions */
+/** Detect shell output/input redirection (> >> < followed by filename) outside quoted regions.
+ *  Backtick contents count (command substitution executes); fd-prefixed forms
+ *  (2> file, 1>> file) count too. */
 export function hasFileRedirection(command) {
   const bare = blankQuoted(command)
-  return /(^|[\s;&|])>{1,2}\s*\S/.test(bare) || /(^|[\s;&|])<\s*\S/.test(bare)
+  return /(^|[\s;&|0-9])>{1,2}\s*\S/.test(bare) || /(^|[\s;&|0-9])<\s*\S/.test(bare)
 }
 
 /** Whether a single command segment is a destructive non-git command (conservative: prefer false positives) */
 export function isDestructiveCommand(seg) {
   const s = seg
-  // rm with recursive (-r/-R): destructive WITH or WITHOUT -f (rm -r removes
-  // trees non-interactively for non-empty dirs in many setups; -rf is the
-  // classic case). Conservative: prefer blocking.
-  if (/\brm\b/.test(s) && /\s-\S*r/i.test(s)) return true
+  // rm with recursive (-r/-R/--recursive): destructive WITH or WITHOUT -f
+  // (recursive delete removes trees non-interactively in many setups; -rf is
+  // the classic case). Conservative: prefer blocking. The \s before the flag
+  // requires a separator — "rm-rf" is not a valid command (no such program).
+  if (/\brm\b/.test(s) && (/\s-\S*r/i.test(s) || /\s--recursive\b/i.test(s))) return true
   if (/\brmdir\b/i.test(s)) return true
   if (/\bdel\b/i.test(s) && /\/f\b/i.test(s)) return true
   if (/\brd\b/i.test(s) && /\/s\b/i.test(s)) return true
@@ -248,6 +260,8 @@ export function isDestructiveCommand(seg) {
 
 /** Convert glob pattern to regex */
 export function globToRegex(pattern) {
+  // Sentinel chars: \u0001/\u0002 never appear in real glob patterns (they
+  // come from model output or the filesystem) — safe as **/ and ** placeholders.
   const DS = "\u0001", DP = "\u0002"
   const escaped = pattern
     .replace(/\*\*\//g, DS).replace(/\*\*/g, DP)
@@ -258,16 +272,24 @@ export function globToRegex(pattern) {
   return new RegExp(`^${escaped}$`)
 }
 
+/** Decode a numeric HTML entity to its code point — invalid/out-of-range
+ *  values (e.g. &#999999999999;) must not throw RangeError; keep the source
+ *  text as-is (display-only residue is acceptable). */
+function decodeNumericEntity(_, digits) {
+  const n = Number(digits)
+  return Number.isSafeInteger(n) && n <= 0x10ffff ? String.fromCodePoint(n) : _
+}
+
 /** Strip HTML tags. KNOWN LIMITATION (accepted): the `/<[^>]+>/g` regex treats
- *  the first `>` as the tag end — an attribute value containing `>` (e.g.
- *  `<img alt="a > b">`) truncates the match and leaves text residue. A full
- *  HTML parser is out of scope; real-world HTML with `>` in attributes is
- *  rare and the residue is display-only (never parsed). */
+ *  the first `>` (or a `<` inside an attribute value) as the tag boundary —
+ *  `<img alt="a > b">` truncates the match and leaves text residue. A full
+ *  HTML parser is out of scope; real-world HTML with angle brackets in
+ *  attributes is rare and the residue is display-only (never parsed). */
 export function stripTags(html) {
   return html
     .replace(/<[^>]+>/g, "")
-    .replace(/&#0*(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#0*(\d+);/g, (m, n) => decodeNumericEntity(m, n))
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => decodeNumericEntity(m, parseInt(h, 16)))
     .replace(/&nbsp;|&ensp;/g, " ")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
