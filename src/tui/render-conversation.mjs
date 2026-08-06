@@ -17,15 +17,19 @@ let _convCache = { key: "", cols: 0, lines: [] }
  * @returns {string} ANSI-rendered line whose display width equals stringWidth(text)
  */
 function renderMarkdownPreservingWidth(text) {
-  // Line-by-line: render + compensate per line. Whole-text rendering measured
-  // raw markdown against displayed text and padded at the paragraph end —
-  // table cells never got the compensation and misaligned.
+  // Line-by-line: render + compensate per line. The per-line padding serves
+  // NON-table text (so `**bold** text` next to plain text keeps its width).
+  // Table alignment is NOT provided by the padding — formatTables strips cell
+  // padding during trim and recomputes widths from the RENDERED text (that is
+  // the render-before-measure contract).
   return text.split("\n").map((line) => {
     const rendered = renderMarkdownInline(renderMarkdownHeading(line))
     const diff = stringWidth(line) - stringWidth(rendered)
     return diff > 0 ? rendered + " ".repeat(diff) : rendered
   }).join("\n")
 }
+// Test seam (mirrors the _-prefixed seams in run.mjs).
+export { renderMarkdownPreservingWidth as _renderMarkdownPreservingWidth }
 
 
 export function convCacheKey(state) {

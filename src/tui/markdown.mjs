@@ -23,7 +23,7 @@ const STRIKE_OFF = "\x1b[29m"
 
 /** Render inline markers on a single text line: `code` spans, **bold**, __bold__, ~~strike~~. */
 export function renderMarkdownInline(line) {
-  if (!line || line.indexOf("*") === -1 && line.indexOf("`") === -1 && line.indexOf("_") === -1 && line.indexOf("~") === -1) {
+  if (!line || (line.indexOf("*") === -1 && line.indexOf("`") === -1 && line.indexOf("_") === -1 && line.indexOf("~") === -1)) {
     return line
   }
 
@@ -45,6 +45,9 @@ export function renderMarkdownInline(line) {
 }
 
 /** Render heading markers: strip leading `#` markers and bold the heading.
+ *  Inline markers inside the heading are stripped too — the heading is already
+ *  fully bold, so `**bold**` inside it would wrap another bold sequence whose
+ *  `\x1b[22m` turns bold OFF for the rest of the heading text.
  *  Line-by-line (split on \n): without the m flag, `^`/`$` anchor the whole
  *  string, so a multi-line input never matched and headings stayed raw —
  *  the old call sites passed single wrapped lines and hid the defect.
@@ -53,6 +56,6 @@ export function renderMarkdownHeading(line) {
   return line.split("\n").map((l) => {
     const m = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(l)
     if (!m || !m[2]) return l
-    return `${BOLD}${m[2]}${BOLD_OFF}`
+    return `${BOLD}${m[2].replace(/\*\*|__|~~/g, "")}${BOLD_OFF}`
   }).join("\n")
 }

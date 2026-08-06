@@ -198,9 +198,8 @@ test("formatTables: ANSI-rendered cells keep every row the same display width", 
 
 test("formatTables: markdown cells rendered BEFORE measuring stay aligned (render-before-measure regression)", async () => {
   const { stringWidth } = await import("../src/tui/render.mjs")
-  // End-to-end through renderConversation: a conversation line carrying a
-  // **bold**-marked table must render with every table row at equal width.
-  const { renderConversation } = await import("../src/tui/render-conversation.mjs")
+  // End-to-end through renderConversation (statically imported): a conversation
+  // line carrying a **bold**-marked table must render with equal-width rows.
   const state = tuiState({
     lines: [{
       text: "| # | 问题 |\n| - | --- |\n| 1 | **bold** 内容 |\n| 2 | 普通文本 |",
@@ -213,6 +212,30 @@ test("formatTables: markdown cells rendered BEFORE measuring stay aligned (rende
   const widths = tableRows.map((l) => stringWidth(l))
   assert.equal(new Set(widths).size, 1, `table rows align end-to-end: ${widths.join(",")}`)
 })
+
+test("_renderMarkdownPreservingWidth: display width preserved after rendering (per-line contract)", async () => {
+  const { stringWidth } = await import("../src/tui/render.mjs")
+  const { _renderMarkdownPreservingWidth } = await import("../src/tui/render-conversation.mjs")
+  const cases = [
+    "**bold** text",
+    "## 标题",
+    "## **bold** 标题",
+    "`code` 和 ~~strike~~ 混排",
+    "普通文本",
+    "",
+  ]
+  for (const input of cases) {
+    const out = _renderMarkdownPreservingWidth(input)
+    assert.equal(stringWidth(out), stringWidth(input), JSON.stringify(input))
+  }
+  // heading + inline bold: the inner markers must NOT re-open bold (which would
+  // turn it OFF for the rest of the heading via \x1b[22m)
+  const heading = _renderMarkdownPreservingWidth("## **bold** 标题")
+  assert.ok(!heading.includes("\x1b[1m\x1b[1m"), "no nested bold-open sequences")
+  assert.equal((heading.match(/\x1b\[1m/g) || []).length, 1, "single bold-open for the heading")
+  assert.ok(!heading.includes("**"), "markers stripped")
+})
+
 
 
 // ====================================================================
