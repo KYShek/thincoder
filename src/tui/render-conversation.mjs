@@ -27,7 +27,8 @@ export function convCacheKey(state) {
   const lastLine = state.lines.length > 0 ? state.lines[state.lines.length - 1] : null
   // expandedBlocks participates: expanding/folding a block must invalidate the cache
   const exp = state.expandedBlocks ? [...state.expandedBlocks].sort().join(",") : ""
-  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${state.advisorStreaming?.length ?? 0}|${state._advisorThink?.length ?? 0}|${state.foldEnabled !== false ? "f" : "u"}|${exp}`
+  const blocksSig = (state._advisorBlocks ?? []).map((b) => `${b.kind}:${b.text.length}`).join(",")
+  return `${state.lines.length}|${lastLine?.text.length ?? 0}|${state.streaming.length}|${state.reasoning.length}|${blocksSig}|${state.foldEnabled !== false ? "f" : "u"}|${exp}`
 }
 
 /** Fold marker line: bold-cyan icon + "click to …" phrase underlined (clickable affordance).
@@ -132,21 +133,22 @@ function buildConvLines(state, cols) {
       convLines.push({ text: wrapped, color: C.reason })
     }
   }
-  if (state._advisorThink || state.advisorStreaming) {
-    // Full-length streaming display, same as the main agent's reasoning —
-    // the 5-line slice(-5) preview made the thinking appear pinned to one
-    // spot instead of flowing; long content scrolls via the conversation
-    // window like everything else. The wrapText pass is a redundant safety
-    // net for formatTables output (already width-fitted) but required for the
-    // raw think lines — kept unified for both.
-    const thinkLines = state._advisorThink ? sanitizeDisplay(state._advisorThink).split("\n") : []
-    const mainLines = state.advisorStreaming
-      ? formatTables(sanitizeDisplay(state.advisorStreaming), cols - 3)
-      : []
-    const allLines = [...thinkLines.map(l => ({ text: l, color: C.reason })), ...mainLines.map(l => ({ text: l, color: C.text }))]
-    for (const { text, color } of allLines) {
-      for (const wrapped of wrapText(text, cols - 3)) {
-        convLines.push({ text: `│ ${wrapped}`, color })
+  const advisorBlocks = state._advisorBlocks ?? []
+  if (advisorBlocks.length > 0) {
+    // ORDERED block display — the blocks preserve the emission order
+    // (think → tool → think → … → final) and render as one interleaved
+    // stream: thinking in reasoning color, tool progress/final in text color.
+    // Full-length, no preview truncation; long content scrolls via the
+    // conversation window like everything else.
+    for (const block of advisorBlocks) {
+      const color = block.kind === "think" ? C.reason : C.text
+      const text = block.kind === "think"
+        ? sanitizeDisplay(block.text)
+        : formatTables(sanitizeDisplay(block.text), cols - 3)
+      for (const line of text.split("\n")) {
+        for (const wrapped of wrapText(line, cols - 3)) {
+          convLines.push({ text: `│ ${wrapped}`, color })
+        }
       }
     }
   }

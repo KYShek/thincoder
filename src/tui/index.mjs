@@ -60,8 +60,7 @@ export async function startTUI(agent, opts = {}) {
   const state = {
     lines: [], // conversation lines: { text, color }
     streaming: "", // current streaming buffer
-    advisorStreaming: "", // advisor streaming buffer (formatted like main response)
-    _advisorThink: "", // advisor reasoning buffer (streamed + flushed to history at review end)
+    _advisorBlocks: [], // advisor ordered blocks: [{ kind: "think"|"text", text }] — preserves emission order (think ↔ tool interleaving)
     input: [], // input buffer (codepoint array)
     cursor: 0,
     history: [],

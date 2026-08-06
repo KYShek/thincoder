@@ -49,8 +49,7 @@ export async function runAgentTurn(ctx, text) {
   state.status = "Processing..."
   state.streaming = ""
   state.reasoning = ""
-  state.advisorStreaming = ""
-  state._advisorThink = ""
+  state._advisorBlocks = []
   state.subTasks = {}
   state.currentTool = null
   state.processingStarted = Date.now()
@@ -89,8 +88,7 @@ export async function runAgentTurn(ctx, text) {
       state._autoExpand.push(idx)
       state.streaming = ""
     }
-    state.advisorStreaming = ""
-    state._advisorThink = ""
+    state._advisorBlocks = []
   }
 
   const callbacks = {
@@ -147,7 +145,7 @@ export async function runAgentTurn(ctx, text) {
       // Redundant with flushStream() below (it clears both buffers) — kept as
       // defense-in-depth so a future flushStream change cannot leak advisor
       // buffers into the next tool's view.
-      if (name === "advisor") { state.advisorStreaming = ""; state._advisorThink = "" }
+      if (name === "advisor") { state._advisorBlocks = [] }
       flushStream()
       ensureAssistantLabel()
       state.currentTool = name
@@ -220,26 +218,28 @@ export async function runAgentTurn(ctx, text) {
         // NOTE (rendering): the flushed block has NO "│ " gutter prefix while
         // the live streaming view adds one — same convention as the main
         // agent's reasoning (live gutter, history plain). Intentional.
-        if (state._advisorThink) {
-          const idx = state.lines.length
-          // Strip the live "[thinking…]" placeholder(s) — they are wait
-          // indicators, not review content; the history keeps only real
-          // thinking. Literal replaceAll of the shared constant: no regex
-          // anchoring/greediness edge cases (consecutive placeholders, the
-          // embedded newlines), and emission/cleanup can never drift.
-          const cleaned = state._advisorThink.replaceAll(ADVISOR_THINKING_PLACEHOLDER, "").replace(/\n{3,}/g, "\n\n")
-          if (cleaned) {
-            pushLine(cleaned, C.reason)
-            // Completed thinking stays expanded (user is reading it), same as
-            // the main agent's flushed reasoning.
+        const blocks = state._advisorBlocks ?? []
+        if (blocks.length > 0) {
+          // Flush the ordered blocks in sequence — thinking and tool progress
+          // alternate in history exactly as they were emitted. The live
+          // "[thinking…]" placeholders are stripped (wait indicators, not
+          // review content); literal replaceAll of the shared constant can
+          // never drift.
+          const text = blocks
+            .map((b) => b.text.replaceAll(ADVISOR_THINKING_PLACEHOLDER, ""))
+            .join("")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim()
+          if (text) {
+            const idx = state.lines.length
+            pushLine(text, C.reason)
+            // Completed review output stays expanded (user is reading it).
             state.expandedBlocks ??= new Set()
-            state.expandedBlocks.add(`long-${idx}`)
+            state.expandedBlocks.add("long-" + idx)
             state._autoExpand ??= []
             state._autoExpand.push(idx)
           }
         }
-        state.advisorStreaming = ""
-        state._advisorThink = ""
       }
       // Done line for ALL tools (panel area abolished — inline only).
       if (!isSubagent) {
@@ -263,14 +263,20 @@ export async function runAgentTurn(ctx, text) {
         // NOTE: the advisor tool ALWAYS emits {kind, text} objects (run.mjs's
         // emit() wrapper) — a raw string chunk is never think; if that ever
         // changes, plain-string think would land in advisorStreaming.
+        // ORDERED block buffer — preserves the interleaved emission order
+        // (think → tool → think → … → final). Two separate buffers (_advisorThink
+        // vs advisorStreaming) rendered think-block-then-main-block, which
+        // regrouped ALL thinking above ALL tool progress — the alternating
+        // timeline was destroyed. Consecutive chunks of the same kind merge
+        // into one block; kind flips start a new block; render walks the
+        // blocks in order with per-kind colors.
         const isString = typeof chunk === "string"
         const raw = isString ? chunk : String(chunk?.text ?? "")
         const kind = isString ? "text" : (chunk?.kind ?? "text")
-        if (kind === "think") {
-          state._advisorThink = (state._advisorThink || "") + raw
-        } else {
-          state.advisorStreaming += raw
-        }
+        const blocks = state._advisorBlocks ??= []
+        const last = blocks.at(-1)
+        if (last && last.kind === kind) last.text += raw
+        else blocks.push({ kind, text: raw })
         scheduleRender()
         return
       }
@@ -408,8 +414,7 @@ export async function runAgentTurn(ctx, text) {
     clearInterval(ticker)
     state.processing = false
     state.subTasks = {}
-    state.advisorStreaming = ""
-    state._advisorThink = ""
+    state._advisorBlocks = []
     state.controller = null
     state.status = "Ready"
     // Auto-collapse todo panel when all tasks done (matching kimi-code TUI; agent.tasks are preserved)
