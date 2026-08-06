@@ -42,22 +42,21 @@ test("stringWidth: ANSI escape sequences occupy zero display width", () => {
 })
 
 test("markdown tables with inline markers align end-to-end (buildConvLines row widths match formatTables)", async () => {
-  const { formatTables } = await import("../src/tui/render.mjs")
+  const { stringWidth } = await import("../src/tui/render.mjs")
   const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
-  // Inline markers, headings, and combined heading+inline in table cells
+  // Inline markers, headings, and combined heading+inline in table cells —
+  // rendered BEFORE measuring: every rendered table row must end at the same
+  // display width (the reported "table lines never align" bug).
   const table = "| 名称 | 说明 |\n|---|---|\n| `code` | **bold** 文本 |\n| ~~del~~ | plain |\n| ## **H** | `x` 尾 |"
-  const base = formatTables(table, 80).map((l) => stringWidth(l))
   const state = {
     lines: [{ text: table, color: C.text }],
     streaming: "", reasoning: "", _advisorBlocks: [],
     foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
   }
   const conv = buildConvLines(state, 80)
-  assert.equal(conv.length, base.length, "same row count")
-  for (let i = 0; i < base.length; i++) {
-    assert.equal(stringWidth(conv[i].text), base[i],
-      `row ${i}: rendered width must equal the computed width (markers vanish on render — compensation pads the tail)`)
-  }
+  const tableRows = conv.filter((l) => l.text.includes("│"))
+  const widths = tableRows.map((l) => stringWidth(l.text))
+  assert.equal(new Set(widths).size, 1, `all table rows end at the same width: ${widths.join(",")}`)
 })
 
 test("sanitizeDisplay: 控制字符不破坏终端网格（\\r 覆盖、\\t 超宽、ANSI/响铃冲屏）", async () => {
@@ -180,6 +179,41 @@ test("formatTables: 多列表格收缩到下限后仍超宽 → 行级截断，�
   for (const line of wide) assert.ok(stringWidth(line) <= 120)
   assert.ok(!wide[0].endsWith("…"), "宽终端不截断")
 })
+
+test("formatTables: ANSI-rendered cells keep every row the same display width", async () => {
+  const { formatTables, stringWidth } = await import("../src/tui/render.mjs")
+  // Cells carry rendered markdown (ANSI — zero display width). The column math
+  // must be based on the RENDERED text: raw `**bold**` measures 8 but displays
+  // 4, which misaligned every row (the reported "table lines never align" bug).
+  const table = [
+    "| # | 问题 |",
+    "| - | --- |",
+    "| 1 | \x1b[1mbold\x1b[0m 内容 |",
+    "| 2 | 普通文本 |",
+  ].join("\n")
+  const lines = formatTables(table, 60)
+  const widths = lines.map((l) => stringWidth(l))
+  assert.equal(new Set(widths).size, 1, `all rows the same width: ${widths.join(",")}`)
+})
+
+test("formatTables: markdown cells rendered BEFORE measuring stay aligned (render-before-measure regression)", async () => {
+  const { stringWidth } = await import("../src/tui/render.mjs")
+  // End-to-end through renderConversation: a conversation line carrying a
+  // **bold**-marked table must render with every table row at equal width.
+  const { renderConversation } = await import("../src/tui/render-conversation.mjs")
+  const state = tuiState({
+    lines: [{
+      text: "| # | 问题 |\n| - | --- |\n| 1 | **bold** 内容 |\n| 2 | 普通文本 |",
+      color: "#fff",
+    }],
+  })
+  const frame = renderConversation(state, 80, 30, 0)
+  const tableRows = frame.filter((l) => l.includes("│"))
+  assert.ok(tableRows.length >= 3, "table rows rendered (header + data; separator is ├)")
+  const widths = tableRows.map((l) => stringWidth(l))
+  assert.equal(new Set(widths).size, 1, `table rows align end-to-end: ${widths.join(",")}`)
+})
+
 
 // ====================================================================
 // layout.mjs — computeLayout

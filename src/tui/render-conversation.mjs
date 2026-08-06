@@ -17,9 +17,14 @@ let _convCache = { key: "", cols: 0, lines: [] }
  * @returns {string} ANSI-rendered line whose display width equals stringWidth(text)
  */
 function renderMarkdownPreservingWidth(text) {
-  const rendered = renderMarkdownInline(renderMarkdownHeading(text))
-  const diff = stringWidth(text) - stringWidth(rendered)
-  return diff > 0 ? rendered + " ".repeat(diff) : rendered
+  // Line-by-line: render + compensate per line. Whole-text rendering measured
+  // raw markdown against displayed text and padded at the paragraph end —
+  // table cells never got the compensation and misaligned.
+  return text.split("\n").map((line) => {
+    const rendered = renderMarkdownInline(renderMarkdownHeading(line))
+    const diff = stringWidth(line) - stringWidth(rendered)
+    return diff > 0 ? rendered + " ".repeat(diff) : rendered
+  }).join("\n")
 }
 
 
@@ -109,11 +114,16 @@ function buildConvLines(state, cols) {
     const longKey = `long-${i}`
     const folded = state.foldEnabled !== false && !state.expandedBlocks?.has(longKey)
     const block = []
-    for (const line of formatTables(sanitizeDisplay(text), cols - 1)) {
+    // Lightweight markdown display (IK5VW3): render BEFORE measuring — the
+    // table column math (formatTables) and wrapping must see the RENDERED
+    // text (ANSI consumes zero display width; the width functions are
+    // ANSI-aware). Rendering after wrapping measured raw markdown
+    // (`**bold**` = 8) against displayed text (4) and sliced markers
+    // mid-sequence — the table misalignment the user kept reporting.
+    const renderedText = renderMarkdownPreservingWidth(sanitizeDisplay(text))
+    for (const line of formatTables(renderedText, cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
-        // Lightweight markdown display (IK5VW3): headings bold + inline markers styled.
-        // Runs AFTER wrapping so the ANSI it inserts never skews width math.
-        block.push({ text: renderMarkdownPreservingWidth(wrapped), color: l.color, _foldId: l._foldId, _src: i })
+        block.push({ text: wrapped, color: l.color, _foldId: l._foldId, _src: i })
       }
     }
     if (folded && block.length > LONG_FOLD_LINES) {
@@ -160,25 +170,29 @@ function buildConvLines(state, cols) {
     // .split on it crashed the whole render (tools/final never displayed).
     for (const block of advisorBlocks) {
       const color = { think: C.reason, tool: C.tool, text: C.text }[block.kind] ?? C.text
+      const source = sanitizeDisplay(block.text)
+      // kind:"text" (the final review prose) gets the same lightweight markdown
+      // styling as the main agent response. Rendered BEFORE measuring: the
+      // width math (formatTables / wrapText) must see the RENDERED text —
+      // measuring raw markdown (`**bold**` = 8) against displayed text (4)
+      // misaligned table columns; wrapping raw markdown sliced markers
+      // mid-sequence (`**bo` + `ld**`) so the renderer never saw complete ones.
       const rows = block.kind === "think"
-        ? sanitizeDisplay(block.text).split("\n")
-        : formatTables(sanitizeDisplay(block.text), cols - 3)
+        ? source.split("\n")
+        : formatTables(block.kind === "text" ? renderMarkdownPreservingWidth(source) : source, cols - 3)
       for (const line of rows) {
         for (const wrapped of wrapText(line, cols - 3)) {
-          // kind:"text" (the final review prose) gets the same lightweight
-          // markdown styling as the main agent response — **bold**, `code`,
-          // ~~strike~~ would otherwise show as raw markers. Applied AFTER
-          // wrapping so the ANSI never skews width math (same as line 113).
-          const rendered = block.kind === "text" ? renderMarkdownPreservingWidth(wrapped) : wrapped
-          convLines.push({ text: `│ ${rendered}`, color })
+          convLines.push({ text: `│ ${wrapped}`, color })
         }
       }
     }
   }
   if (state.streaming) {
-    for (const line of formatTables(sanitizeDisplay(state.streaming), cols - 1)) {
+    // Rendered BEFORE formatTables — see the advisor-block comment above.
+    const rendered = renderMarkdownPreservingWidth(sanitizeDisplay(state.streaming))
+    for (const line of formatTables(rendered, cols - 1)) {
       for (const wrapped of wrapText(line, cols - 1)) {
-        convLines.push({ text: renderMarkdownPreservingWidth(wrapped), color: C.text })
+        convLines.push({ text: wrapped, color: C.text })
       }
     }
   }

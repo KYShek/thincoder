@@ -44,9 +44,15 @@ export function renderMarkdownInline(line) {
   return out
 }
 
-/** Render a heading line: strip leading `#` markers and bold the whole line. Returns original when not a heading. */
+/** Render heading markers: strip leading `#` markers and bold the heading.
+ *  Line-by-line (split on \n): without the m flag, `^`/`$` anchor the whole
+ *  string, so a multi-line input never matched and headings stayed raw —
+ *  the old call sites passed single wrapped lines and hid the defect.
+ *  Returns the original text when no line is a heading. */
 export function renderMarkdownHeading(line) {
-  const m = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(line)
-  if (!m || !m[2]) return line
-  return `${BOLD}${m[2]}${BOLD_OFF}`
+  return line.split("\n").map((l) => {
+    const m = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(l)
+    if (!m || !m[2]) return l
+    return `${BOLD}${m[2]}${BOLD_OFF}`
+  }).join("\n")
 }
