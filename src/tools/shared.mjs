@@ -17,7 +17,6 @@ export const MAX_OUTPUT_CHARS = 200_000
 const ENCODING_DETECT_MAX_TRIM = 3
 const SYNTAX_CHECK_TIMEOUT = 10000
 export const BASH_TIMEOUT_MS = 120_000
-export const MAX_RESPONSE_BODY_BYTES = 5_000_000
 export const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage"])
 
 /** SSRF guard: check if a hostname is private/internal. Shared by web.mjs and codemode.mjs. */
@@ -67,23 +66,6 @@ export function sanitizeOutput(s) {
 export function truncate(text, max = MAX_OUTPUT_CHARS) {
   if (text.length <= max) return text
   return text.slice(0, max) + `\n[... truncated: ${text.length - max} chars omitted — redirect to a file if you need the full output]`
-}
-
-/** Read response body with a byte limit */
-export async function readBodyText(response, limit = MAX_RESPONSE_BODY_BYTES) {
-  if (!response.body) return ""
-  const reader = response.body.getReader()
-  const chunks = []
-  let total = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value) { chunks.push(value); total += value.length }
-      if (total >= limit) { await reader.cancel(); break }
-    }
-  } finally { reader.releaseLock() }
-  return new TextDecoder("utf-8").decode(Buffer.concat(chunks))
 }
 
 /** Streaming decoder: encoding sniffing ASCII→UTF-8→GBK.
@@ -251,25 +233,6 @@ export function isDestructiveCommand(seg) {
   return false
 }
 
-/** Whether a single command segment destroys uncommitted changes */
-export function isDestructiveGitSegment(seg) {
-  if (!/^\s*git\s/.test(seg)) return false
-  if (/\scheckout\s+(?:--|\.(?:\s|$))/.test(seg)) return true
-  if (/\sreset\s+--hard\b/.test(seg)) return true
-  if (/\sclean\s+-\S*f/.test(seg)) return true
-  if (/\srestore\s/.test(seg) && (/--worktree/.test(seg) || !/--staged/.test(seg))) return true
-  return false
-}
-
-/** Whether cwd is inside a git repository */
-export function insideGitRepo(cwd) {
-  try {
-    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
-      cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
-    })
-    return true
-  } catch { return false }
-}
 
 /** Convert glob pattern to regex */
 export function globToRegex(pattern) {
