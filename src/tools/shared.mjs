@@ -258,7 +258,11 @@ export function globToRegex(pattern) {
   return new RegExp(`^${escaped}$`)
 }
 
-/** Strip HTML tags */
+/** Strip HTML tags. KNOWN LIMITATION (accepted): the `/<[^>]+>/g` regex treats
+ *  the first `>` as the tag end — an attribute value containing `>` (e.g.
+ *  `<img alt="a > b">`) truncates the match and leaves text residue. A full
+ *  HTML parser is out of scope; real-world HTML with `>` in attributes is
+ *  rare and the residue is display-only (never parsed). */
 export function stripTags(html) {
   return html
     .replace(/<[^>]+>/g, "")
