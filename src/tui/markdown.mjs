@@ -15,6 +15,10 @@
  */
 
 const BOLD = "\x1b[1m"
+// NOTE: \x1b[22m resets BOTH bold and faint/dim (SGR 2). Today no C.reason
+// (dim) line passes through markdown rendering (reasoning/think blocks skip
+// it), so this is latent — if dim text ever gains markdown, bold segments
+// would clear the dim effect after them.
 const BOLD_OFF = "\x1b[22m"
 const UNDERLINE = "\x1b[4m"
 const UNDERLINE_OFF = "\x1b[24m"
