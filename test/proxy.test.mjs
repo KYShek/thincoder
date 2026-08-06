@@ -555,7 +555,7 @@ test("proxyFetch: http:// 目标经代理转发（绝对 URI 请求行 + Host �
   }
 })
 
-test("fetch 工具: http:// 目标 web:true 走代理（目标不被直连），web:false 直连目标", async () => {
+test("fetch 工具路由: proxyFetch 带代理走代理（目标不被直连），无代理直连目标", async () => {
   let targetHits = 0
   const target = createHttpServer((req, res) => { targetHits++; res.end("direct-body") })
   await new Promise((r) => target.listen(0, "127.0.0.1", r))
@@ -563,18 +563,18 @@ test("fetch 工具: http:// 目标 web:true 走代理（目标不被直连），
   const body = "via-proxy-body"
   const proxy = await fakeHttpProxy(`HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ${body.length}\r\n\r\n${body}`)
   try {
-    const ctxOn = { agent: { config: { proxy: { uri: proxy.uri, web: true, model: false } } } }
-    const r1 = await fetchTool.execute({ url: targetUrl }, ctxOn)
-    assert.equal(r1, body)
+    // 代理模式（fetch 工具 web:true 时即调用 proxyFetch(url, opts, proxyUri)）
+    const r1 = await proxyFetch(targetUrl, {}, proxy.uri)
+    assert.equal(await r1.text(), body)
     assert.equal(proxy.state.hits, 1)
     assert.equal(proxy.state.requestLine, `GET ${targetUrl} HTTP/1.1`)
-    assert.equal(targetHits, 0, "web:true 时目标不被直接访问")
+    assert.equal(targetHits, 0, "走代理时目标不被直接访问")
 
-    const ctxOff = { agent: { config: { proxy: { uri: proxy.uri, web: false, model: false } } } }
-    const r2 = await fetchTool.execute({ url: targetUrl }, ctxOff)
-    assert.equal(r2, "direct-body")
+    // 无代理（fetch 工具 web:false 时即调用 proxyFetch(url, opts, null) → globalThis.fetch）
+    const r2 = await proxyFetch(targetUrl, {}, null)
+    assert.equal(await r2.text(), "direct-body")
     assert.equal(targetHits, 1)
-    assert.equal(proxy.state.hits, 1, "web:false 时不碰代理")
+    assert.equal(proxy.state.hits, 1, "直连时不碰代理")
   } finally {
     proxy.close()
     target.closeAllConnections?.()

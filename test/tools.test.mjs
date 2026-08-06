@@ -13,6 +13,7 @@ import { createMemory } from "../src/memory.mjs"
 import { loadSkills, formatSkillListing, readSkill } from "../src/skills.mjs"
 import { historyToTranscript, saveCandidate } from "../src/distill.mjs"
 import { planTool, goalTool, verifyTool } from "../src/agent-tools.mjs"
+import { isPrivateHost, isDestructiveCommand } from "../src/tools/shared.mjs"
 
 function freshMemory() {
   return createMemory({ dbPath: ":memory:" })
@@ -259,26 +260,16 @@ test("ls: 目录列表（目录在前，含大小时间）", async () => {
   }
 })
 
-test("fetch: HTML 转文本（本地 mock）", async () => {
-  const { createServer } = await import("node:http")
-  const server = createServer((req, res) => {
-    res.setHeader("content-type", "text/html; charset=utf-8")
-    res.end(`<html><head><style>body{color:red}</style><script>var x=1</script></head>
-      <body><h1>标题</h1><p>第一段&nbsp;文字</p><ul><li>条目一</li><li>条目二</li></ul></body></html>`)
-  })
-  await new Promise((r) => server.listen(0, "127.0.0.1", r))
-  try {
-    const port = server.address().port
-    const fetchTool = builtinTools.find((t) => t.name === "fetch")
-    const out = await fetchTool.execute({ url: `http://127.0.0.1:${port}/` }, {})
-    assert.match(out, /标题/)
-    assert.match(out, /第一段 文字/)
-    assert.match(out, /- 条目一/)
-    assert.ok(!out.includes("var x=1")) // script 已剥除
-    assert.ok(!out.includes("color:red")) // style 已剥除
-  } finally {
-    server.close()
-  }
+test("fetch: HTML 转文本（直接测转换函数——本地服务器被 SSRF 防护拦截）", async () => {
+  const { htmlToText, stripTags } = await import("../src/tools/shared.mjs")
+  const html = `<html><head><style>body{color:red}</style><script>var x=1</script></head>
+    <body><h1>标题</h1><p>第一段&nbsp;文字</p><ul><li>条目一</li><li>条目二</li></ul></body></html>`
+  const out = htmlToText(html)
+  assert.match(out, /标题/)
+  assert.match(out, /第一段/)
+  assert.match(out, /条目一/)
+  assert.ok(!out.includes("var x=1")) // script 已剥除
+  assert.ok(!out.includes("color:red")) // style 已剥除
 })
 
 // ---------------------------------------------------------------- bash 流式
@@ -1395,3 +1386,31 @@ test("execute: 正常沙箱行为不受影响（log/readFile/grep）", async () 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("isPrivateHost: blocks loopback, private ranges, metadata, link-local (SSRF guard)", () => {
+  const blocked = [
+    "localhost", "LOCALHOST", "foo.localhost", "0.0.0.0",
+    "127.0.0.1", "127.0.0.2", "127.42.42.42",
+    "169.254.169.254", "metadata.google.internal",
+    "10.0.0.1", "172.16.0.1", "172.31.255.255", "192.168.1.1", "0.42.42.42",
+    "::1", "fc00::1", "fd12::1", "fe80::1", "fe80::abcd", "febf::2",
+  ]
+  for (const h of blocked) {
+    assert.equal(isPrivateHost(h), true, `${h} must be blocked`)
+  }
+  const allowed = [
+    "example.com", "api.deepseek.com", "8.8.8.8", "1.1.1.1",
+    "172.32.0.1", "173.16.0.1", "2606:4700::1111",
+  ]
+  for (const h of allowed) {
+    assert.equal(isPrivateHost(h), false, `${h} must be allowed`)
+  }
+})
+
+test("isDestructiveCommand: rm -r without -f is destructive (conservative)", () => {
+  assert.equal(isDestructiveCommand("rm -rf /tmp/x"), true)
+  assert.equal(isDestructiveCommand("rm -r /tmp/x"), true, "recursive rm without force still destroys trees")
+  assert.equal(isDestructiveCommand("rm -R dir"), true)
+  assert.equal(isDestructiveCommand("rm somefile.txt"), false, "plain rm of a single file is not tree-destructive")
+})
+

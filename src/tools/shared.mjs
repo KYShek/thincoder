@@ -19,14 +19,24 @@ const SYNTAX_CHECK_TIMEOUT = 10000
 export const BASH_TIMEOUT_MS = 120_000
 export const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage"])
 
-/** SSRF guard: check if a hostname is private/internal. Shared by web.mjs and codemode.mjs. */
+/** SSRF guard: check if a hostname is private/internal. Shared by web.mjs and codemode.mjs.
+ *  Returns TRUE for private hosts — callers block them. */
 export function isPrivateHost(hostname) {
   const h = hostname.toLowerCase()
-  if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost")) return false
-  if (h === "127.0.0.1" || h.startsWith("127.")) return false
+  // Local loopback + link-local names: BLOCK (true). These returned false
+  // before — the guard was inverted for the most common SSRF targets
+  // (localhost/127.x reach internal services unchecked).
+  if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost")) return true
+  if (h === "127.0.0.1" || h.startsWith("127.")) return true
   if (h === "169.254.169.254" || h === "metadata.google.internal") return true
   // IPv6 private ranges — only check if host contains ":"
-  if (h.includes(":") && (h === "::1" || h === "fe80::1" || h.startsWith("fc") || h.startsWith("fd"))) return true
+  // fe80::/10 link-local covers fe80:…febf:… — startsWith("fe80:") is the
+  // practical subset (fe8/fe9/fea/feb all begin fe8/feb — full range regex
+  // would be /^fe[89ab][0-9a-f]:/; startsWith fe8 + fe9 + fea + feb covers it).
+  if (h.includes(":")) {
+    if (h === "::1" || h.startsWith("fc") || h.startsWith("fd")) return true
+    if (/^fe[89ab][0-9a-f]:/.test(h)) return true
+  }
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (m) {
     const [a, b] = [Number(m[1]), Number(m[2])]
@@ -218,8 +228,10 @@ export function hasFileRedirection(command) {
 /** Whether a single command segment is a destructive non-git command (conservative: prefer false positives) */
 export function isDestructiveCommand(seg) {
   const s = seg
-  // rm with both recursive (-r/-R) and force (-f) flags: -rf / -fr / -r -f / -Rf etc.
-  if (/\brm\b/.test(s) && /\s-\S*r/i.test(s) && /\s-\S*f/i.test(s)) return true
+  // rm with recursive (-r/-R): destructive WITH or WITHOUT -f (rm -r removes
+  // trees non-interactively for non-empty dirs in many setups; -rf is the
+  // classic case). Conservative: prefer blocking.
+  if (/\brm\b/.test(s) && /\s-\S*r/i.test(s)) return true
   if (/\brmdir\b/i.test(s)) return true
   if (/\bdel\b/i.test(s) && /\/f\b/i.test(s)) return true
   if (/\brd\b/i.test(s) && /\/s\b/i.test(s)) return true
@@ -288,8 +300,13 @@ export function runGit(cwd, cmdArgs) {
   try {
     return execFileSync("git", cmdArgs, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/\r/g, "")
   } catch (e) {
-    // ERR_CHILD_PROCESS_STDIO_MAXBUFFER: e.stdout contains partial output, return first 200 lines
-    if (e.stdout) return String(e.stdout).trim().replace(/\r/g, "").split("\n").slice(0, 200).join("\n")
+    // maxBuffer overflow: e.stdout contains partial collected output — return it
+    // (callers show "(truncated)"-style tails). ALL OTHER errors (non-git repo,
+    // permission, bad command) return "" — matching gitDiffOne's pattern: a
+    // failed git call must not masquerade as partial success.
+    if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && e.stdout) {
+      return String(e.stdout).trim().replace(/\r/g, "").split("\n").slice(0, 200).join("\n")
+    }
     return ""
   }
 }
