@@ -5,9 +5,11 @@
  * model replies stop showing literal `**`, `##`, backtick markers (IK5VW3).
  *
  * Design constraints:
- * - Operates on ALREADY-WRAPPED single lines (call after wrapText): inserting ANSI
- *   here cannot break width math, because wrapping already happened.
- * - Uses narrow-scope SGR resets (22 = bold off, 27 = reverse off, 29 = strikethrough off)
+ * - Display-only rendering. renderMarkdownHeading handles multi-line input
+ *   (splits internally); renderMarkdownInline expects single lines (its
+ *   regexes use [^*\n]+ — no cross-line matches). Callers pass pre-wrapped
+ *   lines so the inserted ANSI never skews width math.
+ * - Uses narrow-scope SGR resets (22 = bold off, 24 = underline off, 29 = strikethrough off)
  *   instead of reset(0), so the line's base color (C.text etc.) survives.
  * - Code spans are extracted FIRST: anything inside backticks is styled as code and
  *   its `**`/`__` markers are NOT interpreted (markdown semantics).
@@ -27,7 +29,10 @@ const STRIKE_OFF = "\x1b[29m"
 
 /** Render inline markers on a single text line: `code` spans, **bold**, __bold__, ~~strike~~. */
 export function renderMarkdownInline(line) {
-  if (!line || (line.indexOf("*") === -1 && line.indexOf("`") === -1 && line.indexOf("_") === -1 && line.indexOf("~") === -1)) {
+  // Single underscore lines (snake_case identifiers) must short-circuit too —
+  // __bold__ needs a DOUBLE underscore; a lone "_" would otherwise run the
+  // whole split/replace pipeline for nothing.
+  if (!line || (line.indexOf("*") === -1 && line.indexOf("`") === -1 && line.indexOf("__") === -1 && line.indexOf("~") === -1)) {
     return line
   }
 
