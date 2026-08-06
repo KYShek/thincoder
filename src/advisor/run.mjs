@@ -16,9 +16,14 @@ const MAX_ADVISOR_TURNS = 100
 // model is looping — refuse it instead of burning tokens on a review that cannot
 // converge. Code AND design reviews share the 5-round budget (each advances
 // _advisorRound in agent.mjs; the cap no longer exempts design).
-// NOTE: prompts/advisor-round{1,2,3}.md advertise a 30-round BUDGET — the
-// prompt-level efficiency target, distinct from this 100-round mechanical hard
-// cap (loop guard). Keep both in sync when either changes.
+// NOTE: prompts/advisor-round{1,2,3}.md encourage the model to finish within
+// ~30 tool turns — a prompt-level efficiency target, DISTINCT from the
+// 100-turn mechanical hard cap below (pure runaway-loop guard). They serve
+// different purposes; do NOT synchronize them.
+// The live "[thinking…]" wait indicator shares its exact text with the TUI
+// cleanup regex (agent-turn.mjs strips it before flushing to history) — keep
+// them in lockstep.
+export const ADVISOR_THINKING_PLACEHOLDER = "\n[thinking…]\n"
 export const MAX_ADVISOR_ROUNDS = 5
 
 // Context window limits
@@ -53,7 +58,7 @@ function compactMessages(messages) {
     .filter((m) => m.role === "tool")
     .map((m) => m.content?.split("\n")[0]?.slice(0, 50))
     .filter(Boolean)
-    .slice(0, 5)
+    .slice(0, 5) // cap at 5 to keep the compaction message short
   const filesPart = keyFiles.length > 0 ? ` Key files examined: ${keyFiles.join(", ")}` : ""
   const summary = `Earlier exploration: ${toolCount} tool calls completed.${filesPart}`
 
@@ -134,7 +139,9 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       onOutput?.({ kind: "text", text: `\n[Context compacted: ${currentTokens} tokens → reducing to fit window]\n` })
       compactMessages(messages)
       if (estimateTokens(messages) > MAX_CONTEXT_TOKENS) {
-        return `Advisor: context window limit reached (${currentTokens} tokens). Review incomplete — too many tool calls. Try a narrower scope.`
+        // Report the POST-compaction count — the pre-compaction currentTokens
+        // is stale by the time compaction has run.
+        return `Advisor: context window limit reached (${estimateTokens(messages)} tokens). Review incomplete — too many tool calls. Try a narrower scope.`
       }
     }
     
@@ -146,7 +153,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     // rendered BELOW the think block, and the reasoning stream appeared ABOVE
     // it ("the stream runs back to the front"). Same buffer = same spot; the
     // reasoning continues right where the placeholder sits.
-    onOutput?.({ kind: "think", text: "\n[thinking…]\n" })
+    onOutput?.({ kind: "think", text: ADVISOR_THINKING_PLACEHOLDER })
 
     const response = await chat(provider, {
       messages,

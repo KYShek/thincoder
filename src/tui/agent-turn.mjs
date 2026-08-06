@@ -142,6 +142,9 @@ export async function runAgentTurn(ctx, text) {
         scheduleRender()
         return
       }
+      // Redundant with flushStream() below (it clears both buffers) — kept as
+      // defense-in-depth so a future flushStream change cannot leak advisor
+      // buffers into the next tool's view.
       if (name === "advisor") { state.advisorStreaming = ""; state._advisorThink = "" }
       flushStream()
       ensureAssistantLabel()
@@ -218,8 +221,11 @@ export async function runAgentTurn(ctx, text) {
         if (state._advisorThink) {
           const idx = state.lines.length
           // Strip the live "[thinking…]" placeholder(s) — they are wait
-          // indicators, not review content; the history keeps only real thinking.
-          const cleaned = state._advisorThink.replace(/^\s*\[thinking…\]\s*\n?/g, "")
+          // indicators, not review content; the history keeps only real
+          // thinking. The regex must match ADVISOR_THINKING_PLACEHOLDER
+          // (src/advisor/run.mjs) exactly — multiline flag strips every
+          // round-trip placeholder, not just the first.
+          const cleaned = state._advisorThink.replace(/^\s*\[thinking…\]\s*\n?/gm, "")
           if (cleaned) {
             pushLine(cleaned, C.reason)
             // Completed thinking stays expanded (user is reading it), same as
@@ -508,13 +514,18 @@ function _bashSummary(result) {
 
 function _advisorSummary(result) {
   const text = String(result ?? "")
-  if (/no 🔴|all.*(?:resolved|fixed|pass)/im.test(text)) return "advisor: passed"
   // Error / skip messages — extract the reason after "Advisor:"
   const errMatch = text.trimStart().match(/^Advisor:\s*(.+)/)
   if (errMatch) return `advisor: ${errMatch[1].split(".")[0]}`
   const critical = (text.match(/\| \d+ \|.*\| 🔴/g) || []).length
   const advisory = (text.match(/\| \d+ \|.*\| 🟡/g) || []).length
   const style = (text.match(/\| \d+ \|.*\| 🔵/g) || []).length
+  // Passed = zero critical ROWS in the review table (the protocol's verdict)
+  // OR an explicit pass phrase. A bare "no 🔴" inside quoted code is not
+  // enough — the table row count is the source of truth.
+  if (critical === 0 && (/\| \d+ \|/.test(text) || /no\s+🔴|all.*(?:resolved|fixed|pass)/im.test(text))) {
+    return "advisor: passed"
+  }
   const parts = []
   if (critical) parts.push(`${critical} critical`)
   if (advisory) parts.push(`${advisory} advisory`)
