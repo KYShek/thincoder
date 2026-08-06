@@ -966,5 +966,18 @@ test("runAdvisorReview: code changes do NOT hit the doc-only fast path", async (
     assert.ok(session[1].content.includes("app.js") || session[1].content.includes("diff"), "code change goes to full review")
   } finally {
     rmSync(tmp, { recursive: true, force: true })
+
+test("_withToolLog: appends the tool-call log after the review text (persisted-record gap)", async () => {
+  const { _withToolLog } = await import("../src/advisor/run.mjs")
+  assert.equal(_withToolLog("review text", []), "review text", "no calls → unchanged")
+  const out = _withToolLog("review text", [
+    { name: "read", args: "src/a.mjs" },
+    { name: "grep", args: "foo src" },
+  ])
+  assert.ok(out.includes("[advisor tools: 2 calls]"), "call count in the log")
+  assert.ok(out.includes("→ read src/a.mjs"), "each call listed")
+  assert.ok(out.indexOf("review text") < out.indexOf("[advisor tools"), "log appended AFTER the review text")
+})
+
   }
 })
