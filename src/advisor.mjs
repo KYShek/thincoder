@@ -76,6 +76,9 @@ const ADVISOR_ROUND3 = loadPrompt("advisor-round3.md", "advisor-round3.md")
 // extractPriorIssueTable's DESIGN_TABLE_HEADER matching).
 const ADVISOR_DESIGN_FALLBACK = `You are an independent design reviewer for an engineering-mode project. Review the design document in the changes below. Evaluate: completeness, feasibility, clarity, scope, acceptance criteria. Read METHODOLOGY.md if provided. Produce a review table with | # | Category | Severity | Issue | Suggestion | format.`
 let ADVISOR_DESIGN = ""
+// Design review is OPTIONAL (engineering mode only) — silent fallback to the
+// in-code constant is intentional, unlike the mandatory round prompts which
+// must exist for every review (loadPrompt throws a descriptive error there).
 try { ADVISOR_DESIGN = readFileSync(join(__dirname, "prompts", "advisor-design.md"), "utf8") } catch { /* fallback below */ }
 
 // ────────────────────────────────────────
@@ -118,19 +121,17 @@ export function buildAdvisorSystemPrompt(agent, prior, reviewType) {
  * Deliberately NO git information injected (no diff snapshot, no git context):
  * git output misled re-reviews — committed fixes never show in `git diff HEAD`,
  * so the model read "no changes" as "no fixes". Verification is `read`-only.
- * @param {Object} agent — the parent agent (history used for the response table)
- * @param {Object|null} prior — prior issue table (extracted from history when null)
- * @param {string[]|null} [scopeFiles] — review surface for the no-response fallback (cwd-relative)
- * @returns {string} the follow-up user message — or a "[System reminder: …]" fresh-review
- *   fallback when NO prior review exists at all (caller misuse; the response-table
- *   extraction would otherwise scan history from index 0 and could match an
- *   unrelated stale table)
- */
-/**
- * Build the convergence follow-up user message (rounds 2+).
  * NOTE: the caller (prepareAdvisorMessages) applies escapeLiteralEscapes to
  * the return value — direct callers must do the same (the prior table and
  * agent response can quote literal "\x"/"\u" sequences).
+ * @param {Object} agent — the parent agent (history used for the response table)
+ * @param {Object|null} prior — prior issue table (extracted from history when null)
+ * @param {string[]|null} [scopeFiles] — review surface for the no-response fallback (cwd-relative)
+ * @returns {string} the follow-up user message — or a plain "System reminder: …"
+ *   fresh-review fallback (NO brackets — some OpenAI-compatible servers parse
+ *   '['-prefixed content as structured data / expand escapes) when no prior
+ *   review exists at all (caller misuse; the response-table extraction would
+ *   otherwise scan history from index 0 and could match an unrelated stale table)
  */
 export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   // Convergence follow-up REQUIRES a prior review record. The caller usually
@@ -207,9 +208,13 @@ export function escapeLiteralEscapes(text) {
   // Known limitation (documented, accepted): an ODD backslash run of 3+ (e.g.
   // "\\\x") leaves the trailing "\x" un-doubled — vanishingly rare in real
   // conversation text, and the sequence is still valid JSON either way.
+  // The lookahead treats "\x" followed by AT LEAST 2 hex as valid (servers
+  // expand only the first two: "\x1b3" → ESC + "3"); only truncated runs
+  // ("\x" + <2 hex) are doubled.
+  text = String(text ?? "")
   return text
-    .replace(/(?<!\\)\\(x)(?![0-9a-fA-F]{2}(?:[^0-9a-fA-F]|$))/g, "\\\\$1")
-    .replace(/(?<!\\)\\(u)(?![0-9a-fA-F]{4}(?:[^0-9a-fA-F]|$))/g, "\\\\$1")
+    .replace(/(?<!\\)\\(x)(?![0-9a-fA-F]{2})/g, "\\\\$1")
+    .replace(/(?<!\\)\\(u)(?![0-9a-fA-F]{4})/g, "\\\\$1")
 }
 
 
@@ -259,7 +264,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   // proved it). Either way the message is a fresh full review (no issue list
   // exists without a prior table) — only the round counter differs.
   if (!prior || (agent._advisorRound || 0) === 0) {
-    if (!agent._mutatedThisRun) {
+    if (!(agent._mutatedThisRun ?? false)) {
       // New review cycle (first review, all-clear, or no code changes): reset
       // the round so the cycle gets its own 5-round budget.
       agent._advisorRound = 0

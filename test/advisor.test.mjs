@@ -586,12 +586,16 @@ test("escapeLiteralEscapes: neutralizes invalid literal \\x/\\u sequences, passe
     ["\\x（单反斜杠）", "\\\\x（单反斜杠）"], // \x + non-hex → doubled
     ["末尾\\x", "末尾\\\\x"], // \x at end → doubled
     ["\\x1b[31m", "\\x1b[31m"], // \x + 2 hex → untouched
+    ["\\x1b3", "\\x1b3"], // \x + 3+ hex → \x1b valid + literal 3 → untouched
     ["\\x1后跟", "\\\\x1后跟"], // \x + 1 hex (truncated) → doubled
     ["\\u12中文", "\\\\u12中文"], // \u + <4 hex → doubled
     ["\\uFFFF", "\\uFFFF"], // \u + 4 hex → untouched
+    ["\\uFFFF1", "\\uFFFF1"], // \u + 5 hex → \uFFFF valid + literal 1 → untouched
     ["\\n字面", "\\n字面"], // non-hex escapes untouched
     ["\\\\x", "\\\\x"], // already-doubled backslash untouched
     ["hello", "hello"], // plain text untouched
+    [null, ""], // null → coerced to empty
+    [undefined, ""], // undefined → coerced to empty
   ]
   for (const [input, expected] of cases) {
     assert.equal(escapeLiteralEscapes(input), expected, JSON.stringify(input))
