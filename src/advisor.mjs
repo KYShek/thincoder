@@ -177,6 +177,23 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
  */
 
 /**
+ * Neutralize literal backslash escape sequences ("\x", "\u") that some
+ * OpenAI-compatible servers interpret inside message content ("unexpected end
+ * of hex escape" → 400 — observed 2026-08-06 when the conversation background
+ * quoted "\x" literals). Only sequences that would be INVALID when expanded
+ * are doubled ("\\x" → literal "\x" after server expansion); well-formed
+ * "\xNN" / "\uNNNN" pass through untouched (they expand to a byte/codepoint).
+ */
+export function escapeLiteralEscapes(text) {
+  // (?<!\\) — only a SINGLE backslash counts ("\\x" already doubles the
+  // escape and must pass through untouched); lookbehind is fine on Node 24.
+  return text
+    .replace(/(?<!\\)\\(x)(?![0-9a-fA-F]{2}(?:[^0-9a-fA-F]|$))/g, "\\\\$1")
+    .replace(/(?<!\\)\\(u)(?![0-9a-fA-F]{4}(?:[^0-9a-fA-F]|$))/g, "\\\\$1")
+}
+
+
+/**
  * Build the advisor conversation for this run.
  * EVERY call builds a fresh [system, user] session (decision d698434) — no
  * session reuse across rounds: round 1 = full scope (ROUND1 prompt), rounds
@@ -196,7 +213,7 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
     return [
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-      { role: "user", content: buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths) },
+      { role: "user", content: escapeLiteralEscapes(buildAdvisorUserMessage(agent, prior, reviewType, designToken, documents, paths)) },
     ]
   }
 
@@ -233,7 +250,17 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
       { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
       {
         role: "user",
-        content: `[System reminder: no prior issue table is being carried into this review (first review, app restart, or session clear) — start with a fresh full review.]\n\n${user}`,
+        // NOTE (2026-08-06): the leading prefix is a PLAIN "System reminder:",
+        // NOT "[System reminder: ...]" — some OpenAI-compatible servers try to
+        // parse content that STARTS with '[' as structured content (or expand
+        // escape sequences in it). A literal "\x" inside the conversation
+        // background (e.g. the parent agent quoting escape sequences) then
+        // fails server-side as "unexpected end of hex escape" → 400. Plain
+        // prefix keeps the review message a plain string everywhere.
+        // The whole content also passes through escapeLiteralEscapes (below)
+        // so literal "\x"/"\u" quoted by the parent agent can never form an
+        // invalid escape when the server expands them.
+        content: escapeLiteralEscapes(`System reminder: no prior issue table is being carried into this review (first review, app restart, or session clear) — start with a fresh full review.\n\n${user}`),
       },
     ]
   }
@@ -249,6 +276,6 @@ export function prepareAdvisorMessages(agent, reviewType, designToken = null, do
   const scopeFiles = resolveScopeFiles(agent, paths)
   return [
     { role: "system", content: buildAdvisorSystemPrompt(agent, prior, reviewType) },
-    { role: "user", content: buildAdvisorFollowUp(agent, prior, scopeFiles) },
+    { role: "user", content: escapeLiteralEscapes(buildAdvisorFollowUp(agent, prior, scopeFiles)) },
   ]
 }

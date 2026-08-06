@@ -580,6 +580,24 @@ test("agent: _advisorRound initialized to 0 in runAgent", () => {
   assert.equal(_mutatedThisRun && !_calledAdvisorThisRun, false)
 })
 
+test("escapeLiteralEscapes: neutralizes invalid literal \\x/\\u sequences, passes valid ones through", async () => {
+  const { escapeLiteralEscapes } = await import("../src/advisor.mjs")
+  const cases = [
+    ["\\x（单反斜杠）", "\\\\x（单反斜杠）"], // \x + non-hex → doubled
+    ["末尾\\x", "末尾\\\\x"], // \x at end → doubled
+    ["\\x1b[31m", "\\x1b[31m"], // \x + 2 hex → untouched
+    ["\\x1后跟", "\\\\x1后跟"], // \x + 1 hex (truncated) → doubled
+    ["\\u12中文", "\\\\u12中文"], // \u + <4 hex → doubled
+    ["\\uFFFF", "\\uFFFF"], // \u + 4 hex → untouched
+    ["\\n字面", "\\n字面"], // non-hex escapes untouched
+    ["\\\\x", "\\\\x"], // already-doubled backslash untouched
+    ["hello", "hello"], // plain text untouched
+  ]
+  for (const [input, expected] of cases) {
+    assert.equal(escapeLiteralEscapes(input), expected, JSON.stringify(input))
+  }
+})
+
 test("agent: _advisorRound increments on every advisor call (code AND design)", () => {
   // Mirrors agent.mjs: design reviews share the convergence budget with code
   // reviews — both advance _advisorRound toward MAX_ADVISOR_ROUNDS=5.
