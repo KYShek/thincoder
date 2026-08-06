@@ -11,6 +11,9 @@ import { join, resolve, sep } from "node:path"
 // `file:line: content` citations — the file group is narrowed to source/config
 // extensions so URLs (`example.com:8080: …`) don't become false-positive
 // citations that fail as "file unreadable" in the verification report.
+// Single-letter extensions (c/h) are kept — false positives (e.g. "a.c:1: x")
+// are rare and only add a failed-citation line to the report; the report is
+// advisory for the parent agent, never a crash path.
 const CITATION_RE = /([\w./\\-]+\.(?:mjs|cjs|js|ts|jsx|tsx|mts|cts|py|rs|go|c|h|cpp|hpp|java|rb|php|sh|bash|json|md|markdown|mdx|yaml|yml|toml|css|html)):(\d+):\s*([^`\n]{4,})/g
 
 /** Extract `file:line: content` citations from a review text. */

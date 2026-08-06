@@ -29,9 +29,12 @@ export const MAX_ADVISOR_ROUNDS = 5
 export const ADVISOR_THINKING_PLACEHOLDER = "\n[thinking…]\n"
 
 // Context window limits
-const MAX_CONTEXT_TOKENS = 120_000 // 预留 headroom，避免 OOM
-const TOOL_TIMEOUT_MS = 30_000 // 单个工具 30 秒
-const REVIEW_TIMEOUT_MS = 300_000 // 整个审查 5 分钟
+const MAX_CONTEXT_TOKENS = 120_000 // Reserve headroom to avoid OOM
+const TOOL_TIMEOUT_MS = 30_000 // single tool timeout
+const REVIEW_TIMEOUT_MS = 300_000 // whole review timeout
+const MAX_RESULT_CHARS = 12_000 // tool result truncation (line-aware)
+const MAX_UNFIXED_DISPLAY = 10 // unfixed issues shown in the cap message
+const MAX_KEY_FILES_IN_COMPACTION = 5 // files named in the compaction summary
 
 /** Estimate token count from messages (rough: 1 token ≈ 4 chars) */
 function estimateTokens(messages) {
@@ -61,7 +64,7 @@ function compactMessages(messages) {
     .filter((m) => m.role === "tool")
     .map((m) => m.content?.split("\n")[0]?.slice(0, 50)) // first line of tool results typically names the file that was read/grepped
     .filter(Boolean)
-    .slice(0, 5) // cap at 5 to keep the compaction message short
+    .slice(0, MAX_KEY_FILES_IN_COMPACTION)
   const filesPart = keyFiles.length > 0 ? ` Key files examined: ${keyFiles.join(", ")}` : ""
   const summary = `Earlier exploration: ${toolCount} tool calls completed.${filesPart}`
 
@@ -246,7 +249,6 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
       if (typeof result !== "string") result = JSON.stringify(result)
       
       // Line-aware truncation: preserve line integrity
-      const MAX_RESULT_CHARS = 12_000
       if (result.length > MAX_RESULT_CHARS) {
         const lines = result.split("\n")
         let truncated = ""
@@ -316,7 +318,7 @@ function extractUnfixedIssues(priorText) {
     // in-cell content) stay intact instead of garbling the cap message.
     .map((line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").trim())
     .filter(Boolean)
-    .slice(0, 10) // 最多显示 10 个
+    .slice(0, MAX_UNFIXED_DISPLAY)
 }
 
 /**
@@ -403,7 +405,6 @@ export async function runAdvisorReview(agent, reviewType, callbacks, designToken
           ? "Reduce the scope (fewer files/paths) or use a model with larger context window."
           : "You may retry or proceed to verify manually."
     
-    agent._advisorSession = null // legacy field (never read since d698434 — fresh sessions every round)
     return `Advisor: review failed (${errorType}) — ${e.message || "unknown error"}. ${retryAdvice}`
   }
 }

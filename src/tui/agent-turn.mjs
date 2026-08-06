@@ -263,8 +263,9 @@ export async function runAgentTurn(ctx, text) {
         // NOTE: the advisor tool ALWAYS emits {kind, text} objects (run.mjs's
         // emit() wrapper) — a raw string chunk is never think; if that ever
         // changes, plain-string think would land in advisorStreaming.
-        const raw = typeof chunk === "string" ? chunk : String(chunk?.text ?? "")
-        const kind = typeof chunk === "string" ? "text" : (chunk?.kind ?? "text")
+        const isString = typeof chunk === "string"
+        const raw = isString ? chunk : String(chunk?.text ?? "")
+        const kind = isString ? "text" : (chunk?.kind ?? "text")
         if (kind === "think") {
           state._advisorThink = (state._advisorThink || "") + raw
         } else {
