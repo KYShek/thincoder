@@ -139,9 +139,12 @@ const COMPACT_RATIO = 0.6
 
 /** Look up spec by model name prefix (case-insensitive), conservative default for unknown models */
 const warnedModels = new Set() // warn once per model name — specForModel is a hot path (every request)
+// Pre-sorted once at module scope — specForModel runs on every request (agent, provider core,
+// context, auto-think, TUI rendering); re-sorting per call was wasteful.
+const SORTED_SPECS = [...MODEL_SPECS].sort((a, b) => b[0].length - a[0].length)
 export function specForModel(model) {
   const m = (model ?? "").toLowerCase()
-  for (const [prefix, spec] of [...MODEL_SPECS].sort((a,b) => b[0].length - a[0].length)) {
+  for (const [prefix, spec] of SORTED_SPECS) {
     if (m.startsWith(prefix.toLowerCase())) return spec
   }
   // Unknown model: warn ONCE (not per request) so a typo'd ID or a missing alias surfaces
@@ -189,6 +192,8 @@ export function normalizeProxy(proxy) {
  * Load configuration.
  * Env var priority: THINCODER_ACTIVE_PROVIDER > config file activeProvider
  * THINCODER_API_KEY / THINCODER_BASE_URL / THINCODER_MODEL override the current active provider's corresponding fields
+ * THINCODER_ACTIVE_MODEL overrides the active model (wins over THINCODER_MODEL — see loadConfig)
+ * Provider-specific key fallbacks (when providers[] lacks a key): DEEPSEEK_API_KEY / OPENAI_API_KEY
  */
 export function loadConfig() {
   let config = {}
@@ -203,7 +208,7 @@ export function loadConfig() {
   const merged = {
     ...DEFAULTS,
     ...config,
-    providers: config.providers?.length ? config.providers : DEFAULTS.providers,
+    providers: Array.isArray(config.providers) && config.providers.length ? config.providers.map((p) => ({ ...p })) : DEFAULTS.providers.map((p) => ({ ...p })),
     activeProvider: config.activeProvider ?? DEFAULTS.activeProvider,
     agent: { ...DEFAULTS.agent, ...config.agent },
     memory: { ...DEFAULTS.memory, ...config.memory },
@@ -247,6 +252,8 @@ export function loadConfig() {
 
   // apiKey also falls back to env vars (when providers doesn't include a key)
   // Provider-specific env vars only apply to the matching provider name, preventing keys from leaking to wrong endpoints
+  // NOTE: only deepseek/openai have provider-specific fallbacks by design — the other presets
+  // intentionally rely on THINCODER_API_KEY or keys stored in config.json (no silent env pickup).
   if (!runtimeProvider.apiKey?.trim()) {
     const envMap = { deepseek: "DEEPSEEK_API_KEY", openai: "OPENAI_API_KEY" }
     const keyVar = envMap[merged.activeProvider]
@@ -278,9 +285,10 @@ export function loadConfig() {
  */
 export function saveConfig(config) {
   mkdirSync(configDir, { recursive: true })
-  // Inject $schema for editor autocompletion/validation (strip on load)
-  config.$schema = "https://thincoder.dev/schemas/config.json"
+  // Inject $schema for editor autocompletion/validation (strip on load) — write a copy,
+  // never mutate the caller's object.
+  const out = { ...config, $schema: "https://thincoder.dev/schemas/config.json" }
   // 0600: config.json contains API keys, must not be world-readable (POSIX; chmod is best-effort on Windows)
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 })
+  writeFileSync(configPath, JSON.stringify(out, null, 2) + "\n", { encoding: "utf8", mode: 0o600 })
   try { chmodSync(configPath, 0o600) } catch { /* may fail on Windows, ignore */ }
 }
