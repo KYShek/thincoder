@@ -140,11 +140,13 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
     
     // LLM generation silence: the reasoning phase produces no SSE bytes for
     // seconds to tens of seconds (server-side prefill on large contexts, per
-    // tool-round LLM return). A placeholder keeps the panel visibly working
-    // instead of looking frozen; the first reasoning/content chunk follows.
-    // kind "text" (not "think"): the placeholder is NOT model reasoning — it
-    // must not be styled/accumulated as one.
-    onOutput?.({ kind: "text", text: "\n[thinking…]\n" })
+    // tool-round LLM return). A placeholder keeps the panel visibly working.
+    // kind "think" (NOT "text"): the placeholder must land in the SAME buffer
+    // and position as the upcoming reasoning — a "text"-kind placeholder
+    // rendered BELOW the think block, and the reasoning stream appeared ABOVE
+    // it ("the stream runs back to the front"). Same buffer = same spot; the
+    // reasoning continues right where the placeholder sits.
+    onOutput?.({ kind: "think", text: "\n[thinking…]\n" })
 
     const response = await chat(provider, {
       messages,

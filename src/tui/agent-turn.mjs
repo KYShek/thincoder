@@ -217,13 +217,18 @@ export async function runAgentTurn(ctx, text) {
         // agent's reasoning (live gutter, history plain). Intentional.
         if (state._advisorThink) {
           const idx = state.lines.length
-          pushLine(state._advisorThink, C.reason)
-          // Completed thinking stays expanded (user is reading it), same as
-          // the main agent's flushed reasoning.
-          state.expandedBlocks ??= new Set()
-          state.expandedBlocks.add(`long-${idx}`)
-          state._autoExpand ??= []
-          state._autoExpand.push(idx)
+          // Strip the live "[thinking…]" placeholder(s) — they are wait
+          // indicators, not review content; the history keeps only real thinking.
+          const cleaned = state._advisorThink.replace(/^\s*\[thinking…\]\s*\n?/g, "")
+          if (cleaned) {
+            pushLine(cleaned, C.reason)
+            // Completed thinking stays expanded (user is reading it), same as
+            // the main agent's flushed reasoning.
+            state.expandedBlocks ??= new Set()
+            state.expandedBlocks.add(`long-${idx}`)
+            state._autoExpand ??= []
+            state._autoExpand.push(idx)
+          }
         }
         state.advisorStreaming = ""
         state._advisorThink = ""
