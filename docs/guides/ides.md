@@ -11,7 +11,7 @@ stdin/stdout using JSON-RPC (NDJSON). One login (terminal setup) serves every su
 - Completed setup: `thincoder` run once in a terminal, or `~/.thincoder/config.json` with a
   provider API key (the ACP `authenticate` gate checks it)
 
-## Capabilities (M1–M4, v0.13-dev)
+## Capabilities (M1, v0.12)
 
 | Area | Status |
 |---|---|
@@ -20,7 +20,7 @@ stdin/stdout using JSON-RPC (NDJSON). One login (terminal setup) serves every su
 | IDE edits: `write` and `edit` route through `fs/write_text_file` / `fs/read_text_file` — diffs render in the IDE | ✅ |
 | Persisted sessions: `session/list` / `load` (history replay) / `resume` (no replay) / `delete` | ✅ |
 | Config: `session/set_config_option` (model / thinking / mode), `session/set_mode` (plan ⇄ normal) | ✅ |
-| Terminal reverse-RPC, MCP forwarding, unstable-surface extensions | ❌ (shell runs locally; MCP forwarding planned) |
+| Terminal reverse-RPC, MCP forwarding, unstable-surface extensions | ❌ (M2+; shell runs locally, MCP forwarding planned) |
 
 ## Zed
 
