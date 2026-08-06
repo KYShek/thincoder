@@ -140,12 +140,14 @@ function buildConvLines(state, cols) {
     // stream: thinking in reasoning color, tool progress/final in text color.
     // Full-length, no preview truncation; long content scrolls via the
     // conversation window like everything else.
+    // NOTE: formatTables returns an ARRAY of lines (not a string) — calling
+    // .split on it crashed the whole render (tools/final never displayed).
     for (const block of advisorBlocks) {
       const color = block.kind === "think" ? C.reason : C.text
-      const text = block.kind === "think"
-        ? sanitizeDisplay(block.text)
+      const rows = block.kind === "think"
+        ? sanitizeDisplay(block.text).split("\n")
         : formatTables(sanitizeDisplay(block.text), cols - 3)
-      for (const line of text.split("\n")) {
+      for (const line of rows) {
         for (const wrapped of wrapText(line, cols - 3)) {
           convLines.push({ text: `│ ${wrapped}`, color })
         }

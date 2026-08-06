@@ -114,6 +114,36 @@ test("layoutInput: continuation lines left-align with the first line (2-col pref
   assert.equal(layEnd.cursorCol, 4)
 })
 
+test("advisor blocks: interleaved think/tool/table renders in emission order (formatTables-array regression)", async () => {
+  const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
+  const state = {
+    lines: [],
+    streaming: "",
+    reasoning: "",
+    _advisorBlocks: [
+      { kind: "think", text: "先读文件" },
+      { kind: "tool", text: "\n→ read src/x.mjs\n" },
+      { kind: "think", text: "看到问题了" },
+      { kind: "text", text: "\n| # | 问题 |\n| - | --- |\n| 1 | xxx |" },
+    ],
+    expandedBlocks: new Set(),
+    foldEnabled: true,
+  }
+  const out = buildConvLines(state, 100)
+  const joined = out.map((l) => l.text).join("\n")
+  // Regression (874d853): non-think blocks went through formatTables whose
+  // return value is an ARRAY — calling .split("\n") on it crashed the whole
+  // render, so tool progress and the final review never displayed.
+  assert.ok(!out.some((l) => typeof l.text !== "string"), "all rendered lines are strings (no crash)")
+  assert.ok(joined.includes("→ read"), "tool progress line visible")
+  assert.ok(joined.includes("先读文件") && joined.includes("看到问题了"), "thinking visible")
+  assert.ok(joined.includes("xxx"), "review table visible")
+  assert.ok(
+    joined.indexOf("先读文件") < joined.indexOf("→ read") && joined.indexOf("→ read") < joined.indexOf("看到问题了"),
+    "emission order preserved (think → tool → think)",
+  )
+})
+
 test("formatTables: CJK 表格按显示宽度对齐", async () => {
   const { formatTables } = await import("../src/tui/render.mjs")
   const table = "| 名称 | 描述 |\n|---|---|\n| 你好 | hello |"
