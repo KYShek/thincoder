@@ -2,8 +2,6 @@
  * advisor/run.mjs — advisor execution: tool loop, provider resolution, and the review entry point.
  * Message building lives in advisor.mjs.
  */
-import { readFileSync } from "node:fs"
-import { join, resolve, sep } from "node:path"
 import { chat } from "../provider/core.mjs"
 import { findProvider, specForModel } from "../config.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
@@ -103,7 +101,7 @@ export { advisorToolsFor as _advisorToolsFor }
 /** Compact one-line summary of tool args for panel progress lines.
  *  Picks the most identifying field; falls back to truncated JSON. */
 function summarizeToolArgs(args) {
-  // e.g. "git diff HEAD", "read src/x.mjs" — action first when present
+  // e.g. "read src/x.mjs", "grep foo src/", "ls docs" — action first when present
   const parts = [args.action, args.path ?? args.pattern ?? args.command].filter((v) => v != null)
   let s = parts.length > 0 ? parts.map(String).join(" ") : JSON.stringify(args)
   s = s.replace(/\s+/g, " ").trim()
@@ -308,7 +306,7 @@ async function runAdvisorToolLoop(provider, messages, onOutput, signal, agent, c
 }
 
 /** Resolve the advisor's provider: cfg.provider/model when set, otherwise the main agent's provider */
-function resolveAdvisorProvider(agent) {
+export function resolveAdvisorProvider(agent) {
   const cfg = agent.config?.advisor
   if (cfg?.provider) {
     try {
@@ -334,7 +332,11 @@ function resolveAdvisorProvider(agent) {
 }
 
 /**
- * Extract unfixed issues from prior review text
+ * Extract unfixed issues from prior review text (for the cap message).
+ * Input: an advisor review markdown table (`| # | … |` rows). A row counts as
+ * unfixed unless its line carries a resolved-status word (fixed/resolved/done/
+ * addressed/corrected, ✓/✔). Returns at most MAX_UNFIXED_DISPLAY plain
+ * (pipe-stripped) row strings.
  */
 function extractUnfixedIssues(priorText) {
   if (!priorText) return []
