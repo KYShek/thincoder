@@ -9,6 +9,7 @@ import { findProvider, specForModel } from "../config.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
 import { prepareAdvisorMessages } from "../advisor.mjs"
 import { extractPriorIssueTable } from "../advisor/history.mjs"
+import { appendCitationReport } from "./citations.mjs"
 
 const MAX_ADVISOR_TURNS = 100
 // Mechanical convergence cap: the protocol assumes up to 5 rounds suffice

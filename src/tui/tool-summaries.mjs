@@ -78,7 +78,7 @@ function _advisorSummary(result) {
   // Protocol: zero 🔴 rows in the review table = pass (phrase fallback for
   // table-free summaries like "No issues found").
   if (critical === 0 && (/\| \d+ \|/.test(text)
-    || /no\s+🔴|all.*(?:resolved|fixed|pass)|pass(?:es|ed)?\b|no\s+(?:critical\s+)?issues?/im.test(text))) {
+    || /no\s+🔴|all.*(?:resolved|fixed|pass)|pass(?:es|ed)?\b|no\s+(?:critical\s+)?issues?/i.test(text))) {
     return "advisor: passed"
   }
   const parts = []

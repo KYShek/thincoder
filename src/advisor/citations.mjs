@@ -6,7 +6,7 @@
  * unverified and cannot support a push-back.
  */
 import { readFileSync, realpathSync } from "node:fs"
-import { join, resolve, sep } from "node:path"
+import { resolve, sep } from "node:path"
 
 // `file:line: content` citations — the file group is narrowed to source/config
 // extensions so URLs (`example.com:8080: …`) don't become false-positive
@@ -43,7 +43,7 @@ export function verifyCitations(text, cwd) {
       // report) files outside the project, including API-key configs.
       // realpathSync resolves symlinks too — a link inside the project that
       // points outside must not pass the prefix check.
-      const resolved = realpathSync(resolve(join(cwd, c.file)))
+      const resolved = realpathSync(resolve(cwd, c.file))
       if (!resolved.startsWith(root)) {
         failed.push({ ...c, reason: "path traversal" })
         continue
