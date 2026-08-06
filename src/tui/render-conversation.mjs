@@ -197,10 +197,15 @@ function buildConvLines(state, cols) {
           i = j
           continue
         }
-        // EXPANDED consecutive-dim block: blank + ▼ at the HEAD, then every line
-        folded.push(blankLine())
-        folded.push(foldHintLine(`▼ … ${blockLen} lines — click to collapse`, foldKey))
-        for (let k = i; k < j; k++) folded.push(convLines[k])
+        // EXPANDED consecutive-dim block: blank + ▼ at the HEAD, then every line.
+        // foldEnabled=false → raw block, no hint (toggling would be a no-op).
+        if (state.foldEnabled === false) {
+          for (let k = i; k < j; k++) folded.push(convLines[k])
+        } else {
+          folded.push(blankLine())
+          folded.push(foldHintLine(`▼ … ${blockLen} lines — click to collapse`, foldKey))
+          for (let k = i; k < j; k++) folded.push(convLines[k])
+        }
         i = j
         continue
       }
