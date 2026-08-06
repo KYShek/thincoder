@@ -71,6 +71,13 @@ function highlightSearchMatches(text, query, matchesInLine, globalCurrentIndex, 
   return result
 }
 
+/**
+ * Build the conversation lines for the given state.
+ * NOTE: module-level _convCache is read/written as a side effect (keyed by
+ * convCacheKey + cols) — the function is pure w.r.t. its input except for
+ * that cache; direct callers outside renderConversation/countConvLines
+ * should be aware the cache persists across calls.
+ */
 function buildConvLines(state, cols) {
   const key = convCacheKey(state)
   if (_convCache.key === key && _convCache.cols === cols) return _convCache.lines
@@ -115,15 +122,21 @@ function buildConvLines(state, cols) {
       convLines.push(foldHintLine(`▶ … ${block.length - FOLD_KEEP} more lines — click to expand`, longKey, i))
       convLines.push(block[block.length - 1])
     } else if (block.length > LONG_FOLD_LINES) {
-      // EXPANDED long block: blank line + ▼ control line at the HEAD, directly
-      // before the content. DIM blocks must not re-trigger the consecutive-dim
-      // folding below (folding stacked on folding — reported regression).
-      if (l.color === C.dim) {
-        for (const line of block) line._skipDimFold = true
+      if (state.foldEnabled === false) {
+        // Folding fully off — content already fully visible; a "click to
+        // collapse" hint would be misleading (toggling has no effect).
+        convLines.push(...block)
+      } else {
+        // EXPANDED long block: blank line + ▼ control line at the HEAD, directly
+        // before the content. DIM blocks must not re-trigger the consecutive-dim
+        // folding below (folding stacked on folding — reported regression).
+        if (l.color === C.dim) {
+          for (const line of block) line._skipDimFold = true
+        }
+        convLines.push(blankLine())
+        convLines.push(foldHintLine(`▼ … ${block.length} lines — click to collapse`, longKey, i))
+        convLines.push(...block)
       }
-      convLines.push(blankLine())
-      convLines.push(foldHintLine(`▼ … ${block.length} lines — click to collapse`, longKey, i))
-      convLines.push(...block)
     } else {
       convLines.push(...block)
     }
@@ -143,7 +156,7 @@ function buildConvLines(state, cols) {
     // NOTE: formatTables returns an ARRAY of lines (not a string) — calling
     // .split on it crashed the whole render (tools/final never displayed).
     for (const block of advisorBlocks) {
-      const color = block.kind === "think" ? C.reason : C.text
+      const color = { think: C.reason, tool: C.tool, text: C.text }[block.kind] ?? C.text
       const rows = block.kind === "think"
         ? sanitizeDisplay(block.text).split("\n")
         : formatTables(sanitizeDisplay(block.text), cols - 3)

@@ -49,7 +49,7 @@ test("markdown tables with inline markers align end-to-end (buildConvLines row w
   const base = formatTables(table, 80).map((l) => stringWidth(l))
   const state = {
     lines: [{ text: table, color: C.text }],
-    streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+    streaming: "", reasoning: "", _advisorBlocks: [],
     foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
   }
   const conv = buildConvLines(state, 80)
@@ -142,6 +142,13 @@ test("advisor blocks: interleaved think/tool/table renders in emission order (fo
     joined.indexOf("先读文件") < joined.indexOf("→ read") && joined.indexOf("→ read") < joined.indexOf("看到问题了"),
     "emission order preserved (think → tool → think)",
   )
+  // Per-kind colors: thinking in reasoning color, tool progress in tool color.
+  const thinkLine = out.find((l) => l.text.includes("先读文件"))
+  const toolLine = out.find((l) => l.text.includes("→ read"))
+  const textLine = out.find((l) => l.text.includes("xxx"))
+  assert.equal(thinkLine?.color, C.reason, "thinking rendered in reasoning color")
+  assert.equal(toolLine?.color, C.tool, "tool progress rendered in tool color")
+  assert.equal(textLine?.color, C.text, "final output rendered in text color")
 })
 
 test("formatTables: CJK 表格按显示宽度对齐", async () => {
@@ -188,6 +195,7 @@ function tuiState(overrides = {}) {
     picker: null, wizard: null, tasks: [],
     tokens: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0, reasoningTokens: 0 },
     ctxCache: { len: -1, tokens: 0 }, reasoning: "",
+    _advisorBlocks: [], // matches index.mjs baseline (advisor ordered blocks)
     toolStreams: {}, subTasks: {}, outputPanels: {},
     currentTool: null, processingStarted: 0, status: "Ready", queue: [],
     ...overrides,

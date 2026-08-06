@@ -11,7 +11,7 @@ function mockState(extra = {}) {
     search: null, interruptPrompt: null, input: [], cursor: 0, question: null,
     picker: null, wizard: null, tasks: [], processing: false, subTasks: {},
     outputPanels: {}, permission: null, permissionPreview: [], queue: [],
-    lines: [], reasoning: "", _advisorThink: null, advisorStreaming: "",
+    lines: [], reasoning: "", _advisorBlocks: [],
     streaming: "", foldEnabled: true, expandedBlocks: null, scroll: 0,
     ...extra,
   }
@@ -159,7 +159,7 @@ describe("long-message folding (render-conversation)", () => {
     const { buildConvLines, convCacheKey } = await import("../src/tui/render-conversation.mjs")
     const state = {
       lines: [{ text: "L1\n" + "line2\n".repeat(15) + "last", color: C.dim }],
-      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      streaming: "", reasoning: "", _advisorBlocks: [],
       foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
     }
     const cols = 80
@@ -205,7 +205,7 @@ describe("long-message folding (render-conversation)", () => {
     const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
     const state = {
       lines: [],
-      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      streaming: "", reasoning: "", _advisorBlocks: [],
       foldEnabled: true, expandedBlocks: new Set(), _autoExpand: [], scroll: 0, search: null,
     }
     const longText = "line0\n" + "content\n".repeat(20) + "end" // 22 wrapped lines > 12
@@ -229,7 +229,7 @@ describe("long-message folding (render-conversation)", () => {
     for (const color of [C.text, C.reason]) {
       const state = {
         lines: [{ text: longText, color }],
-        streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+        streaming: "", reasoning: "", _advisorBlocks: [],
         foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
       }
       // Folded: [first 4, ▶ hint (ellipsis position), last]
@@ -258,7 +258,7 @@ describe("long-message folding (render-conversation)", () => {
     const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
     const state = {
       lines: Array.from({ length: 9 }, (_, i) => ({ text: `dim${i}`, color: C.dim })),
-      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      streaming: "", reasoning: "", _advisorBlocks: [],
       foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
     }
     // Folded: [dim0..dim3, ▶ hint, dim8]
@@ -285,7 +285,7 @@ describe("long-message folding (render-conversation)", () => {
     const { buildConvLines } = await import("../src/tui/render-conversation.mjs")
     const state = {
       lines: [{ text: "short", color: C.dim }, { text: "another", color: C.dim }],
-      streaming: "", reasoning: "", _advisorThink: null, advisorStreaming: "",
+      streaming: "", reasoning: "", _advisorBlocks: [],
       foldEnabled: true, expandedBlocks: new Set(), scroll: 0, search: null,
     }
     assert.equal(buildConvLines(state, 80).length, 2)
