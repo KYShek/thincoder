@@ -56,13 +56,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // Prompt files — loaded at module init
 // ────────────────────────────────────────
 
-const ADVISOR_ROUND1 = readFileSync(join(__dirname, "prompts", "advisor-round1.md"), "utf8")
+function loadPrompt(file, name) {
+  try {
+    return readFileSync(join(__dirname, "prompts", file), "utf8")
+  } catch {
+    throw new Error(`${name} missing from the installation (prompts/${file}) — reinstall thincoder or restore the file`)
+  }
+}
+
+const ADVISOR_ROUND1 = loadPrompt("advisor-round1.md", "advisor-round1.md")
 // ROUND2/3 are used whenever a convergence round (round 2+) is being built:
 // in-run session continuation replaces the system prompt with them, and a
 // rebuilt fresh session (e.g. after a failed review) also selects them via
 // buildAdvisorSystemPrompt when _advisorRound > 0.
-const ADVISOR_ROUND2 = readFileSync(join(__dirname, "prompts", "advisor-round2.md"), "utf8")
-const ADVISOR_ROUND3 = readFileSync(join(__dirname, "prompts", "advisor-round3.md"), "utf8")
+const ADVISOR_ROUND2 = loadPrompt("advisor-round2.md", "advisor-round2.md")
+const ADVISOR_ROUND3 = loadPrompt("advisor-round3.md", "advisor-round3.md")
 // Fallback when advisor-design.md is missing — keep in sync with the real
 // file (table format + workflow steps; a drifted fallback would also break
 // extractPriorIssueTable's DESIGN_TABLE_HEADER matching).
@@ -118,6 +126,12 @@ export function buildAdvisorSystemPrompt(agent, prior, reviewType) {
  *   extraction would otherwise scan history from index 0 and could match an
  *   unrelated stale table)
  */
+/**
+ * Build the convergence follow-up user message (rounds 2+).
+ * NOTE: the caller (prepareAdvisorMessages) applies escapeLiteralEscapes to
+ * the return value — direct callers must do the same (the prior table and
+ * agent response can quote literal "\x"/"\u" sequences).
+ */
 export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   // Convergence follow-up REQUIRES a prior review record. The caller usually
   // passes it; fall back to extracting it from history (compat for direct
@@ -126,13 +140,16 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
   // match an unrelated stale table — return a round-1-style message instead.
   const p = prior ?? extractPriorIssueTable(agent.history)
   if (!p) {
-    return "[System reminder: convergence follow-up requested without a prior review — perform a fresh full review.]"
+    // Plain "System reminder:" prefix (no brackets) — same convention as the
+    // round-1 path (some OpenAI-compatible servers parse '['-prefixed content
+    // as structured data / expand escapes; see prepareAdvisorMessages).
+    return "System reminder: convergence follow-up requested without a prior review — perform a fresh full review."
   }
   // Convergence semantics require round >= 2 (round 1 is the full review, not
   // verification). A direct caller with _advisorRound 0 would otherwise get a
   // meaningless "Round 1 — Strict Verification".
   if ((agent._advisorRound || 0) < 1) {
-    return "[System reminder: convergence follow-up requested at round 1 — a full review is already in progress; no prior verification exists yet.]"
+    return "System reminder: convergence follow-up requested at round 1 — a full review is already in progress; no prior verification exists yet."
   }
   const noResponseFallback = scopeFiles?.length
     ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
@@ -187,6 +204,9 @@ export function buildAdvisorFollowUp(agent, prior, scopeFiles = null) {
 export function escapeLiteralEscapes(text) {
   // (?<!\\) — only a SINGLE backslash counts ("\\x" already doubles the
   // escape and must pass through untouched); lookbehind is fine on Node 24.
+  // Known limitation (documented, accepted): an ODD backslash run of 3+ (e.g.
+  // "\\\x") leaves the trailing "\x" un-doubled — vanishingly rare in real
+  // conversation text, and the sequence is still valid JSON either way.
   return text
     .replace(/(?<!\\)\\(x)(?![0-9a-fA-F]{2}(?:[^0-9a-fA-F]|$))/g, "\\\\$1")
     .replace(/(?<!\\)\\(u)(?![0-9a-fA-F]{4}(?:[^0-9a-fA-F]|$))/g, "\\\\$1")
