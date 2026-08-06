@@ -16,15 +16,17 @@ const MAX_ADVISOR_TURNS = 100
 // model is looping — refuse it instead of burning tokens on a review that cannot
 // converge. Code AND design reviews share the 5-round budget (each advances
 // _advisorRound in agent.mjs; the cap no longer exempts design).
+export const MAX_ADVISOR_ROUNDS = 5
+
 // NOTE: prompts/advisor-round{1,2,3}.md encourage the model to finish within
 // ~30 tool turns — a prompt-level efficiency target, DISTINCT from the
-// 100-turn mechanical hard cap below (pure runaway-loop guard). They serve
-// different purposes; do NOT synchronize them.
+// 100-turn mechanical hard cap (MAX_ADVISOR_TURNS above; pure runaway-loop
+// guard). They serve different purposes; do NOT synchronize them.
+
 // The live "[thinking…]" wait indicator shares its exact text with the TUI
 // cleanup regex (agent-turn.mjs strips it before flushing to history) — keep
 // them in lockstep.
 export const ADVISOR_THINKING_PLACEHOLDER = "\n[thinking…]\n"
-export const MAX_ADVISOR_ROUNDS = 5
 
 // Context window limits
 const MAX_CONTEXT_TOKENS = 120_000 // 预留 headroom，避免 OOM
@@ -45,7 +47,8 @@ function estimateTokens(messages) {
  *  reference stays valid — a reassignment would leave the caller's logging
  *  (tool-call count, token estimate) reading a stale array. */
 function compactMessages(messages) {
-  // Keep: system prompt, last 10 assistant+tool pairs, user message
+  // Keep: system prompt, last 20 messages (≈ 10 assistant+tool exchanges),
+  // user message — the rest is summarized.
   if (messages.length <= 20) return
 
   const system = messages[0]
@@ -289,7 +292,9 @@ function resolveAdvisorProvider(agent) {
   }
   const provider = { ...agent.provider }
   if (cfg?.model) provider.model = cfg.model
-  if (cfg?.thinking === null) provider.thinking = undefined  // explicitly off
+  // thinking off: null AND false both mean "explicitly off" — a raw `false`
+  // value is invalid for providers that expect undefined or an object.
+  if (cfg?.thinking === null || cfg?.thinking === false) provider.thinking = undefined
   else if (cfg?.thinking !== undefined) provider.thinking = cfg.thinking
   if (cfg?.reasoningEffort !== undefined) provider.reasoningEffort = cfg.reasoningEffort
   return provider
@@ -301,9 +306,12 @@ function resolveAdvisorProvider(agent) {
 function extractUnfixedIssues(priorText) {
   if (!priorText) return []
   const lines = priorText.split("\n")
+  // Resolved-status words: fixed/resolved/done/addressed/corrected (+ ✓/✔).
+  // \b prevents "unfixed"/"prefixed" from matching "fixed".
+  const resolvedRe = /\b(?:fixed|resolved|done|addressed|corrected)\b|✓|✔/i
   return lines
     .filter((line) => /\|\s*\d+\s*\|/.test(line)) // 匹配表格行
-    .filter((line) => !/\bfixed\b|\bresolved\b|\bdone\b|✓|✔/i.test(line))
+    .filter((line) => !resolvedRe.test(line))
     // Strip only the leading/trailing table pipes — inner pipes (escaped or
     // in-cell content) stay intact instead of garbling the cap message.
     .map((line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").trim())
