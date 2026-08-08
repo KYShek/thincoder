@@ -7,7 +7,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { resolve, join, relative, dirname, sep } from "node:path"
 import { specForModel } from "../config.mjs"
 import { findReviewRepos, collectRepoSnapshots, collectChangedFiles } from "./repos.mjs"
-import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable, extractPriorIssueTable } from "./history.mjs"
+import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable } from "./history.mjs"
 
 /** Project guide (AGENTS.md) injection budget — decision 2026-08-08:
  *  NO fixed truncation; long-context models (1M+) get up to 5% of their context
@@ -106,7 +106,10 @@ function injectProjectGuide(agent, parts, scopeFiles = []) {
  * @returns {string} the user message
  */
 export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = null, documents = null, paths = null) {
-  const p = prior ?? extractPriorIssueTable(agent.history)
+  // prior = the full prior review output (string) when a convergence round is
+  // being built (decision 2026-08-08 — verbatim injection, model understands it).
+  // Deterministic: only _advisorRound > 0 with stored output counts.
+  const p = prior ?? ((agent._advisorRound || 0) > 0 ? agent._lastAdvisorOutput : null)
 
   const parts = []
   const docList = Array.isArray(documents) ? documents.filter((d) => typeof d === "string" && d.trim()) : []
@@ -193,16 +196,17 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   // Convergence data (round 2+). LEGACY COMPATIBILITY PATH: the normal advisor
   // flow routes convergence rounds through buildAdvisorFollowUp (fresh session,
   // decision d698434); this block only fires for direct external callers of
-  // buildAdvisorUserMessage with a prior table. Kept to avoid breaking those.
-  // Same rule as buildAdvisorFollowUp: prior table IS injected (decision
-  // 2026-08-05, reversed) — it is the only complete verification list.
+  // buildAdvisorUserMessage with a stored prior review output. Kept to avoid
+  // breaking those. Same rule as buildAdvisorFollowUp: the FULL prior review
+  // output is injected verbatim (decision 2026-08-08 — the model understands it;
+  // no table/header/phrase parsing).
   // NOTE: this legacy path does NOT apply escapeLiteralEscapes (that lives in
   // advisor.mjs and importing it here would create a top-level module cycle).
-  // Direct callers must escape p.text / the response themselves if the parent
+  // Direct callers must escape the injected output themselves if the parent
   // conversation can quote literal "\x"/"\u" sequences (server 400 risk).
   if (p && (agent._advisorRound || 0) > 0) {
     const scopeFiles = resolveScopeFiles(agent, paths)
-    const response = extractAgentResponseTable(agent.history, p.sinceIdx)
+    const response = extractAgentResponseTable(agent.history)
       || (scopeFiles?.length
         ? "(Agent did not provide a response table — perform a fresh review of: " + scopeFiles.slice(0, 10).join(", ") + ")"
         : "(Agent did not provide a response table — perform a fresh review of the files named in the system prompt context)")
@@ -210,8 +214,8 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     const label = round === 2 ? "Verify Prior Table + Flag New Issues" : "Strict Verification"
     parts.push(`## Round ${round} — ${label}`)
     parts.push("")
-    parts.push("## Prior Issue Table (verify every item)")
-    parts.push(p.text)
+    parts.push("## Prior Review Output (verify every item it raises)")
+    parts.push(p)
     parts.push("")
     parts.push("## Agent Response (fix claims — reference only)")
     parts.push(response)

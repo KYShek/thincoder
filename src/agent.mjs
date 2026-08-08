@@ -85,6 +85,7 @@ export function createAgent({
     _engDesignReviewed: false, // eng-coder: design review gate passed (hard gate in dispatch.mjs)
     _engDesignToken: null, // issued by advisor(type="design"); required to spawn eng-coder
     _touchedFiles: [], _verifyRetries: 0, _advisorRound: 0, _advisorSession: null,
+    _lastAdvisorOutput: null, // full review output from the most recent advisor call (convergence rounds inject it verbatim)
     _lastEngState: false,
     _pendingReminders: [],
     _pendingTimers: [],

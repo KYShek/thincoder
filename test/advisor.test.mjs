@@ -1,6 +1,6 @@
 /**
  * test/advisor.test.mjs — tests for the advisor convergence protocol.
- * Covers: extractPriorIssueTable, extractAgentResponseTable, buildAdvisorSystemPrompt,
+ * Covers: extractAgentResponseTable, buildAdvisorSystemPrompt,
  * buildAdvisorUserMessage, and the round-aware guard logic (MAX_ADVISOR_ROUNDS).
  */
 import { test } from "node:test"
@@ -11,7 +11,6 @@ import { execSync } from "node:child_process"
 import { tmpdir } from "node:os"
 
 import {
-  extractPriorIssueTable,
   extractAgentResponseTable,
   buildAdvisorSystemPrompt,
   buildAdvisorUserMessage,
@@ -19,164 +18,6 @@ import {
   buildAdvisorFollowUp,
   prepareAdvisorMessages,
 } from "../src/advisor.mjs"
-
-// ────────────────────────────────────────
-// extractPriorIssueTable
-// ────────────────────────────────────────
-
-test("extractPriorIssueTable: returns null when history is empty", () => {
-  assert.equal(extractPriorIssueTable([]), null)
-})
-
-test("extractPriorIssueTable: returns null when no advisor output found", () => {
-  const history = [
-    { role: "user", content: "hello" },
-    { role: "assistant", content: "hi" },
-    { role: "tool", tool_call_id: "t1", content: "some tool output" },
-  ]
-  assert.equal(extractPriorIssueTable(history), null)
-})
-
-test("extractPriorIssueTable: ignores header constants quoted inside source code", () => {
-  // An advisor output that quotes the header constants' own definitions (e.g. from
-  // history.mjs) must NOT be mistaken for a review table — headers match at line start only.
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: 'Reviewing src/advisor/history.mjs:\nconst LEGACY_ADVISOR_HEADER = "| # | 文件 | 严重程度 | 问题描述 | 建议修复 |"\nconst ADVISOR_TABLE_HEADER = "| # | File | Severity | Issue | Suggestion |"\nThese constants are only matched at line start — this message has no table.' },
-  ]
-  assert.equal(extractPriorIssueTable(history), null)
-})
-
-test("extractPriorIssueTable: returns null when last review says all clear", () => {
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n|---|------|----------|-------|------------|\n\nNo 🔴 issues found. Review passed." },
-  ]
-  assert.equal(extractPriorIssueTable(history), null)
-})
-
-test("extractPriorIssueTable: returns null when last review says all resolved", () => {
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: "| # | Orig# | File | Severity | Status | Notes |\n|---|-------|------|----------|--------|-------|\n| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |\nNo 🔴 issues remaining." },
-  ]
-  assert.equal(extractPriorIssueTable(history), null)
-})
-
-test("extractPriorIssueTable: extracts full-review issue table", () => {
-  const tableContent = `| # | File | Severity | Issue | Suggestion |
-|---|------|----------|-------|------------|
-| 1 | src/x.mjs | 🔴 Critical | null check missing | add guard |
-| 2 | src/y.mjs | 🟡 Advisory | variable name too short | rename to betterName |`
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: `Review results:\n\n${tableContent}\n\nPlease fix the issues above.` },
-  ]
-  const result = extractPriorIssueTable(history)
-  assert.notEqual(result, null)
-  assert.ok(result.text.includes("| # | File |"))
-  assert.ok(result.text.includes("| 1 | src/x.mjs |"))
-  assert.ok(result.text.includes("| 2 | src/y.mjs |"))
-  assert.equal(typeof result.sinceIdx, "number")
-})
-
-test("extractPriorIssueTable: extracts convergence table", () => {
-  const tableContent = `| # | Orig# | File | Severity | Status | Notes |
-|---|-------|------|----------|--------|-------|
-| 1 | 3     | src/x.mjs | 🔴 Critical | Unfixed | still missing null check |`
-  const history = [
-    { role: "tool", tool_call_id: "a2", content: `Re-review results:\n\n${tableContent}\n\nIssues remain.` },
-  ]
-  const result = extractPriorIssueTable(history)
-  assert.notEqual(result, null)
-  assert.ok(result.text.includes("| # | Orig# |"))
-  assert.ok(result.text.includes("| 1 | 3     | src/x.mjs |"))
-})
-
-test("extractPriorIssueTable: finds LAST advisor call, not first", () => {
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | old | fix |" },
-    { role: "tool", tool_call_id: "a2", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | b.js | 🔴 | new | fix |" },
-  ]
-  const result = extractPriorIssueTable(history)
-  assert.ok(result.text.includes("b.js"))
-  assert.ok(!result.text.includes("a.js"))
-  assert.equal(result.sinceIdx, 1)
-})
-
-test("extractPriorIssueTable: skips non-string tool content", () => {
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: ["array content"] },
-    { role: "tool", tool_call_id: "a2", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | c.js | 🔴 | bug | fix |" },
-  ]
-  const result = extractPriorIssueTable(history)
-  assert.notEqual(result, null)
-  assert.ok(result.text.includes("c.js"))
-})
-
-test("extractPriorIssueTable: returns null when legacy Chinese all-clear", () => {
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: "未发现问题，代码质量良好" },
-  ]
-  assert.equal(extractPriorIssueTable(history), null)
-})
-
-test("extractPriorIssueTable: convergence table with mixed fixed/unfixed returns table", () => {
-  const table = `| # | Orig# | File | Severity | Status | Notes |
-|---|-------|------|----------|--------|-------|
-| 1 | 3 | src/x.mjs | 🔴 | Fixed | ok |
-| 2 | 5 | src/y.mjs | 🟡 | Unfixed | still broken |`
-  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
-  assert.notEqual(result, null, "有未修复项不应视为 all-clear")
-  assert.ok(result.text.includes("Unfixed"))
-})
-
-test("extractPriorIssueTable: all-fixed table with 'still' in notes returns null", () => {
-  const table = `| # | Orig# | File | Severity | Status | Notes |
-|---|-------|------|----------|--------|-------|
-| 1 | 3 | src/x.mjs | 🔴 | Fixed | we should still add tests later |
-No 🔴 issues remaining.`
-  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
-  assert.equal(result, null, "全 Fixed + all-clear 短语 + Notes 里普通 'still' 不触发部分修复")
-})
-
-test("extractPriorIssueTable: Chinese mixed 已修复/未修复 returns table", () => {
-  const table = `| # | 文件 | 严重程度 | 问题描述 | 建议修复 |
-|---|------|----------|----------|----------|
-| 1 | src/x.mjs | 🔴 | bug A | fix A |
-| 2 | src/y.mjs | 🟡 | bug B | 未修复 |`
-  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
-  assert.notEqual(result, null, "含未修复项应返回表格")
-  assert.ok(result.text.includes("未修复"))
-})
-
-test("extractPriorIssueTable: Unfixed rows + 'no new issues' phrase → returns table (round-2 reset bug regression)", () => {
-  // Verification tables commonly conclude "No new issues found" — that phrase
-  // must NOT be read as all-clear while rows are still Unfixed. Before this
-  // fix it returned null → prior lost → _advisorRound reset → "always round 2".
-  const table = `| # | Orig# | File | Severity | Status | Notes |
-|---|-------|------|----------|--------|-------|
-| 1 | 3 | src/x.mjs | 🔴 | Unfixed | still broken |
-No new issues found.`
-  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
-  assert.notEqual(result, null, "Unfixed rows keep convergence despite the 'no new issues' closing")
-  assert.ok(result.text.includes("Unfixed"))
-})
-
-test("extractPriorIssueTable: all-fixed verification table → null (row-level pass, not phrase)", () => {
-  const table = `| # | Orig# | File | Severity | Status | Notes |
-|---|-------|------|----------|--------|-------|
-| 1 | 3 | src/x.mjs | 🔴 | Fixed | done |
-| 2 | 5 | src/y.mjs | 🟡 | Fixed | done |
-All issues resolved.`
-  assert.equal(extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }]), null)
-})
-
-test("extractPriorIssueTable: round-1 issue table with 'no new issues' phrase → table kept (phrase no longer all-clear)", () => {
-  const table = `| # | File | Severity | Issue | Suggestion |
-|---|------|----------|-------|------------|
-| 1 | src/x.mjs | 🔴 | bug A | fix A |
-No new issues found in the rest of the codebase.`
-  const result = extractPriorIssueTable([{ role: "tool", tool_call_id: "a1", content: table }])
-  assert.notEqual(result, null, "issue table with real issues is not all-clear")
-})
-
 
 
 // ────────────────────────────────────────
@@ -243,7 +84,7 @@ test("buildAdvisorSystemPrompt: returns round 1 file when no prior table", () =>
   const prompt = buildAdvisorSystemPrompt(agent)
   assert.ok(prompt.includes("full-scope review"))
   assert.ok(prompt.includes("| # | File | Severity | Issue | Suggestion |"))
-  assert.ok(!prompt.includes("Verify the prior issue table"))
+  assert.ok(!prompt.includes("Verify the prior review output"))
   assert.ok(!prompt.includes("Strictly verify"))
 })
 
@@ -261,9 +102,10 @@ test("buildAdvisorSystemPrompt: returns round 2 file when prior table and _advis
   const agent = {
     history: [{ role: "tool", tool_call_id: "a1", content: `Review:\n${issueTable}` }],
     _advisorRound: 1, cwd: tmpdir(),
+    _lastAdvisorOutput: issueTable,
   }
   const prompt = buildAdvisorSystemPrompt(agent)
-  assert.ok(prompt.includes("Verify the prior issue table"))
+  assert.ok(prompt.includes("Verify the prior review output"))
   assert.ok(!prompt.includes("DO NOT look for new issues"))
 })
 
@@ -276,6 +118,7 @@ test("buildAdvisorSystemPrompt: returns round 3+ file when _advisorRound>=2", ()
       { role: "tool", tool_call_id: "a2", content: "| # | Orig# | File | Severity | Status | Notes |\n| 1 | 1 | x.js | 🔴 | Unfixed | - |" },
     ],
     _advisorRound: 2, cwd: tmpdir(),
+    _lastAdvisorOutput: issueTable,
   }
   const prompt = buildAdvisorSystemPrompt(agent)
   assert.ok(prompt.includes("Strictly verify"))
@@ -309,10 +152,10 @@ test("buildAdvisorSystemPrompt: design round 1 uses design prompt; rounds 2+ con
   const prior = { text: "| # | Category | Severity | Issue | Suggestion |\n|---|---------|----------|------|------------|" }
   const round2 = buildAdvisorSystemPrompt({ ...base, _advisorRound: 1 }, prior, "design")
   assert.ok(!round2.includes("design reviewer"), "round 2 no longer uses the design prompt")
-  assert.ok(round2.includes("Verify the prior issue table"), "round 2 uses the convergence prompt")
+  assert.ok(round2.includes("Verify the prior review output"), "round 2 uses the convergence prompt")
   // Round 3+ → strict verification
   const round3 = buildAdvisorSystemPrompt({ ...base, _advisorRound: 2 }, prior, "design")
-  assert.ok(round3.includes("Strictly verify only the prior issue table"), "round 3+ strict verification")
+  assert.ok(round3.includes("Strictly verify only the prior review output"), "round 3+ strict verification")
 })
 
 
@@ -434,7 +277,7 @@ test("buildAdvisorSystemPrompt: _advisorRound===0 forces full review despite sta
   }
   const prompt = buildAdvisorSystemPrompt(agent)
   assert.ok(prompt.includes("full-scope review"))
-  assert.ok(!prompt.includes("Verify the prior issue table"))
+  assert.ok(!prompt.includes("Verify the prior review output"))
 })
 
 // ────────────────────────────────────────
@@ -471,7 +314,7 @@ test("buildAdvisorUserMessage: scope lists paths when provided", () => {
 test("buildAdvisorUserMessage: round 1 does not include convergence data", () => {
   const agent = { _touchedFiles: [], cwd: tmpdir(), history: [], _advisorRound: 0 }
   const msg = buildAdvisorUserMessage(agent)
-  assert.ok(!msg.includes("## Prior Issue Table"))
+  assert.ok(!msg.includes("## Prior Review Output"))
   assert.ok(!msg.includes("## Agent Response"))
 })
 
@@ -481,10 +324,11 @@ test("buildAdvisorUserMessage: round 2 includes convergence data (fix claims, no
     _touchedFiles: [], cwd: tmpdir(),
     history: [{ role: "tool", tool_call_id: "a1", content: `Review:\n${issueTable}` }],
     _advisorRound: 1,
+    _lastAdvisorOutput: `Review:\n${issueTable}`,
   }
   const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.js"])
   assert.ok(msg.includes("## Round 2 — Verify Prior Table + Flag New Issues"), "convergence header present (project guide now precedes it)")
-  assert.ok(msg.includes("## Prior Issue Table"), "prior table IS injected — the only complete verification list")
+  assert.ok(msg.includes("## Prior Review Output"), "prior table IS injected — the only complete verification list")
   assert.ok(msg.includes(issueTable), "issue rows restated for verification")
   assert.ok(msg.includes("## Agent Response"), "fix claims present as a reference")
   assert.ok(msg.includes("## Review Scope"))
@@ -500,6 +344,7 @@ test("buildAdvisorUserMessage: round 3+ uses strict verification header", () => 
       { role: "tool", tool_call_id: "a2", content: "| # | Orig# | File | Severity | Status | Notes |\n| 1 | 1 | x.js | 🔴 | Unfixed | - |" },
     ],
     _advisorRound: 2,
+    _lastAdvisorOutput: issueTable,
   }
   const msg = buildAdvisorUserMessage(agent)
   assert.ok(msg.includes("## Round 3 — Strict Verification"), "strict verification header present (project guide now precedes it)")
@@ -513,7 +358,7 @@ test("buildAdvisorUserMessage: _advisorRound===0 skips convergence data", () => 
     _advisorRound: 0,
   }
   const msg = buildAdvisorUserMessage(agent)
-  assert.ok(!msg.includes("## Prior Issue Table"))
+  assert.ok(!msg.includes("## Prior Review Output"))
   assert.ok(!msg.includes("## Review Scope"), "no empty Review Scope heading without paths/documents (decision: suppress empty sections)")
   assert.ok(msg.includes("## Instructions"))
 })
@@ -602,34 +447,6 @@ test("buildAdvisorUserMessage: 1M 窗口模型 5% = 50K cap——长指南不截
 
 
 // ────────────────────────────────────────
-// extractTableBlock edge cases
-// ────────────────────────────────────────
-
-test("extractPriorIssueTable: handles table at very end of content", () => {
-  const tableContent = `| # | File | Severity | Issue | Suggestion |
-|---|------|----------|-------|------------|
-| 1 | a.js | 🔴 | bug | fix |`
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: `${tableContent}` },
-  ]
-  const result = extractPriorIssueTable(history)
-  assert.notEqual(result, null)
-  assert.equal(result.text, tableContent)
-})
-
-test("extractPriorIssueTable: handles multi-line issue descriptions", () => {
-  const tableContent = `| # | File | Severity | Issue | Suggestion |
-|---|------|----------|-------|------------|
-| 1 | a.js | 🔴 | This is a very long description that should still work | fix it |`
-  const history = [
-    { role: "tool", tool_call_id: "a1", content: `header\n${tableContent}\nfooter` },
-  ]
-  const result = extractPriorIssueTable(history)
-  assert.notEqual(result, null)
-  assert.ok(result.text.includes("This is a very long description"))
-})
-
-// ────────────────────────────────────────
 // MAX_ADVISOR_ROUNDS guard logic (agent.mjs)
 // ────────────────────────────────────────
 
@@ -709,7 +526,7 @@ test("prepareAdvisorMessages: first call creates a fresh [system, user] session"
 
 test("prepareAdvisorMessages: design round 2+ is a FRESH session with prior-table follow-up", () => {
   const priorTable = "| # | Category | Severity | Issue | Suggestion |\n| 1 | Clarity | 🔴 | gap | fix |"
-  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 0, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [], _lastAdvisorOutput: priorTable }
   // Round 1: fresh design session (full design-review prompt + token)
   const first = prepareAdvisorMessages(agent, "design", "TOKEN1")
   assert.equal(first.length, 2)
@@ -725,7 +542,7 @@ test("prepareAdvisorMessages: design round 2+ is a FRESH session with prior-tabl
   assert.equal(second.length, 2)
   assert.ok(second[1].content.includes("Round 2"), "design follow-up carries round number")
   assert.ok(second[1].content.includes(priorTable.slice(0, 30)), "prior table injected into the follow-up")
-  assert.ok(second[0].content.includes("Verify the prior issue table"), "design round 2 system prompt narrowed to ROUND2")
+  assert.ok(second[0].content.includes("Verify the prior review output"), "design round 2 system prompt narrowed to ROUND2")
   assert.ok(!second[0].content.includes("design reviewer"), "round-1 design mandate does not leak into round 2")
 
   // Rounds 3 and 4: fresh each time, strict verification
@@ -736,25 +553,25 @@ test("prepareAdvisorMessages: design round 2+ is a FRESH session with prior-tabl
   agent._advisorRound = 3
   const fourth = prepareAdvisorMessages(agent, "design", null)
   assert.ok(fourth[1].content.includes("Round 4"), "round 4 follow-up")
-  assert.ok(fourth[0].content.includes("Strictly verify only the prior issue table"), "design round 3+ system prompt is ROUND3")
+  assert.ok(fourth[0].content.includes("Strictly verify only the prior review output"), "design round 3+ system prompt is ROUND3")
 })
 
 test("prepareAdvisorMessages: convergence rounds are FRESH sessions with prior-table follow-up", () => {
   const priorTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |"
-  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 1, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 1, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [], _lastAdvisorOutput: priorTable }
   const second = prepareAdvisorMessages(agent)
   assert.equal(second.length, 2, "fresh [system, user] — no old read data in context")
   assert.equal(second[1].role, "user")
   assert.ok(second[1].content.includes("Round 2"), "follow-up carries round number")
   assert.ok(second[1].content.includes("Agent Response"), "follow-up includes the response table as reference")
   assert.ok(second[1].content.includes(priorTable.slice(0, 30)), "prior table IS injected — the complete verification list")
-  assert.ok(second[0].content.includes("Verify the prior issue table"), "round 2 system prompt is the narrowed ROUND2")
+  assert.ok(second[0].content.includes("Verify the prior review output"), "round 2 system prompt is the narrowed ROUND2")
 
   agent._advisorRound = 2
   const third = prepareAdvisorMessages(agent)
   assert.ok(third[1].content.includes("Round 3"))
   assert.ok(third[1].content.includes("Strict"), "round 3+ is strict verification")
-  assert.ok(third[0].content.includes("Strictly verify only the prior issue table"), "round 3 system prompt is ROUND3 — do not look for new issues")
+  assert.ok(third[0].content.includes("Strictly verify only the prior review output"), "round 3 system prompt is ROUND3 — do not look for new issues")
   assert.ok(third[0].content.includes("Do NOT look for new issues"))
 })
 
@@ -763,6 +580,7 @@ test("buildAdvisorFollowUp: includes agent response table when present", () => {
     _advisorRound: 1,
     cwd: tmpdir(),
     _touchedFiles: [],
+    _lastAdvisorOutput: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |",
     history: [
       { role: "tool", tool_call_id: "tc1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" },
       { role: "assistant", content: "| # | Action | Detail |\n| 1 | fixed | added null check |" },
@@ -777,6 +595,7 @@ test("buildAdvisorFollowUp: tolerates missing response table", () => {
     _advisorRound: 1,
     cwd: tmpdir(),
     _touchedFiles: [],
+    _lastAdvisorOutput: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |",
     history: [{ role: "tool", tool_call_id: "tc1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
   }
   const msg = buildAdvisorFollowUp(agent)
@@ -792,10 +611,11 @@ test("buildAdvisorFollowUp: injects NO git information (read-only verification b
       _advisorRound: 1,
       cwd: tmp,
       _touchedFiles: [join(tmp, "app.js")],
+      _lastAdvisorOutput: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |",
       history: [{ role: "tool", tool_call_id: "tc1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.mjs | 🔴 | bug | fix |" }],
     }
     const followUp = buildAdvisorFollowUp(agent)
-    assert.ok(followUp.includes("Prior Issue Table"), "prior table injected — the complete verification list")
+    assert.ok(followUp.includes("Prior Review Output"), "prior output injected — the complete verification list")
     assert.ok(!followUp.includes("Git Context"), "no git context injected")
     assert.ok(!followUp.includes("## Current Changes"), "no diff-snapshot section injected")
     assert.ok(!followUp.includes("git status"), "no git status injected")
@@ -967,10 +787,10 @@ test("prepareAdvisorMessages: _advisorRound=0 with stale prior table → fresh r
 
 test("prepareAdvisorMessages: failed-retry with prior table PRESERVES the round", () => {
   const priorTable = "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |"
-  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 2, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [] }
+  const agent = { history: [{ role: "tool", tool_call_id: "a1", content: priorTable }], _advisorRound: 2, _advisorSession: null, cwd: tmpdir(), _touchedFiles: [], _lastAdvisorOutput: priorTable }
   const session = prepareAdvisorMessages(agent)
   assert.equal(agent._advisorRound, 2, "round preserved for the convergence prompt")
-  assert.ok(session[0].content.includes("Strictly verify only the prior issue table"), "ROUND3 prompt — convergence continues")
+  assert.ok(session[0].content.includes("Strictly verify only the prior review output"), "ROUND3 prompt — convergence continues")
 })
 
 test("runAdvisorReview: cap blocks design reviews too after 5 rounds (bounded loop)", async () => {
@@ -1117,4 +937,87 @@ test("buildAdvisorUserMessage: 工作区与评审目录均无 AGENTS.md → 诚�
 })
 
   }
+})
+
+// ────────────────────────────────────────
+// decision 2026-08-08: prior review output injected verbatim, no hard parsing
+// ────────────────────────────────────────
+
+test("buildAdvisorFollowUp: injects the FULL prior review output verbatim (model understands it — no table parsing)", () => {
+  const reviewOutput = "Prior review: some narrative explanation...\n\n| # | File | Severity | Issue | Suggestion |\n|---|------|----------|-------|------------|\n| 1 | a.mjs | 🔴 | bug A | fix A |\nNo new issues."
+  const agent = { history: [], _advisorRound: 1, _lastAdvisorOutput: reviewOutput, cwd: tmpdir() }
+  const msg = buildAdvisorFollowUp(agent)
+  assert.ok(msg.includes(reviewOutput), "完整原文注入（含叙述）")
+  assert.ok(msg.includes("## Prior Review Output"), "段标题")
+})
+
+test("buildAdvisorFollowUp: no stored output → fresh-review fallback (no prior parsing from history)", () => {
+  // History contains a perfectly-formatted prior table — but with the
+  // 2026-08-08 decision the host does NOT parse history: no stored output
+  // means no convergence follow-up.
+  const history = [
+    { role: "tool", tool_call_id: "a1", content: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |" },
+  ]
+  const agent = { history, _advisorRound: 1, _lastAdvisorOutput: null, cwd: tmpdir() }
+  const msg = buildAdvisorFollowUp(agent)
+  assert.ok(msg.includes("System reminder: convergence follow-up requested without a prior review"), "诚实降级")
+})
+
+test("buildAdvisorFollowUp: round 1 guard still enforced", () => {
+  const agent = { history: [], _advisorRound: 0, _lastAdvisorOutput: "some review", cwd: tmpdir() }
+  const msg = buildAdvisorFollowUp(agent)
+  assert.ok(msg.includes("convergence follow-up requested at round 1"), "round 1 无验证语义")
+})
+
+test("prepareAdvisorMessages: round 2+ requires BOTH _advisorRound>0 and stored output (no history parsing)", () => {
+  const mk = (over = {}) => ({
+    history: [], _advisorRound: 0, _lastAdvisorOutput: null, _mutatedThisRun: true,
+    config: {}, provider: { model: "m" }, _touchedFiles: [], _advisorSession: null, cwd: tmpdir(), ...over,
+  })
+  // Round 1: no stored output → full review even though history has a table
+  const agent1 = mk({ _advisorRound: 0, _lastAdvisorOutput: null })
+  const s1 = prepareAdvisorMessages(agent1)
+  assert.ok(s1[0].content.includes("full-scope review"), "ROUND1 prompt")
+
+  // Round 2: stored output → convergence follow-up with verbatim injection
+  const agent2 = mk({ _advisorRound: 1, _lastAdvisorOutput: "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |" })
+  const s2 = prepareAdvisorMessages(agent2)
+  assert.ok(s2[0].content.includes("Verify the prior review output"), "ROUND2 system prompt")
+  assert.ok(s2[1].content.includes("## Prior Review Output"), "原文注入")
+  assert.ok(s2[1].content.includes("bug | fix |"), "评审表内容在")
+})
+
+test("buildAdvisorSystemPrompt: round decision is deterministic (_advisorRound + stored output)", () => {
+  const mk = (r, out) => ({ history: [], _advisorRound: r, _lastAdvisorOutput: out, cwd: tmpdir() })
+  assert.ok(buildAdvisorSystemPrompt(mk(0, null)).includes("full-scope review"), "round 0 → ROUND1")
+  assert.ok(buildAdvisorSystemPrompt(mk(1, null)).includes("full-scope review"), "round>0 但无输出 → 保守 ROUND1")
+  assert.ok(buildAdvisorSystemPrompt(mk(1, "review text")).includes("Verify the prior review output"), "round>0 + 输出 → ROUND2")
+  assert.ok(buildAdvisorSystemPrompt(mk(2, "review text")).includes("Strictly verify only the prior review output"), "round 3+ → ROUND3")
+})
+
+test("buildAdvisorSystemPrompt: prior param overrides stored output (direct caller compat)", () => {
+  const agent = { history: [], _advisorRound: 1, _lastAdvisorOutput: null, cwd: tmpdir() }
+  assert.ok(buildAdvisorSystemPrompt(agent, "direct prior").includes("Verify the prior review output"), "显式 prior 参数")
+})
+
+test("extractAgentResponseTable: no sinceIdx → most recent response table (backward scan)", () => {
+  const history = [
+    { role: "assistant", content: "| # | Action | Detail |\n| 1 | ✅ Fixed | old |" },
+    { role: "tool", tool_call_id: "a1", content: "some review" },
+    { role: "assistant", content: "| # | Action | Detail |\n| 1 | ✅ Fixed | new |" },
+  ]
+  const result = extractAgentResponseTable(history)
+  assert.ok(result.includes("new |"), "最近响应表优先")
+  assert.ok(!result.includes("old |"), "不取旧的")
+})
+
+test("buildAdvisorUserMessage: legacy convergence path injects verbatim output, not parsed table", () => {
+  const agent = {
+    _touchedFiles: [], cwd: tmpdir(), history: [], _advisorRound: 1,
+    _lastAdvisorOutput: "explanation text + table", config: {},
+    provider: { model: "m" },
+  }
+  const msg = buildAdvisorUserMessage(agent, null, "code")
+  assert.ok(msg.includes("## Prior Review Output"), "legacy 路径同样原文注入")
+  assert.ok(msg.includes("explanation text + table"), "完整输出")
 })

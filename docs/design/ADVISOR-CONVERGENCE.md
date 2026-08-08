@@ -43,11 +43,30 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 
 - **收敛轮 fresh session（2026-08-04 决策变更）**：round 2+ **不复用** round 1 的会话数组——每轮构建全新 `[system(ROUND2/3 提示词), user(agent 响应表 + Review Scope + follow-up 指令)]`。**旧 read 输出（上一轮读到的文件全文）从物理上不在上下文里**——它是复评误报的最大锚定源（模型引用旧文件内容而非重新 read），也是 token 浪费源（大文件全文滞留触发频繁压缩）。"保留探索上下文"与证据规则（"只有本轮 read 才算数"）天然冲突，已废除。
 - **后轮上下文包含 prior 表（2026-08-05 决策变更，反转）**：prior 表（旧问题清单）**重新注入** round 2+ 的用户消息——它是**唯一完整的验证清单**：agent 响应表只覆盖 agent 选择回答的问题，agent 遗漏/回避的问题若无 prior 表会**在收敛中静默通过**（验证目标被 agent 自我声明绑架）。当初移除的理由（复述锚定/跨主题污染/token）已被后续防线化解：**复述** → host-verified citations 机械拦截（引用与磁盘不符即标记）+ fresh session 排除旧 read 数据（prior 表是唯一旧信息源，其余干净）；**跨主题污染** → 确定性轮次判定（`_mutatedThisRun`，无修改 → 重置 → round 1 无 prior）；**token** → prior 表 <5KB 可忽略。agent 响应表保留为**聚焦参考**（"我修了 X"），不再是验证清单。
-- prior 表仍用于轮次判断：`extractPriorIssueTable` 存在 → round 2+，缺失 → round 1。
+- ~~prior 表仍用于轮次判断：`extractPriorIssueTable` 存在 → round 2+，缺失 → round 1~~ **已废止（2026-08-08）**——轮次判断改为确定性状态（`_advisorRound > 0 && _lastAdvisorOutput`），见 §4a。
 - `agent._advisorSession` 字段保留（初始化兼容）但**不再作为会话延续读取**；run.mjs 不再写它。
 - run 结束（`runAgent`）重置 `_advisorRound`。
 - 审查失败不产生可泄漏的半成品上下文（每轮 fresh，天然免疫）。
 - prior 表为空（上次 all-clear 或首次）时重置为 round 1 全新全量审查。
+
+### 4a. prior 注入改为原文 + 模型理解（2026-08-08 决策，移除硬解析）
+
+**背景**：prior 表靠**表头字符串精确匹配**（`ADVISOR_TABLE_HEADER` 等 4 个常量）从历史提取，all-clear 靠**短语匹配**（`ALL_CLEAR_PHRASES`）。两类都是"用字符串匹配解析 LLM 输出"——LLM 措辞/表格格式一漂移即静默失败（提取失败 → prior=null → 收敛退化为全量重评，无任何报错）。用户两次质疑（"不能依赖模型理解吗""短语判定有实质意义吗"）——核实后确认：
+
+- **guard 推回不看评审结论**（`_calledAdvisorThisRun` 只看评审发生没发生）；
+- **round 重置已解耦**（`_mutatedThisRun` 决定，2026-08-05）；
+- 短语判定唯一实质作用是 all-clear 后 prior=null → ROUND1——与确定性重置重合（无害）或造成轮次混搭（有害）。
+
+**决策**：
+1. **删除** prior 表硬解析（`extractPriorIssueTable` 表头匹配）与 all-clear 短语判定（`ALL_CLEAR_PHRASES`）；
+2. 评审完成时宿主存**完整原文**：`agent._lastAdvisorOutput = result`（run.mjs 评审结束处；subagent 的 advisor 调用不写父 agent 状态）；
+3. round 2+ 注入**上轮评审原文**（模型自行理解表格与结论）——指令："以下是上一轮评审的完整输出——逐项验证其中指出的每个问题（基于本轮 read 的当前文件状态，Fixed/Unfixed/New）"；
+4. **round 判定**：`_advisorRound > 0 && agent._lastAdvisorOutput` → round 2+；否则 round 1（重启后 `_advisorRound=0` → 保守全量重评）；
+5. agent 响应表（fix claims）保留为聚焦参考（`extractAgentResponseTable`，格式漂移仅影响参考性——fallback 文本兜底，不驱动控制流）。
+
+**收益**：消除两类字符串解析的脆弱性；注入信息完整（原文含解释——解析版会丢）；轮次语义一致（不再有 prior=null 与 round 计数的混搭）；代码简化。
+**代价**：注入体积略增（原文 vs 表，评审输出通常 <16KB 可接受）；重启后保守全量重评。
+**宿主判定面**：只保留"评审发生"（`_calledAdvisorThisRun`）+ 轮次预算（`_advisorRound`/cap）——评审"通过/不通过"不是宿主控制流输入，是主 Agent 读评审输出自行判断。
 
 ### 5. 证据机械校验（host-verified citations）
 
