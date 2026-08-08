@@ -62,6 +62,11 @@ function injectProjectGuide(agent, parts, scopeFiles = []) {
   const root = findProjectRoot(agent.cwd, scopeFiles)
   const path = root ? join(root, "AGENTS.md") : null
   let text
+  if (!path) {
+    parts.push("(No AGENTS.md found — neither at the working directory root nor in any review-scope subdirectory. Judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
+    parts.push("")
+    return false // no guide — requirement-fit falls back to the conversation
+  }
   try {
     text = readFileSync(path, "utf8")
   } catch (e) {
@@ -79,7 +84,7 @@ function injectProjectGuide(agent, parts, scopeFiles = []) {
   const cap = Math.max(PROJECT_GUIDE_MIN, Math.floor(ctx * PROJECT_GUIDE_FRACTION))
   const shown = text.length <= cap
     ? text
-    : text.slice(0, cap) + `\n\n…(truncated at ${cap} chars — read the full file if you need more)`
+    : [...text].slice(0, cap).join("") + `\n\n…(truncated at ${cap} chars — read the full file if you need more)` // codepoint-safe slice: no broken surrogate pairs at the boundary
   parts.push(`<!-- Project root: ${relative(agent.cwd, path).split(sep).join("/")} (inferred from the review scope under ${agent.cwd}) -->`)
   parts.push("This file defines the project's structure and where its requirements/design documents live. Read the documents it points to — the user's requirements live THERE, not only in the conversation background.")
   parts.push("")
@@ -173,8 +178,9 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
       parts.push("1. Read the design document fully. Read METHODOLOGY.md to understand the project's standards.")
     }
     parts.push("2. Review against: completeness (all requirements covered?), feasibility (can this be built?), clarity (specific enough?), acceptance criteria (verifiable?), scope (appropriate?).")
-    parts.push("3. Do NOT run git diff or look for code changes — there are none at this stage.")
-    parts.push("4. If you find issues, produce your review table with the format: | # | Category | Severity | Issue | Suggestion |. If the design passes, no table is needed.")
+    parts.push("3. If the ## Project Guide (AGENTS.md) section above is present, also check requirement fit: does the design match what the requirements documents it points to actually ask for?")
+    parts.push("4. Do NOT run git diff or look for code changes — there are none at this stage.")
+    parts.push("5. If you find issues, produce your review table with the format: | # | Category | Severity | Issue | Suggestion |. If the design passes, no table is needed.")
     if (designToken) {
       parts.push("")
       parts.push("## Approval Signal")
@@ -190,6 +196,10 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   // buildAdvisorUserMessage with a prior table. Kept to avoid breaking those.
   // Same rule as buildAdvisorFollowUp: prior table IS injected (decision
   // 2026-08-05, reversed) — it is the only complete verification list.
+  // NOTE: this legacy path does NOT apply escapeLiteralEscapes (that lives in
+  // advisor.mjs and importing it here would create a top-level module cycle).
+  // Direct callers must escape p.text / the response themselves if the parent
+  // conversation can quote literal "\x"/"\u" sequences (server 400 risk).
   if (p && (agent._advisorRound || 0) > 0) {
     const scopeFiles = resolveScopeFiles(agent, paths)
     const response = extractAgentResponseTable(agent.history, p.sinceIdx)
@@ -296,7 +306,8 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
  */
 export function resolveScopeFiles(agent, paths) {
   const normalize = (p) => {
-    const abs = p.startsWith(agent.cwd) ? p : join(agent.cwd, p)
+    // sep-guarded prefix check — /proj vs /project-other must not collide
+    const abs = p === agent.cwd || p.startsWith(agent.cwd + sep) ? p : join(agent.cwd, p)
     return relative(agent.cwd, abs)
   }
   if (Array.isArray(paths)) return [...new Set(paths.map(normalize))]
