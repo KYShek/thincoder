@@ -535,6 +535,72 @@ test("buildAdvisorUserMessage: includes recent conversation background", () => {
   assert.ok(msg.includes("Let me look at the parser"), "assistant reply included")
 })
 
+test("buildAdvisorUserMessage: 注入 Project Guide (AGENTS.md) 且位于 Conversation Background 之前", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-guide-"))
+  try {
+    writeFileSync(join(tmp, "AGENTS.md"), "# 项目指南\n\n需求文档在 docs/REQUIREMENTS.md 与 docs/design/ 下。\n")
+    const agent = {
+      _touchedFiles: [], cwd: tmp, history: [{ role: "user", content: "做个功能" }],
+      _advisorRound: 0, config: {},
+      provider: { model: "deepseek-v4-pro" }, // 1M 窗口 → 5% = 50K cap
+    }
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.mjs"])
+    assert.ok(msg.includes("## Project Guide (AGENTS.md)"), "应含 Project Guide 段")
+    assert.ok(msg.includes("需求文档在 docs/REQUIREMENTS.md"), "AGENTS.md 内容被注入")
+    assert.ok(msg.includes("the user's requirements live THERE"), "指引语句在")
+    const guideIdx = msg.indexOf("## Project Guide")
+    const bgIdx = msg.indexOf("## Conversation Background")
+    assert.ok(guideIdx !== -1 && bgIdx !== -1 && guideIdx < bgIdx, "Project Guide 必须在 Conversation Background 之前")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("buildAdvisorUserMessage: 无 AGENTS.md 时诚实降级（明说以对话背景为准）", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-guide-"))
+  try {
+    const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {}, provider: { model: "m" } }
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.mjs"])
+    assert.ok(msg.includes("## Project Guide (AGENTS.md)"), "段仍在（降级说明）")
+    assert.ok(msg.includes("No AGENTS.md found"), "诚实标注缺失")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("buildAdvisorUserMessage: 超预算截断——小窗口模型 5% 上限生效且带截断注记", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-guide-"))
+  try {
+    const bigGuide = "# 大指南\n" + "内容".repeat(3000) // ~6000 chars
+    writeFileSync(join(tmp, "AGENTS.md"), bigGuide)
+    // 128K 窗口（gpt-4o spec）：cap = max(8192, 6400) = 8192 → 6000 字符不截断？
+    // 用更小的窗口语义验证保底：直接构造超长指南（> cap）
+    const hugeGuide = "x".repeat(20_000)
+    writeFileSync(join(tmp, "AGENTS.md"), hugeGuide)
+    const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {}, provider: { model: "gpt-4o" } } // 128K → cap 8192
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.mjs"])
+    assert.ok(msg.includes("truncated at 8192 chars"), "超 5% 上限应截断并注明")
+    assert.ok(!msg.includes(hugeGuide), "全文不应注入")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("buildAdvisorUserMessage: 1M 窗口模型 5% = 50K cap——长指南不截断", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-guide-"))
+  try {
+    const guide = "# 项目指南\n" + "设计文档在 docs/design/，需求在 REQUIREMENTS.md。\n".repeat(400) // ~30K chars
+    writeFileSync(join(tmp, "AGENTS.md"), guide)
+    const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {}, provider: { model: "deepseek-v4-pro" } } // 1M → cap 50K
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.mjs"])
+    assert.ok(!msg.includes("truncated"), "30K < 50K cap → 全文注入")
+    assert.ok(msg.includes("需求在 REQUIREMENTS.md"), "尾部内容也在")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+
 // ────────────────────────────────────────
 // extractTableBlock edge cases
 // ────────────────────────────────────────

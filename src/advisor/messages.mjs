@@ -5,8 +5,43 @@
  */
 import { readFileSync } from "node:fs"
 import { resolve, join, relative } from "node:path"
+import { specForModel } from "../config.mjs"
 import { findReviewRepos, collectRepoSnapshots, collectChangedFiles } from "./repos.mjs"
 import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable, extractPriorIssueTable } from "./history.mjs"
+
+/** Project guide (AGENTS.md) injection budget — decision 2026-08-08:
+ *  NO fixed truncation; long-context models (1M+) get up to 5% of their context
+ *  window for the doc map, small windows still get a floor so the map is always
+ *  visible. The map is what tells the reviewer WHERE the requirements docs live
+ *  (requirement-fit is judged against those docs, not the conversation only). */
+const PROJECT_GUIDE_MIN = 8192 // chars — floor for small-window models
+const PROJECT_GUIDE_FRACTION = 0.05 // 5% of the reviewer model's context window
+
+/**
+ * Inject the project guide (AGENTS.md) into the review message. AGENTS.md is the
+ * project's doc map — it defines the structure and where requirements/design
+ * documents live. The reviewer must see it FIRST: requirement-fit is judged
+ * against the documents it points to, with the conversation background as a
+ * supplement. Absent AGENTS.md degrades honestly (no pretending there is a map).
+ */
+function injectProjectGuide(agent, parts) {
+  const path = resolve(agent.cwd, "AGENTS.md")
+  parts.push("## Project Guide (AGENTS.md)")
+  try {
+    const text = readFileSync(path, "utf8")
+    const ctx = specForModel(agent.provider?.model ?? "").context
+    const cap = Math.max(PROJECT_GUIDE_MIN, Math.floor(ctx * PROJECT_GUIDE_FRACTION))
+    const shown = text.length <= cap
+      ? text
+      : text.slice(0, cap) + `\n\n…(truncated at ${cap} chars — read the full file if you need more)`
+    parts.push("This file defines the project's structure and where its requirements/design documents live. Read the documents it points to — the user's requirements live THERE, not only in the conversation background.")
+    parts.push("")
+    parts.push(shown)
+  } catch {
+    parts.push("(No AGENTS.md found at the project root — judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
+  }
+  parts.push("")
+}
 
 /**
  * Build the user message for an advisor review session.
@@ -142,6 +177,11 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     parts.push(docList.map((d) => `- ${d} — Read this file in full`).join("\n"))
     parts.push("")
   }
+
+  // Project guide — the doc map. MUST come before the conversation background:
+  // requirement-fit is judged against the docs AGENTS.md points to; the recent
+  // turns are only a supplement (decision 2026-08-08).
+  injectProjectGuide(agent, parts)
 
   // Conversation background — recent user↔assistant exchanges for intent context
   const background = extractConversationBackground(agent.history)
