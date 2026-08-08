@@ -41,6 +41,9 @@ const KEEP_HEAD = 0 // No dedicated head: earliest messages may be a COMPLETED e
 // capped at 40% of history so small histories don't over-reserve. Window-adaptive
 // replaces the old fixed 10: on a 1M window, 10 messages is too thin for recent work.
 function keepTailSize(provider, historyLen) {
+  // provider is guaranteed at every call site (runAgent always builds one); specForModel
+  // degrades to DEFAULT_SPEC (128K) only if provider/model is somehow absent — acceptable
+  // because the 40% history cap still bounds the tail.
   const ctxWindow = specForModel(provider?.model ?? "").context
   return Math.min(Math.max(10, Math.floor((ctxWindow / 100_000) * 30)), Math.floor(historyLen * 0.4))
 }
@@ -109,7 +112,10 @@ function splitHistory(history, keepTail) {
   }
 
   // skip orphan tool messages at the new tail boundary (tool whose assistant was pulled in above)
-  while (tailStart > headEnd && history[tailStart].role === "tool") {
+  // NOTE: single-assistant assumption — the backwards scan pulls the nearest owner only; in
+  // practice a tail spans at most one assistant→tools cycle (parallel calls share one assistant).
+  // Bounds-guarded so an all-tool tail cannot push tailStart past history.length.
+  while (tailStart < history.length && tailStart > headEnd && history[tailStart].role === "tool") {
     tailStart++
   }
   if (tailStart <= headEnd) return null
@@ -184,7 +190,7 @@ function applyCompression(agent, headEnd, tailStart, note) {
  * @param {object} extras - { systemPrompt?, tools? } — estimated overhead for the pure-estimation
  *   path (no measured baseline); the measured path already includes system+tools in prompt_tokens.
  */
-export async function compressIfNeeded(agent, threshold, callbacks, extras = {}) {
+export async function compressIfNeeded(agent, threshold, callbacks, extras = {}, signal) {
   const history = agent.history
   // Prefer the real baseline: the last response's prompt_tokens is the measured value for the full context (system+tools+history).
   // Subsequent appended messages use estimation as increment; when no measured value exists (first turn / after restore / right after compaction), fall back to pure estimation
@@ -211,15 +217,21 @@ export async function compressIfNeeded(agent, threshold, callbacks, extras = {})
       const toolNote = m.tool_calls ? ` [called tools: ${m.tool_calls.map((t) => t.function.name).join(", ")}]` : ""
       // user messages get a wider cap (8000): cutting off a long user-pasted requirement loses original intent; tool/assistant capped at 2000 is enough
       const cap = m.role === "user" ? 8000 : 2000
-      const content = typeof m.content === "string" ? m.content.slice(0, cap) : ""
-      return `[${m.role}]${toolNote} ${content}`
+      // Multimodal messages (array content): extract the TEXT parts — the image itself can't be
+      // summarized, but any accompanying text (e.g. "看这张图" + image) must not be silently lost
+      let text = ""
+      if (typeof m.content === "string") text = m.content
+      else if (Array.isArray(m.content)) text = m.content.filter((p) => p?.type === "text").map((p) => p.text ?? "").join(" ")
+      return `[${m.role}]${toolNote} ${text.slice(0, cap)}`
     })
     .join("\n")
 
   // The summary is a plain-text task, no reasoning needed — passing thinking to the compaction provider wastes tokens.
   // Silent by design (D11): no onToken/onReasoning — the compaction process must not stream to the frontend.
+  // signal propagates user cancellation (Ctrl+C) to the in-flight summary call.
   const summary = await chat({ ...agent.provider, thinking: null, reasoningEffort: null }, {
     messages: [{ role: "user", content: SUMMARIZE_PROMPT + serialized }],
+    signal,
   })
 
   applyCompression(agent, split.headEnd, split.tailStart, COMPACTION_PREFIX + summary.content)

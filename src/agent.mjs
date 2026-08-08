@@ -149,7 +149,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
     const lastRole = agent.history.at(-1)?.role
     if (lastRole === "user" || lastRole === "tool") {
       try {
-        if (await compressIfNeeded(agent, threshold, callbacks, compactionOverhead)) {
+        if (await compressIfNeeded(agent, threshold, callbacks, compactionOverhead, signal)) {
           agent._compressFailures = 0
           agent._planReminderAtLen = 0 // After compression history shrinks, reset cadence so reminders resume
           recentCallSigs.length = 0 // After compression history is rebuilt, reset stall detection counter
