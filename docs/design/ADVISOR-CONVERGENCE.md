@@ -79,6 +79,33 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 
 **残余边界（接受）**：违规 agent 用 bash 改代码文件 → 不进 `_touchedFiles` → `hasCodeMutations` 检测不到 → 评审漏过。这是"bash 写文件被禁"规则下不存在的场景（规则与机械判定的一致性优于对违规行为的兜底）。
 
+### 4c. 评审失效机制（2026-08-08 概念澄清，用户追问）
+
+**"评审失效"不是独立机制，是 guard 条件的状态转换**。guard 的唯一依据是"是否存在未评审的代码修改"：
+
+```js
+// completion.mjs — 完成时推回判定
+if (agent._mutatedThisRun        // ① 本 run 改过代码
+ && !agent._calledAdvisorThisRun // ② 修改尚未被评审覆盖
+ && hasCodeMutations(agent)      // 内容判定：排除 docs/tmp-* 等非代码
+ && pushbacks < MAX && round < MAX) { 推回 }
+```
+
+- **② = `_calledAdvisorThisRun`**：评审完成置 `true`（agent.mjs advisor 工具调用处理）——表示"当前代码状态已被评审覆盖"；**再次修改代码**（FILE_MUTATORS）置回 `false`——这就是"失效"。没有 ②，`_mutatedThisRun` 永远为 true（评审不消除修改事实）→ guard 无限推回，run 永不完成；没有失效重置，评审后修复的问题无人验证 → 收敛断裂。**失效是收敛循环（评审→修复→再评审→…直到 0 🔴 或 5 轮 cap）的引擎**。
+- **触发路径完整清单**（严格限定代码修改，2026-08-08 用户最终拍板"不要肆意扩大"）：
+
+| 事件 | 评审失效？ | 推回？ |
+|---|---|---|
+| FILE_MUTATORS（edit/write/apply_patch/insert_after/hashline_edit/delete）改代码 | ✅ | ✅（guard 综合判定） |
+| 子代理代码合并（mergeChildMutations） | ✅ | ✅ |
+| bash/git（非写文件副作用） | ❌ | ❌ |
+| 只读工具（read/grep/lsp/glob） | ❌ | ❌ |
+| 写 docs/**、写 tmp-* 临时文件 | 状态位翻转但 `hasCodeMutations` 过滤 | ❌ |
+| verify/task/checklist/question/plan 切换 | ❌ | ❌ |
+| 新 runAgent（新任务） | 重置为未评审（新评审周期） | 按条件判定 |
+
+- **设计理由**：bash 被系统规则禁止写文件（"NEVER use bash to write or modify files"）——合规 agent 的副作用工具不可能改变被评审代码，故不触发评审；违规场景（bash 改文件）与 `hasCodeMutations` 盲区一致，接受（规则与机械判定的一致性优先）。
+
 ### 5. 证据机械校验（host-verified citations）
 
 提示词的证据规则（"引用必须来自本轮 read"）无法被 LLM 自我强制——模型可以声称读过而实际复述 prior 表（三轮误报实证：引用行号为修复前旧状态）。**宿主侧机械校验**作为最后防线：
@@ -119,4 +146,4 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 
 ## 验证
 
-`test/advisor.test.mjs` 覆盖：system prompt 轮次替换、cap 阻断第 6 次调用、design 豁免、design 不递增轮次、follow-up 内容、prior 表提取等；`test/agent.test.mjs` 覆盖 `mergeChildMutations` 合并/去重/标记失效。全套测试 `node --test test\*.test.mjs`。
+`test/advisor.test.mjs` 覆盖：system prompt 轮次替换、cap 阻断第 6 次调用、design 豁免、design 不递增轮次、follow-up 原文注入、确定性 round 判定（`_advisorRound > 0 && _lastAdvisorOutput`）、项目根发现（子项目地图/单项目/降级）；`test/agent.test.mjs` 覆盖 `mergeChildMutations` 合并/去重/标记失效、runAgent 级 guard 推回（bash 后不重触发、未评审代码写必推回）。全套测试 `node --test test\*.test.mjs`。
