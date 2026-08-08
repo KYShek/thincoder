@@ -60,6 +60,15 @@
 - **统一**：双侧保护（CLI 版 head 保护 + 两端版 tail 保护）。
 - 理由：head 保护是 CLI 修过的真实 400 场景（并行工具结果被摘要吞掉）；VS Code 缺失是缺陷不是特性。
 
+### D12 head 保留 —— 2026-08 决策：KEEP_HEAD = 0（无头部）
+
+- 历史：`KEEP_HEAD = 2`（"保留最初意图"）——单任务会话的假设：最早消息 = 当前任务定义。
+- **问题（用户反馈实证）**：多任务连续会话（同一会话连续做任务 A→B→C）中，最早消息是**已完成的旧任务**——压缩后原文保留在上下文中，模型注意力被旧事锚住（"AI 忽然转向以前的旧事"）。
+- **决策**：`KEEP_HEAD = 0`——最早的 2 条并入中间段一起进摘要；摘要提示词增加"区分已完成 vs 进行中：已完成任务一行概述，细节预算花在未完成/当前任务"。压缩后上下文 = 摘要注记（第一条）+ 占位 + tail——锚点天然是当前任务（最近的 user 消息）。
+- 影响：任何 ≥2 条的历史都能切出中间段（keepTail ≥ 0）——`shrinkOversized` 兜底只剩"单条巨型消息"场景（历史 1 条）。
+- 协议安全：head 为空后 tool_calls 配对保护只剩 tail 侧（D5 后半）；中段消息序列化为文本（`[assistant][ called tools: …]`），不保留原始配对结构——无 orphan 风险。
+- 人读线不变（双线历史 D10）：任何压缩丢失的原文仍可从 `_fullHistory` 恢复。
+
 ### D6 降级链 —— 三级（LLM → 截断 → 单消息截断）
 
 - 现状：CLI 三级（LLM 摘要 → 连续 3 次失败 → 确定性截断 `compressFallback`；无 middle 可切 → `shrinkOversized` 单消息截断）；VS Code LLM 失败 → 同步启发式摘要。
@@ -147,7 +156,7 @@
 统一后，两端在相同输入下应满足：
 
 1. 仅当 history 末尾为 user/tool 且完整 prompt 估算 ≥ threshold 时触发压缩。
-2. 压缩结果 = head + 摘要 note + "Understood" 占位 + tail（tail 按 D4 自适应），任意切割不产生孤儿 tool_calls/tool 消息。
+2. 压缩结果 = 摘要 note + "Understood" 占位 + tail（tail 按 D4 自适应；**KEEP_HEAD=0，无头部**——最早消息进摘要），任意切割不产生孤儿 tool_calls/tool 消息。
 3. 摘要失败：连续 3 次（每次 runAgent 重置计数）后确定性截断；历史过短时单消息截断。
 4. 压缩后：task（去重、pending 全量 + done≤3）、plan、AUTO/permission 回注齐全；实测基线失效。
 5. 人读线全程不动；落盘双字段（CLI contextHistory / VS Code contextHistory）。

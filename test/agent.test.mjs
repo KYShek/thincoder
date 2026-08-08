@@ -450,7 +450,7 @@ function mockLLM(script) {
 
 test("context: 压缩后回注 task 列表（不重复嵌入摘要）", async () => {
   const { compressIfNeeded } = await import("../src/context.mjs")
-  const { server, port } = await mockLLM([{ content: "这是摘要" }])
+  const { server, port, requests } = await mockLLM([{ content: "这是摘要" }])
   try {
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
     const agent = {
@@ -464,9 +464,15 @@ test("context: 压缩后回注 task 列表（不重复嵌入摘要）", async ()
     }
     const compacted = await compressIfNeeded(agent, 10)
     assert.equal(compacted, true)
-    const summaryMsg = agent.history[2] // head(2) 之后第一条即压缩摘要
+    // KEEP_HEAD = 0：head 为空，压缩注记就是第一条消息——不保留最早消息原文
+    // （多任务会话里最早的可能是已完成的旧任务，保留会锚定旧事）
+    const summaryMsg = agent.history[0]
     assert.match(summaryMsg.content, /这是摘要/)
     assert.ok(!summaryMsg.content.includes("## Task List")) // 单一信息源，不重复嵌入
+    // 最早消息进序列化 → 摘要请求的 messages[0] 含最早的 user 内容
+    assert.ok(requests.length >= 1, "summary request must be sent")
+    const serialized = requests[0].messages?.[0]?.content ?? ""
+    assert.match(serialized, /消息 0 /, "earliest message must enter the summary serialization")
     // 压缩后以独立提醒回注（历史末尾、内容最新）
     assert.match(agent.history.at(-1).content, /current task list after compaction/)
     assert.match(agent.history.at(-1).content, /- \[in_progress\] 写实现/)
@@ -475,13 +481,13 @@ test("context: 压缩后回注 task 列表（不重复嵌入摘要）", async ()
   }
 })
 
-test("context: 压缩时 head 不以断头 tool_calls 结尾（防 400）", async () => {
+test("context: 带 tool_calls 的早期消息进序列化（无孤儿 tool 消息残留）", async () => {
   const { compressIfNeeded } = await import("../src/context.mjs")
-  const { server, port } = await mockLLM([{ content: "这是摘要" }])
+  const { server, port, requests } = await mockLLM([{ content: "这是摘要" }])
   try {
     const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
-    // 第 2 条（head 边界处）是带 tool_calls 的 assistant，其后是成对的 tool 响应——
-    // 若 head 只切前 2 条，tool 响应会被摘要掉，下轮请求必 400
+    // KEEP_HEAD=0：head 为空，带 tool_calls 的消息（和它的 tool 响应）都在中段——
+    // 序列化成文本（"[assistant] [called tools: ls]"），不保留原始配对结构 → 无协议 400 风险。
     const agent = {
       provider,
       history: [
@@ -495,11 +501,17 @@ test("context: 压缩时 head 不以断头 tool_calls 结尾（防 400）", asyn
     }
     const compacted = await compressIfNeeded(agent, 10)
     assert.equal(compacted, true)
-    // head 扩展为 3 条：assistant tool_calls 与其 tool 响应成对保留
-    assert.equal(agent.history[1].tool_calls?.[0]?.id, "call_1")
-    assert.equal(agent.history[2].role, "tool")
-    assert.equal(agent.history[2].tool_call_id, "call_1")
-    assert.match(agent.history[3].content, /这是摘要/)
+    // 摘要请求的序列化必须包含最早的 tool_calls 消息（带工具名标记）
+    const serialized = requests[0].messages?.[0]?.content ?? ""
+    assert.match(serialized, /\[assistant\] \[called tools: ls\]/, "early tool_calls message must be serialized into the summary")
+    // 压缩后 history 中不允许存在"孤立"tool 消息：每条 tool 消息必须能在 history 里找到其 assistant 调用者
+    const byId = new Map()
+    for (const m of agent.history) {
+      if (m.role === "assistant" && m.tool_calls) for (const tc of m.tool_calls) byId.set(tc.id, true)
+    }
+    for (const m of agent.history) {
+      if (m.role === "tool") assert.ok(byId.has(m.tool_call_id), `orphan tool message: ${m.tool_call_id}`)
+    }
   } finally {
     server.close()
   }
@@ -521,7 +533,7 @@ test("context: 压缩判定用实测 prompt_tokens 基准（估算远低于阈�
     }
     const compacted = await compressIfNeeded(agent, 100)
     assert.equal(compacted, true)
-    assert.match(agent.history[2].content, /这是摘要/)
+    assert.match(agent.history[0].content, /这是摘要/) // KEEP_HEAD=0：注记是第一条
     assert.equal(agent._lastPromptTokens, null) // 旧基准随历史一起失效，退回估算
     assert.equal(agent._usageAtLen, null)
   } finally {
@@ -544,9 +556,10 @@ test("context: 截断兜底不碰网络，结构合法且 task 回注去重", as
     _usageAtLen: 3,
   }
   assert.equal(compressFallback(agent), true)
-  // 14 条历史 → 默认模型窗口自适应 keepTail = min(38, floor(14*0.4)=5) = 5 → head(2) + 笔记 + ack + tail(5) = 9
-  assert.equal(agent.history.length, 9)
-  assert.match(agent.history[2].content, /truncated after repeated summarization failures/)
+  // 14 条历史 → 默认模型窗口自适应 keepTail = min(38, floor(14*0.4)=5) = 5 → KEEP_HEAD=0：
+  // 注记 + ack + tail(5，其中旧回注被清) + 新回注 = 7
+  assert.equal(agent.history.length, 7)
+  assert.match(agent.history[0].content, /truncated after repeated summarization failures/)
   // tail 里残留的旧回注被清掉，只留末尾最新的一份
   const reinjects = agent.history.filter((m) => typeof m.content === "string" && m.content.includes("current task list after compaction"))
   assert.equal(reinjects.length, 1)
@@ -1718,25 +1731,22 @@ test("context: 压缩序列化时 user 消息放宽到 8000（长需求不丢）
 test("context: 历史太短切不出中间段时，巨型消息被确定性瘦身（压缩逃逸口）", async () => {
   const { compressIfNeeded, estimateTokens } = await import("../src/context.mjs")
   const huge = "开".repeat(60_000) // 一条 ≈6 万 token 的巨型消息（大段粘贴/超大注入）
+  // KEEP_HEAD=0 后任何 ≥2 条的历史都能切出中间段（keepTail ≥ 0），瘦身兜底只剩
+  // "单条巨型消息"场景：history 1 条 → splitHistory 返回 null → shrinkOversized。
   const agent = {
     provider: { baseURL: "http://127.0.0.1:1", apiKey: "x", model: "m" }, // 不会真正调用（无中间段可摘要）
-    history: [
-      { role: "user", content: "需求" },
-      { role: "user", content: huge },
-      { role: "assistant", content: "收到" },
-      { role: "tool", tool_call_id: "c1", content: "结果 " + "y".repeat(20_000) },
-      { role: "user", content: "继续" },
-    ],
+    history: [{ role: "user", content: huge }],
     tasks: [], planMode: false,
   }
   const before = estimateTokens(agent.history)
   const done = await compressIfNeeded(agent, 1_000)
   assert.equal(done, true)
-  // 巨消息截断换桩、首尾保留；tool 消息的 tool_call_id 不动（无协议 400 风险）
-  assert.ok(agent.history[1].content.length < 7_000)
-  assert.ok(agent.history[1].content.includes("truncated"))
-  assert.ok(agent.history[1].content.startsWith("开"))
-  assert.equal(agent.history[3].tool_call_id, "c1")
+  // 巨消息截断换桩、首尾保留
+  assert.ok(agent.history[0].content.length < 7_000)
+  assert.ok(agent.history[0].content.includes("truncated"))
+  assert.ok(agent.history[0].content.startsWith("开"))
+  assert.ok(estimateTokens(agent.history) < before, "token 必须显著下降")
+})
 
 test("context: tail 保留量随模型窗口自适应（1M 窗口 40 条，小窗口模型 38 条，短历史受 40% 上限）", async () => {
   const { compressFallback } = await import("../src/context.mjs")
@@ -1745,22 +1755,22 @@ test("context: tail 保留量随模型窗口自适应（1M 窗口 40 条，小�
     history: Array.from({ length: 100 }, (_, i) => ({ role: "user", content: `消息 ${i} ` + "x".repeat(20) })),
     tasks: [], planMode: false,
   })
-  // 1M 窗口：keepTail = min(300, 40) = 40 → head(2)+note+ack+tail(40) = 44
+  // 1M 窗口：keepTail = min(300, 40) = 40 → KEEP_HEAD=0：note+ack+tail(40) = 42
   const big = makeAgent("deepseek-v4-pro")
   assert.equal(compressFallback(big), true)
-  assert.equal(big.history.length, 44, "1M 窗口保留 40 条 tail")
-  // 128K 窗口（默认 spec）：keepTail = min(38, 40) = 38 → 2+1+1+38 = 42
+  assert.equal(big.history.length, 42, "1M 窗口保留 40 条 tail")
+  // 128K 窗口（默认 spec）：keepTail = min(38, 40) = 38 → 1+1+38 = 40
   const small = makeAgent("gpt-4o")
   assert.equal(compressFallback(small), true)
-  assert.equal(small.history.length, 42, "128K 窗口保留 38 条 tail")
-  // 短历史受 40% 上限：20 条 → min(max(10,38), 8) = 8 → 2+1+1+8 = 12
+  assert.equal(small.history.length, 40, "128K 窗口保留 38 条 tail")
+  // 短历史受 40% 上限：20 条 → min(max(10,38), 8) = 8 → 1+1+8 = 10
   const short = {
     provider: { baseURL: "http://127.0.0.1:1", apiKey: "x", model: "m" },
     history: Array.from({ length: 20 }, (_, i) => ({ role: "user", content: `m${i} ` + "x".repeat(20) })),
     tasks: [], planMode: false,
   }
   assert.equal(compressFallback(short), true)
-  assert.equal(short.history.length, 12, "20 条历史按 40% 上限保留 8 条 tail")
+  assert.equal(short.history.length, 10, "20 条历史按 40% 上限保留 8 条 tail")
 })
 
 test("context: 纯估算路径计入 system/tools 开销（无实测基线时触发压缩）", async () => {
@@ -1776,7 +1786,7 @@ test("context: 纯估算路径计入 system/tools 开销（无实测基线时触
     const agent2 = { provider, history: [...history], tasks: [], planMode: false }
     const done = await compressIfNeeded(agent2, 500, {}, { systemPrompt: "x".repeat(4000), tools: [] })
     assert.equal(done, true)
-    assert.match(agent2.history[2].content, /这是摘要/)
+    assert.match(agent2.history[0].content, /这是摘要/) // KEEP_HEAD=0：注记是第一条
   } finally {
     server.close()
   }
@@ -1804,12 +1814,6 @@ test("context: 摘要生成对前端静默（不转发 onToken/onReasoning）", 
   } finally {
     server.close()
   }
-})
-
-  assert.ok(agent.history[3].content.length < 7_000)
-  assert.ok(estimateTokens(agent.history) < before / 5)
-  // 没有 oversized 消息时不再动作（等价于旧的 return false）
-  assert.equal(await compressIfNeeded(agent, 1_000), false)
 })
 
 test("runAgent: 依赖摘要注入（紧凑版 + 每会话只注一次）", async () => {

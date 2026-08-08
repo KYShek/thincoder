@@ -2,7 +2,11 @@
  * context.mjs — Context management and compaction
  * When no measured token count is available, use estimation as fallback (ASCII/4 + non-ASCII/1, no tokenizer dependency).
  * When a measured value exists (response usage.prompt_tokens), trust it — estimation underestimates CJK by 3-4x and relying solely on it may never trigger compaction.
- * Compaction strategy: keep earliest 2 + latest N messages, summarize the middle into one via LLM (inspired by kimi-code, simplified).
+ * Compaction strategy: summarize everything before the tail into one LLM note, keep the latest N messages verbatim.
+ * NOTE: no dedicated head is kept (KEEP_HEAD = 0) — in multi-task sessions the earliest messages are
+ * typically a COMPLETED earlier task; preserving them verbatim anchored the model's attention on stale
+ * work after compaction. The earliest messages now go into the summary (which distinguishes completed
+ * vs in-progress work), so the post-compaction context anchors on the current task (recent tail) only.
  */
 
 import { chat } from "./provider/index.mjs"
@@ -30,7 +34,9 @@ export function estimateTokens(messages) {
   return tokens
 }
 
-const KEEP_HEAD = 2 // Keep the earliest user intent — must not lose it
+const KEEP_HEAD = 0 // No dedicated head: earliest messages may be a COMPLETED earlier task in multi-task
+// sessions — keeping them verbatim anchored attention on stale work. Everything before the tail is
+// summarized (the summary itself distinguishes completed vs in-progress work; see SUMMARIZE_PROMPT).
 // Tail size scales with the model context window (~30 messages per 100K tokens),
 // capped at 40% of history so small histories don't over-reserve. Window-adaptive
 // replaces the old fixed 10: on a 1M window, 10 messages is too thin for recent work.
@@ -43,7 +49,9 @@ const SUMMARIZE_PROMPT = `You are a conversation compressor. Summarize the follo
 Requirements:
 - Write in first person, present tense — these are "my" handover notes, continuing my own train of thought
 - Most important: preserve design decisions and their reasons — architecture choices, API contracts, naming conventions, trade-off rationale. These are the anchors the subsequent code must not deviate from
-- Keep: the user's original request, files modified and why, unresolved issues, next steps
+- Distinguish COMPLETED vs IN-PROGRESS work: completed tasks get a ONE-LINE recap each (what was done, key outcome); spend the detail budget on unresolved issues, next steps, and the CURRENT task
+- The user's most recent request defines the current task — anchor on it. Earlier requests are likely already completed and only need the one-line recap; do NOT preserve them at full fidelity
+- Keep: files modified and why, unresolved issues, next steps
 - Drop: pleasantries, repetition, fine-grained tool output details
 - Honestly mark uncertain items: anything not actually verified must say "unverified"; do not present guesses as facts
 - Use bullet-point output; aim for information completeness, not a hard word limit (old 500-char cap is deprecated; in a 1M-context era, err on the long side)
@@ -71,8 +79,8 @@ const FALLBACK_NOTE =
 
 /**
  * Split history into head / middle (to be summarized) / tail; return null if no middle to compress.
- * The head boundary must avoid orphan tool_calls: when an assistant message has tool_calls, all its tool responses must stay in head,
- * otherwise compressing them to plain text violates the protocol (tool_calls must be followed by tool messages).
+ * head is normally empty (KEEP_HEAD = 0 — earliest messages go into the summary); the
+ * tool_calls-extension logic below is defensive for future KEEP_HEAD > 0.
  * The tail boundary must include any assistant whose tool results are in the tail — if the assistant is in the middle,
  * the summary swallows it, leaving orphan tool results → protocol 400.
  */
@@ -127,6 +135,9 @@ export function pushReal(agent, msg) {
 function applyCompression(agent, headEnd, tailStart, note) {
   // _fullHistory already holds every real message (written at the source via pushReal),
   // so compaction only shrinks the machine line — nothing to preserve here.
+  // head is normally empty (KEEP_HEAD = 0) — the summary note becomes the first message,
+  // which is exactly the intent: post-compaction context anchors on the current task, not on
+  // possibly-completed earlier requests.
   const head = agent.history.slice(0, headEnd)
   const tail = agent.history.slice(tailStart)
   agent.history = [

@@ -279,7 +279,7 @@ export function compressFallback(agent)       // 压缩失败时确定性截断�
 export function pushReal(agent, msg)          // 真实消息双写：同时追加 agent.history 与 agent._fullHistory
 ```
 
-压缩策略（学 kimi-code，简化版）：保留 system + 最早 2 条 + 最近 N 条，中间用 LLM 摘要成一条。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文的实测值。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表。原子写（tmp+rename）；每 5 个工具 turn 增量保存。**CLI 与 VS Code 的压缩语义统一规范见 `CONTEXT-COMPACTION.md`（D1–D11：窗口自适应 tail、实测基线、双侧配对保护、三级降级、摘要对前端静默等）——两端实现以该文档为准。**
+压缩策略（学 kimi-code，简化版）：保留最近 N 条（窗口自适应），其余全部用 LLM 摘要成一条——**不保留头部**（KEEP_HEAD=0，2026-08 决策：多任务会话里最早消息是已完成的旧任务，原文保留会锚定旧事；摘要提示词区分已完成/进行中工作）。token 判定**实测优先**：上次响应的 `usage.prompt_tokens` 是完整上下文的实测值。安全点是 user **或 tool** 结尾（splitHistory 保证 tool_calls 配对完整）。摘要 LLM 连续 3 次失败降级为确定性截断（`compressFallback`，丢 middle 不碰网络——丢信息好过任务被 400 打死）。压缩后以独立 system reminder 回注 task 列表。原子写（tmp+rename）；每 5 个工具 turn 增量保存。**CLI 与 VS Code 的压缩语义统一规范见 `CONTEXT-COMPACTION.md`（D1–D12：窗口自适应 tail、实测基线、双侧配对保护、三级降级、摘要对前端静默、KEEP_HEAD=0 等）——两端实现以该文档为准。**
 
 **机读上下文与人读历史分离（双结构）**：`agent.history` 是机读上下文（压缩照常），`agent._fullHistory` 是**永不压缩**的完整记录（人读）。压缩只作用前者；后者只追加。两线在**源头各自独立写入**：真实消息（用户输入、assistant 回复、tool 结果、多模态图像）统一走 `pushReal`——同时追加进 `agent.history` 与 `agent._fullHistory`（后者懒初始化）；机读消息（`[System reminder:`、`[User interrupt:`、压缩 note、task/plan/checkpoint 回注等 transient 注入）直接 push 进 `agent.history`，**不经过** `pushReal`，因此永远不进人读线。这一版取代了旧的事后差量同步（`syncFullHistory`/`_syncedLen` 基线）：差量基线需要在 reminder/checkpoint splice 时手工补偿，太脆、易错；源头双写语义直白——两条线各写各的，无需事后对账。checkpoint 引用、压缩 note、task/plan reminder 等机读消息**有意不进** `_fullHistory`。
 
