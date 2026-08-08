@@ -830,8 +830,9 @@ test("runAdvisorReview: design review below cap reaches the tool loop", async ()
 })
 
 test("runAdvisorReview: code changes do NOT hit the doc-only fast path", async () => {
-  const tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
+  let tmp
   try {
+    tmp = mkdtempSync(join(tmpdir(), "advisor-test-"))
     createGitRepo(tmp)
     writeFileSync(join(tmp, "app.js"), "console.log(1)\n")
     execSync("git add -A", { cwd: tmp, stdio: "ignore" })
@@ -851,7 +852,9 @@ test("runAdvisorReview: code changes do NOT hit the doc-only fast path", async (
     assert.equal(session[0].role, "system")
     assert.ok(session[1].content.includes("app.js") || session[1].content.includes("diff"), "code change goes to full review")
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    if (tmp) rmSync(tmp, { recursive: true, force: true })
+  }
+})
 
 test("_renderTimeline: interleaves thinking/tool/final in emission order (persisted-record gap)", async () => {
   const { _renderTimeline } = await import("../src/advisor/run.mjs")
@@ -954,9 +957,6 @@ test("buildAdvisorUserMessage: 工作区与评审目录均无 AGENTS.md → 诚�
     assert.ok(msg.includes("conversation background"), "以对话背景为准")
   } finally {
     rmSync(ws, { recursive: true, force: true })
-  }
-})
-
   }
 })
 

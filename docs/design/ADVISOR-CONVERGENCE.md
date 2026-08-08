@@ -67,6 +67,7 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 **收益**：消除两类字符串解析的脆弱性；注入信息完整（原文含解释——解析版会丢）；轮次语义一致（不再有 prior=null 与 round 计数的混搭）；代码简化。
 **代价**：注入体积略增（原文 vs 表，评审输出通常 <16KB 可接受）；重启后保守全量重评。
 **宿主判定面**：只保留"评审发生"（`_calledAdvisorThisRun`）+ 轮次预算（`_advisorRound`/cap）——评审"通过/不通过"不是宿主控制流输入，是主 Agent 读评审输出自行判断。
+**已知风险（2026-08-08 评审确认）**：`buildAdvisorUserMessage` 的 legacy 收敛路径（直接外部调用方）不应用 `escapeLiteralEscapes`（import 会形成 messages.mjs↔advisor.mjs 顶层循环）——parent 对话引用字面 `\x`/`\u` 时可能触发服务端 400。正常流（`prepareAdvisorMessages` → `buildAdvisorFollowUp`）已转义，无风险；legacy 路径的直接调用方需自行转义。
 
 ### 4b. 评审触发范围收缩：只跟代码修改绑定（2026-08-08 用户决策）
 

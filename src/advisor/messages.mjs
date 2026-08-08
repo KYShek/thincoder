@@ -65,6 +65,7 @@ function findProjectRoot(cwd, scopeFiles) {
  * @param {Object} agent — the parent agent
  * @param {string[]} parts — message parts (mutated)
  * @param {string[]} [scopeFiles] — cwd-relative review-scope paths for project-root discovery
+ * @returns {string|null} the discovered project root (abs), or null when no guide
  */
 function injectProjectGuide(agent, parts, scopeFiles = []) {
   parts.push("## Project Guide (AGENTS.md)")
@@ -74,7 +75,7 @@ function injectProjectGuide(agent, parts, scopeFiles = []) {
   if (!path) {
     parts.push("(No AGENTS.md found — neither at the working directory root nor in any review-scope subdirectory. Judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
     parts.push("")
-    return false // no guide — requirement-fit falls back to the conversation
+    return null // no guide — requirement-fit falls back to the conversation
   }
   try {
     text = readFileSync(path, "utf8")
@@ -85,7 +86,7 @@ function injectProjectGuide(agent, parts, scopeFiles = []) {
     }
     parts.push("(No AGENTS.md found — neither at the working directory root nor in any review-scope subdirectory. Judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
     parts.push("")
-    return false // no guide — requirement-fit falls back to the conversation
+    return null // no guide — requirement-fit falls back to the conversation
   }
   // readFileSync succeeded — compute the budget OUTSIDE the try so a spec
   // lookup failure can never masquerade as "no AGENTS.md".
@@ -99,7 +100,7 @@ function injectProjectGuide(agent, parts, scopeFiles = []) {
   parts.push("")
   parts.push(shown)
   parts.push("")
-  return true // guide injected — requirement-fit criteria apply
+  return root // guide injected — requirement-fit criteria apply (truthy root)
 }
 
 /**
@@ -130,7 +131,7 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   // below — the guide must be injected before that return. Project root is
   // discovered from the review scope (code paths AND design-doc paths, so a
   // documents-only design review still finds the subproject guide).
-  const guideInjected = injectProjectGuide(agent, parts, [...pathList, ...docList])
+  const guideRoot = injectProjectGuide(agent, parts, [...pathList, ...docList])
 
   // Design review: simplified message — focus on the design doc, not code
   if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
@@ -171,10 +172,11 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
       }
     }
 
-    // Engineering mode: inject project methodology
+    // Engineering mode: inject project methodology (resolved from the
+    // DISCOVERED project root — in a monorepo that is the subproject, not cwd)
     if (agent.config?.agent?.engineering) {
       try {
-        const mpath = resolve(agent.cwd, "METHODOLOGY.md")
+        const mpath = resolve(guideRoot ?? agent.cwd, "METHODOLOGY.md")
         const methodology = readFileSync(mpath, "utf8")
         parts.push("## Project Methodology")
         parts.push("Evaluate the design against this methodology:")
@@ -259,7 +261,7 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   const criteria = loadAdvisorMd(agent.cwd)
   parts.push("## Review Criteria")
   parts.push(criteria)
-  if (guideInjected) {
+  if (guideRoot) {
     // Requirement-fit is a first-class dimension when the project guide was
     // found — the criteria file (advisor.md) may not mention it (legacy).
     parts.push("")
@@ -268,9 +270,10 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   parts.push("")
 
   // Engineering mode: inject project methodology so advisor knows the rules
+  // (resolved from the DISCOVERED project root — subproject in a monorepo)
   if (agent.config?.agent?.engineering) {
     try {
-      const mpath = resolve(agent.cwd, "METHODOLOGY.md")
+      const mpath = resolve(guideRoot ?? agent.cwd, "METHODOLOGY.md")
       const methodology = readFileSync(mpath, "utf8")
       parts.push("## Project Methodology (Engineering Mode)")
       parts.push("The project follows this methodology. Evaluate the changes against it:")
@@ -289,7 +292,7 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     const round = (agent._advisorRound || 0) + 1
     parts.push(...buildConvergenceInstructions(round, pathList))
   } else {
-    parts.push("2. " + (guideInjected
+    parts.push("2. " + (guideRoot
       ? "The `## Project Guide (AGENTS.md)` section above maps the project — read the requirements/design documents it points to (they are the primary reference for requirement-fit). Use `read` to load those documents."
       : "No AGENTS.md was found at the project root — rely on the conversation background for the user's requirements. If the requirements are unclear, state so explicitly."))
     parts.push("3. `read` the files in the Review Scope in full — they define exactly what to inspect. Batch independent reads/greps in a single reply instead of one call per round-trip.")
