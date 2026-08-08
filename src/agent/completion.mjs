@@ -4,18 +4,9 @@
  * Checks: pending tasks, verify guard, advisor guard.
  * Returns { action: 'continue' | 'done', content?, guardPushbacks, honestReminderInjected, advisorPushbacks }
  */
-import { isDocFile, isTempFile } from "../advisor/repos.mjs"
+import { hasCodeMutations } from "../advisor/repos.mjs"
 import { pushReal } from "../context.mjs"
 import { MAX_ADVISOR_ROUNDS } from "../advisor/run.mjs"
-
-/** True when this run mutated at least one CODE file. Mirrors agent.mjs:hasCodeMutations.
- *  Temp/scratch files (tmp-* / .tmp / .temp) are excluded — a throwaway diagnostic
- *  script must not push the agent into an advisor review. */
-function hasCodeMutations(agent) {
-  const files = agent._touchedFiles ?? []
-  if (files.length === 0) return agent._mutatedThisRun
-  return files.some((p) => !isTempFile(p) && (/(?:^|[\\/])src[\\/]/.test(p) || !isDocFile(p)))
-}
 
 const MAX_VERIFY_PUSHBACKS = 2
 const MAX_VERIFY_RETRIES = 3

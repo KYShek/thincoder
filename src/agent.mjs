@@ -13,7 +13,7 @@ import { executeToolCalls } from "./agent/dispatch.mjs"
 import { prepareRun } from "./agent/setup.mjs"
 import { injectPostTurn, STALL_WINDOW_SIZE, STALL_THRESHOLD, GOAL_BUDGET_WARN_RATIO } from "./agent/post-turn.mjs"
 import { handleCompletion } from "./agent/completion.mjs"
-import { isDocFile, isTempFile } from "./advisor/repos.mjs"
+import { isDocFile, isTempFile, hasCodeMutations } from "./advisor/repos.mjs"
 import {
   escapeXml, tryCanonicalize, repairHistory, listWorkDir,
   readonlyToolNames, collectGitContext, loadProjectInstructions,
@@ -57,22 +57,11 @@ export const ENG_ON_REMINDER =
   "flow nodes or when the user asks.]"
 
 /**
- * True when this run mutated at least one CODE file. Doc-only changes
- * (docs/, *.md, LICENSE…) must NOT trigger the advisor/verify guards — the
- * design phase edits docs/ and must not be pushed to a code review.
- * Mutations without a known path (tools outside FILE_MUTATORS) are treated as
- * code — cannot tell, so guard conservatively.
- * Product-code semantics match isProductCode: anything under src/ (incl.
- * src/prompts/*.md) is code; anything else that isn't a doc file is code.
- * NOTE: _touchedFiles stores ABSOLUTE paths (join(cwd, p)), so the src/ check
- * matches a path component (works for "src/..." and "D:\...\src\..." alike),
- * not a bare ^src prefix — the literal ^src[\\/] form would be dead code here.
+ * hasCodeMutations — single source of truth lives in advisor/repos.mjs
+ * (shared by agent.mjs and agent/completion.mjs to avoid drift between the
+ * advisor/verify guard classifications). Re-exported here for API compatibility.
  */
-export function hasCodeMutations(agent) {
-  const files = agent._touchedFiles ?? []
-  if (files.length === 0) return agent._mutatedThisRun
-  return files.some((p) => !isTempFile(p) && (/(?:^|[\\/])src[\\/]/.test(p) || !isDocFile(p)))
-}
+export { hasCodeMutations } from "./advisor/repos.mjs"
 
 /** Engineering-mode status injection — one reminder when engineering mode is ON. */
 function injectEngineeringReminder(agent) {

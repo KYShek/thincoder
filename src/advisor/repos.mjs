@@ -103,7 +103,7 @@ const DOC_FILE = /(?:^|[/\\])(?:LICENSE|NOTICE|CHANGELOG|AUTHORS)(?:\.\w+)?$|\.(
  *  scratch scripts (tmp-c1.mjs, tmp-check.mjs…) and .tmp/.temp extensions.
  *  The advisor/verify guards skip these — a throwaway diagnostic script is not
  *  a code change, and writing one must not push the agent into a review loop. */
-const TEMP_FILE = /(?:^|[/\\])tmp-[^/\\]*$|\.(?:tmp|temp)$/i
+const TEMP_FILE = /(?:^|[/\\])tmp-[^/\\]+$|\.(?:tmp|temp)$/i
 
 /** True when a path matches the doc/license pattern by extension or name.
  *  NOTE: this is extension-based only — it does NOT exclude src/ paths.
@@ -119,6 +119,26 @@ export function isDocFile(p) {
  *  advisor/verify guards. */
 export function isTempFile(p) {
   return TEMP_FILE.test(p ?? "")
+}
+
+/**
+ * True when this run mutated at least one CODE file. Shared single source of
+ * truth for the advisor/verify guards (agent.mjs + agent/completion.mjs).
+ * Doc-only changes (docs/, *.md, LICENSE…) must NOT trigger the guards — the
+ * design phase edits docs/ and must not be pushed to a code review. Temp/scratch
+ * files (tmp-*, .tmp, .temp) are excluded too — a throwaway diagnostic script
+ * is not a code change. Mutations without a known path (tools outside
+ * FILE_MUTATORS) are treated as code — cannot tell, so guard conservatively.
+ * Product-code semantics: anything under src/ (incl. src/prompts/*.md) is code;
+ * anything else that isn't a doc or temp file is code.
+ * NOTE: _touchedFiles stores ABSOLUTE paths (join(cwd, p)), so the src/ check
+ * matches a path component (works for "src/..." and "D:\...\src\..." alike),
+ * not a bare ^src prefix — the literal ^src[\\/] form would be dead code here.
+ */
+export function hasCodeMutations({ _touchedFiles, _mutatedThisRun }) {
+  const files = _touchedFiles ?? []
+  if (files.length === 0) return _mutatedThisRun
+  return files.some((p) => !isTempFile(p) && (/(?:^|[\\/])src[\\/]/.test(p) || !isDocFile(p)))
 }
 
 /** True when all changed files across repos are documentation (md/txt/LICENSE etc.).
@@ -139,6 +159,7 @@ export function isDocOnlyChange(repos, cwd) {
     for (const line of status.split("\n")) {
       // porcelain: "XY path" or "XY old -> new" (rename)
       const filePath = line.slice(3).split(" -> ").pop().replace(/^"|"$/g, "")
+      if (isTempFile(filePath)) continue
       if (/^src[\\/]/.test(filePath) || !DOC_FILE.test(filePath)) return false
     }
   }
