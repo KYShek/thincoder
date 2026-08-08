@@ -895,6 +895,27 @@ test("buildAdvisorUserMessage: 多项目工作区——评审范围在子目录�
   }
 })
 
+test("buildAdvisorUserMessage: 混合分隔符绝对路径（正斜杠输入）仍定位子项目地图", () => {
+  const ws = mkdtempSync(join(tmpdir(), "advisor-mixsep-"))
+  try {
+    mkdirSync(join(ws, "proj-a", "src"), { recursive: true })
+    writeFileSync(join(ws, "proj-a", "AGENTS.md"), "# Proj A\n")
+    writeFileSync(join(ws, "AGENTS.md"), "# Workspace root meta\n")
+    const agent = {
+      _touchedFiles: [], cwd: ws, history: [], _advisorRound: 0, config: {},
+      provider: { model: "deepseek-v4-pro" },
+    }
+    // 真实 _touchedFiles 存 join() 产物（反斜杠）；测试输入正斜杠——两种都必须命中子项目
+    const fwd = join(ws, "proj-a", "src", "app.mjs").replaceAll("\\", "/")
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, [fwd])
+    assert.ok(msg.includes("Proj A"), "正斜杠绝对路径命中子项目地图")
+    assert.ok(!msg.includes("Workspace root meta"), "根元地图不遮蔽")
+  } finally {
+    rmSync(ws, { recursive: true, force: true })
+  }
+})
+
+
 test("buildAdvisorUserMessage: cwd 有 AGENTS.md 但评审在子项目 → 子项目地图胜出（工作区级地图不遮蔽）", () => {
   const tmp = mkdtempSync(join(tmpdir(), "advisor-root-"))
   try {

@@ -4,7 +4,19 @@
 
 Zero-dependency AI coding CLI: pure Node.js >= 24 standard library, no build step, ESM (`.mjs`).
 LLMs via OpenAI-compatible protocol, flagship models from DeepSeek / Kimi / GLM / Qwen / MiniMax.
-Design docs in `docs/design/`. Complete pipeline: [`PHILOSOPHY.md`](docs/design/PHILOSOPHY.md) → [`METHODOLOGY.md`](docs/design/METHODOLOGY.md) → prompts.
+
+## Requirements & Design Docs (the doc map)
+
+**需求基线**：`docs/design/REQUIREMENTS.md`（讨论中，随对话更新，定型后拆分为正式需求/设计文档）+ 具体设计文档 + 用户对话。**本项目没有独立于设计文档的需求文件**——评审/开发时以 REQUIREMENTS.md + 相关设计文档 + 对话背景三者为参照。
+
+设计文档在 `docs/design/`。主流程：[`PHILOSOPHY.md`](docs/design/PHILOSOPHY.md)（三观）→ [`METHODOLOGY.md`](docs/design/METHODOLOGY.md)（方法论）→ prompts。其余文档按主题：
+
+- **架构与模块**：`ARCHITECTURE.md`（v1 定稿）/ `ARCHITECTURE-v2.md`（v2 决策收口）/ `AGENT-LOOP.md`（主循环+guard 体系）/ `TOOLS.md`（内置工具）/ `PROVIDER.md`（LLM 调用层）/ `PROXY.md` / `SESSION.md`（存储契约）/ `MEMORY.md`（三层记忆）
+- **评审与工程模式**：`ADVISOR-CONVERGENCE.md`（**评审收敛机制——评审代码前必读**）/ `ENGINEERING-MODE.md` / `ENGINEERING-WORKLOOP.md`
+- **上下文管理**：`CONTEXT-COMPACTION.md`（压缩规范基准）/ `VERIFY-DOCONLY.md` / `PROMPT-DECOUPLING.md`
+- **TUI 与客户端**：`TUI.md` / `TUI-INPUT-BOX.md`（输入框行为契约）/ `TUI-TOOL-OUTPUT.md` / `MCP.md` / `ACP-CLIENT.md`
+- **需求与规划**：`REQUIREMENTS.md` / `FEATURES.md`（按实现梳理）/ `ROADMAP-0.9.0.md` / `EVALUATION.md`
+- **参考分析**：`COMPETITIVE-CLI-2026.md` / `KIMI-CODE-PROMPT-ANALYSIS.md` / `TTSR-ANALYSIS.md`
 
 ## Hard Constraints
 

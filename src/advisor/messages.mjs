@@ -33,7 +33,15 @@ const PROJECT_GUIDE_FRACTION = 0.05 // 5% of the reviewer model's context window
  * @returns {string|null} absolute project root with an AGENTS.md, or null
  */
 function findProjectRoot(cwd, scopeFiles) {
-  const isInside = (dir) => dir === cwd || dir.startsWith(cwd + sep)
+  // Normalize separators before comparing: input paths may use either
+  // convention (join() → "\\" on Windows; tool args / tests → "/"). Mixed
+  // styles made isInside(cwd + sep) miss legitimately nested paths.
+  const norm = (p) => p.replaceAll("\\", "/")
+  const isInside = (dir) => {
+    const d = norm(dir)
+    const c = norm(cwd)
+    return d === c || d.startsWith(c + "/")
+  }
   for (const f of scopeFiles) {
     let dir = dirname(resolve(cwd, f))
     while (isInside(dir) && dir !== dirname(dir)) {
