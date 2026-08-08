@@ -1027,7 +1027,7 @@ test("runAdvisorReview: code changes do NOT hit the doc-only fast path", async (
       _advisorSession: null,
       cwd: tmp,
     }
-    const session = prepareAdvisorMessages(agent)
+    const session = prepareAdvisorMessages(agent, undefined, null, null, ["app.js"])
     assert.equal(session[0].role, "system")
     assert.ok(session[1].content.includes("app.js") || session[1].content.includes("diff"), "code change goes to full review")
   } finally {
@@ -1051,6 +1051,56 @@ test("_renderTimeline: interleaves thinking/tool/final in emission order (persis
   // placeholder strip
   const withPlaceholder = _renderTimeline([{ kind: "think", text: "a\n[thinking…]\nb" }])
   assert.ok(!withPlaceholder.includes("[thinking…]"), "placeholder stripped")
+})
+
+test("buildAdvisorUserMessage: 多项目工作区——评审范围在子目录时注入该子项目的 AGENTS.md", () => {
+  const ws = mkdtempSync(join(tmpdir(), "advisor-ws-"))
+  try {
+    // 工作区根无 AGENTS.md；两个子项目各有自己的
+    mkdirSync(join(ws, "proj-a", "src"), { recursive: true })
+    mkdirSync(join(ws, "proj-b"), { recursive: true })
+    writeFileSync(join(ws, "proj-a", "AGENTS.md"), "# Proj A\n需求在 proj-a/REQUIREMENTS.md。\n")
+    writeFileSync(join(ws, "proj-b", "AGENTS.md"), "# Proj B\n")
+    const agent = {
+      _touchedFiles: [], cwd: ws, history: [], _advisorRound: 0, config: {},
+      provider: { model: "deepseek-v4-pro" },
+    }
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["proj-a/src/app.mjs"])
+    assert.ok(msg.includes("Proj A"), "应注入 proj-a 的 AGENTS.md（评审文件所在子项目）")
+    assert.ok(!msg.includes("Proj B"), "不应注入无关子项目的 AGENTS.md")
+    assert.ok(msg.includes("proj-a/AGENTS.md"), "标注项目根路径")
+    assert.ok(msg.includes("proj-a/REQUIREMENTS.md"), "子项目需求文档指引在")
+  } finally {
+    rmSync(ws, { recursive: true, force: true })
+  }
+})
+
+test("buildAdvisorUserMessage: cwd 自身有 AGENTS.md 时仍是项目根（单项目优先）", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-root-"))
+  try {
+    mkdirSync(join(tmp, "sub"), { recursive: true })
+    writeFileSync(join(tmp, "AGENTS.md"), "# Root guide\n根需求。\n")
+    writeFileSync(join(tmp, "sub", "AGENTS.md"), "# Sub guide\n")
+    const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {}, provider: { model: "m" } }
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["sub/file.mjs"])
+    assert.ok(msg.includes("Root guide"), "cwd 有 AGENTS.md → cwd 是项目根，不用子目录的")
+    assert.ok(!msg.includes("Sub guide"), "子目录 AGENTS.md 不覆盖")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("buildAdvisorUserMessage: 工作区与评审目录均无 AGENTS.md → 诚实降级", () => {
+  const ws = mkdtempSync(join(tmpdir(), "advisor-noguide-"))
+  try {
+    mkdirSync(join(ws, "src"), { recursive: true })
+    const agent = { _touchedFiles: [], cwd: ws, history: [], _advisorRound: 0, config: {}, provider: { model: "m" } }
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.mjs"])
+    assert.ok(msg.includes("No AGENTS.md found"), "无地图时诚实标注")
+    assert.ok(msg.includes("conversation background"), "以对话背景为准")
+  } finally {
+    rmSync(ws, { recursive: true, force: true })
+  }
 })
 
   }

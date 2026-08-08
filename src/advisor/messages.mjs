@@ -3,8 +3,8 @@
  * Split out of advisor.mjs to keep it under the 300-line advisory threshold
  * (.thincoder/advisor.md). System prompts live in advisor.mjs / prompts/.
  */
-import { readFileSync } from "node:fs"
-import { resolve, join, relative } from "node:path"
+import { readFileSync, existsSync } from "node:fs"
+import { resolve, join, relative, dirname, sep } from "node:path"
 import { specForModel } from "../config.mjs"
 import { findReviewRepos, collectRepoSnapshots, collectChangedFiles } from "./repos.mjs"
 import { loadAdvisorMd, extractConversationBackground, extractAgentResponseTable, extractPriorIssueTable } from "./history.mjs"
@@ -18,20 +18,51 @@ const PROJECT_GUIDE_MIN = 8192 // chars — floor for small-window models
 const PROJECT_GUIDE_FRACTION = 0.05 // 5% of the reviewer model's context window
 
 /**
+ * Discover the project root for the review — user decision 2026-08-08:
+ * the project root is a SUBDIRECTORY of the working directory, never an
+ * ancestor above it. Priority:
+ *   1. cwd itself has AGENTS.md → cwd IS the project root (single-project).
+ *   2. Otherwise walk UP from the first review-scope file's directory,
+ *      bounded by cwd — the nearest AGENTS.md inside the workspace wins
+ *      (monorepo / multi-project workspace: the reviewed files belong to a
+ *      subproject, and that subproject's AGENTS.md is the right doc map).
+ *   3. Nothing found → cwd (honest degradation at the injection site).
+ * @param {string} cwd — the agent's working directory (workspace root)
+ * @param {string[]} scopeFiles — cwd-relative review-scope paths (may be empty)
+ * @returns {string|null} absolute project root with an AGENTS.md, or null
+ */
+function findProjectRoot(cwd, scopeFiles) {
+  if (existsSync(join(cwd, "AGENTS.md"))) return cwd
+  const isInside = (dir) => dir === cwd || dir.startsWith(cwd + sep)
+  for (const f of scopeFiles) {
+    let dir = dirname(resolve(cwd, f))
+    while (isInside(dir) && dir !== dirname(dir)) {
+      if (existsSync(join(dir, "AGENTS.md"))) return dir
+      dir = dirname(dir)
+    }
+  }
+  return null
+}
+
+/**
  * Inject the project guide (AGENTS.md) into the review message. AGENTS.md is the
  * project's doc map — it defines the structure and where requirements/design
  * documents live. The reviewer must see it FIRST: requirement-fit is judged
  * against the documents it points to, with the conversation background as a
  * supplement. Absent AGENTS.md degrades honestly (no pretending there is a map).
+ * @param {Object} agent — the parent agent
+ * @param {string[]} parts — message parts (mutated)
+ * @param {string[]} [scopeFiles] — cwd-relative review-scope paths for project-root discovery
  */
-function injectProjectGuide(agent, parts) {
-  const path = resolve(agent.cwd, "AGENTS.md")
+function injectProjectGuide(agent, parts, scopeFiles = []) {
   parts.push("## Project Guide (AGENTS.md)")
+  const root = findProjectRoot(agent.cwd, scopeFiles)
+  const path = root ? join(root, "AGENTS.md") : null
   let text
   try {
     text = readFileSync(path, "utf8")
   } catch {
-    parts.push("(No AGENTS.md found at the project root — judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
+    parts.push("(No AGENTS.md found — neither at the working directory root nor in any review-scope subdirectory. Judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
     parts.push("")
     return false // no guide — requirement-fit falls back to the conversation
   }
@@ -42,6 +73,7 @@ function injectProjectGuide(agent, parts) {
   const shown = text.length <= cap
     ? text
     : text.slice(0, cap) + `\n\n…(truncated at ${cap} chars — read the full file if you need more)`
+  parts.push(`<!-- Project root: ${relative(agent.cwd, path).split(sep).join("/")} (inferred from the review scope under ${agent.cwd}) -->`)
   parts.push("This file defines the project's structure and where its requirements/design documents live. Read the documents it points to — the user's requirements live THERE, not only in the conversation background.")
   parts.push("")
   parts.push(shown)
@@ -71,8 +103,9 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   // Project guide FIRST in EVERY review path (code AND design round 0): the map
   // to the requirements docs is needed for design reviews too (design must fit
   // the requirements, not just the methodology). Design round 0 early-returns
-  // below — the guide must be injected before that return.
-  const guideInjected = injectProjectGuide(agent, parts)
+  // below — the guide must be injected before that return. Project root is
+  // discovered from the review scope (subdirectory of cwd; see findProjectRoot).
+  const guideInjected = injectProjectGuide(agent, parts, pathList)
 
   // Design review: simplified message — focus on the design doc, not code
   if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
