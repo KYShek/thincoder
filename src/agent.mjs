@@ -13,7 +13,6 @@ import { executeToolCalls } from "./agent/dispatch.mjs"
 import { prepareRun } from "./agent/setup.mjs"
 import { injectPostTurn, STALL_WINDOW_SIZE, STALL_THRESHOLD, GOAL_BUDGET_WARN_RATIO } from "./agent/post-turn.mjs"
 import { handleCompletion } from "./agent/completion.mjs"
-import { isDocFile, isTempFile, hasCodeMutations } from "./advisor/repos.mjs"
 import {
   escapeXml, tryCanonicalize, repairHistory, listWorkDir,
   readonlyToolNames, collectGitContext, loadProjectInstructions,
@@ -56,11 +55,7 @@ export const ENG_ON_REMINDER =
   "subagents only. Advisor calls are NOT per-turn-mandatory — call only at " +
   "flow nodes or when the user asks.]"
 
-/**
- * hasCodeMutations — single source of truth lives in advisor/repos.mjs
- * (shared by agent.mjs and agent/completion.mjs to avoid drift between the
- * advisor/verify guard classifications). Re-exported here for API compatibility.
- */
+// Re-exported for API compatibility (single source of truth: advisor/repos.mjs)
 export { hasCodeMutations } from "./advisor/repos.mjs"
 
 /** Engineering-mode status injection — one reminder when engineering mode is ON. */

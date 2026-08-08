@@ -102,7 +102,10 @@ const DOC_FILE = /(?:^|[/\\])(?:LICENSE|NOTICE|CHANGELOG|AUTHORS)(?:\.\w+)?$|\.(
 /** Temporary/scratch files that must NOT count as code mutations: tmp-* named
  *  scratch scripts (tmp-c1.mjs, tmp-check.mjs…) and .tmp/.temp extensions.
  *  The advisor/verify guards skip these — a throwaway diagnostic script is not
- *  a code change, and writing one must not push the agent into a review loop. */
+ *  a code change, and writing one must not push the agent into a review loop.
+ *  NOTE: matches the tmp-* basename at ANY directory depth, not just root —
+ *  intentional: _touchedFiles stores absolute paths, so the pattern must work
+ *  for "D:/proj/tmp-check.mjs" as well as a bare "tmp-check.mjs". */
 const TEMP_FILE = /(?:^|[/\\])tmp-[^/\\]+$|\.(?:tmp|temp)$/i
 
 /** True when a path matches the doc/license pattern by extension or name.
@@ -138,7 +141,9 @@ export function isTempFile(p) {
 export function hasCodeMutations({ _touchedFiles, _mutatedThisRun }) {
   const files = _touchedFiles ?? []
   if (files.length === 0) return _mutatedThisRun
-  return files.some((p) => !isTempFile(p) && (/(?:^|[\\/])src[\\/]/.test(p) || !isDocFile(p)))
+  // src/ is unconditional — anything under src/ is code regardless of its name
+  // (incl. src/tmp-*.mjs). Temp/doc exclusions apply only outside src/.
+  return files.some((p) => /(?:^|[\\/])src[\\/]/.test(p) || (!isTempFile(p) && !isDocFile(p)))
 }
 
 /** True when all changed files across repos are documentation (md/txt/LICENSE etc.).
@@ -159,8 +164,9 @@ export function isDocOnlyChange(repos, cwd) {
     for (const line of status.split("\n")) {
       // porcelain: "XY path" or "XY old -> new" (rename)
       const filePath = line.slice(3).split(" -> ").pop().replace(/^"|"$/g, "")
-      if (isTempFile(filePath)) continue
+      // src/ is unconditional product code (even src/tmp-*.mjs) — check before the temp skip
       if (/^src[\\/]/.test(filePath) || !DOC_FILE.test(filePath)) return false
+      if (isTempFile(filePath)) continue
     }
   }
   return sawChanges

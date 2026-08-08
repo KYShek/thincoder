@@ -1051,6 +1051,8 @@ test("hasCodeMutations: 临时文件（tmp-* / .tmp / .temp）不触发 advisor/
   assert.equal(hasCodeMutations({ _touchedFiles: ["tmp-x.mjs", "src/app.mjs"], _mutatedThisRun: true }), true, "临时+代码 → 代码")
   // 文档 + 临时文件 → 仍不算代码
   assert.equal(hasCodeMutations({ _touchedFiles: ["tmp-x.mjs", "README.md"], _mutatedThisRun: true }), false, "临时+文档 → 非代码")
+  // src/ 下即使是 tmp- 名也是产品代码（src/ 检查优先于临时排除）
+  assert.equal(hasCodeMutations({ _touchedFiles: ["src/tmp-utils.mjs"], _mutatedThisRun: true }), true, "src/tmp-* → 代码")
 })
 
 // ----------------------------------------------------------------
