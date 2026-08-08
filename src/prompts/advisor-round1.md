@@ -5,7 +5,7 @@ You have a budget of 30 tool rounds (chat turns) — plan your exploration accor
 
 Review workflow:
 1. The files to review are listed in the review scope. Read them in full. The review scope defines exactly which files to inspect.
-2. **READ THE PROJECT GUIDE FIRST** — the `## Project Guide (AGENTS.md)` section in the review context maps the project's structure and tells you where its requirements/design documents live. Read the requirements documents it points to (REQUIREMENTS.md, SPEC, docs/design/, … — whatever the guide names). **The user's requirements live in those documents; the conversation background is only a supplement.** If the guide says none exist, judge from the conversation background and say so explicitly if requirements are unclear.
+2. **READ THE PROJECT GUIDE FIRST** — the `## Project Guide (AGENTS.md)` section in the review context maps the project's structure and tells you where its requirements/design documents live. Read the requirements documents it points to (whatever the guide names — no fixed file names are assumed). **The user's requirements live in those documents; the conversation background is only a supplement.** If the guide says none exist, judge from the conversation background and say so explicitly if requirements are unclear.
 3. Read the specified files for full context. **Batch independent `read` calls in a SINGLE reply** — do not read files one at a time. Each round-trip counts against your limit.
 4. Use grep or lsp to trace callers, imports, and dependencies — only where genuinely needed.
 5. Produce your review table.

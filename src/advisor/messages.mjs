@@ -37,10 +37,12 @@ function injectProjectGuide(agent, parts) {
     parts.push("This file defines the project's structure and where its requirements/design documents live. Read the documents it points to — the user's requirements live THERE, not only in the conversation background.")
     parts.push("")
     parts.push(shown)
+    return true // guide injected — requirement-fit criteria apply
   } catch {
     parts.push("(No AGENTS.md found at the project root — judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
   }
   parts.push("")
+  return false // no guide — requirement-fit falls back to the conversation
 }
 
 /**
@@ -61,6 +63,12 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   const parts = []
   const docList = Array.isArray(documents) ? documents.filter((d) => typeof d === "string" && d.trim()) : []
   const pathList = Array.isArray(paths) ? [...new Set(paths.filter((p) => typeof p === "string" && p.trim()))] : []
+
+  // Project guide FIRST in EVERY review path (code AND design round 0): the map
+  // to the requirements docs is needed for design reviews too (design must fit
+  // the requirements, not just the methodology). Design round 0 early-returns
+  // below — the guide must be injected before that return.
+  const guideInjected = injectProjectGuide(agent, parts)
 
   // Design review: simplified message — focus on the design doc, not code
   if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
@@ -180,8 +188,8 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
 
   // Project guide — the doc map. MUST come before the conversation background:
   // requirement-fit is judged against the docs AGENTS.md points to; the recent
-  // turns are only a supplement (decision 2026-08-08).
-  injectProjectGuide(agent, parts)
+  // turns are only a supplement (decision 2026-08-08). Injected at the top of
+  // this function so EVERY review path (code + design round 0) gets it.
 
   // Conversation background — recent user↔assistant exchanges for intent context
   const background = extractConversationBackground(agent.history)
@@ -195,6 +203,12 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   const criteria = loadAdvisorMd(agent.cwd)
   parts.push("## Review Criteria")
   parts.push(criteria)
+  if (guideInjected) {
+    // Requirement-fit is a first-class dimension when the project guide was
+    // found — the criteria file (advisor.md) may not mention it (legacy).
+    parts.push("")
+    parts.push("Additional criterion: **requirement fit** — does the implementation match what the requirements documents (referenced by the Project Guide above) actually ask for?")
+  }
   parts.push("")
 
   // Engineering mode: inject project methodology so advisor knows the rules
@@ -209,7 +223,9 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     } catch { /* file doesn't exist — skip */ }
   }
 
-  // Instructions — round-aware: re-reviews skip convention discovery entirely
+  // Instructions — round-aware: re-reviews skip convention discovery entirely.
+  // These are SUPPLEMENTARY reminders to the system prompt's numbered workflow —
+  // deliberately not renumbered as a competing sequence.
   const isReReview = p && (agent._advisorRound || 0) > 0
   parts.push("## Instructions")
   parts.push("1. IMPORTANT: the review scope lists the files under review — always verify current file state with `read` before judging. Never decide based on earlier snapshots alone.")
@@ -217,7 +233,7 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     const round = (agent._advisorRound || 0) + 1
     parts.push(...buildConvergenceInstructions(round, pathList))
   } else {
-    parts.push("2. Read `AGENTS.md` / design docs only if they exist (check once; do not re-probe with multiple patterns).")
+    parts.push("2. The `## Project Guide (AGENTS.md)` section above maps the project — read the requirements/design documents it points to (they are the primary reference for requirement-fit). Use `read` to load those documents.")
     parts.push("3. `read` the files in the Review Scope in full — they define exactly what to inspect. Batch independent reads/greps in a single reply instead of one call per round-trip.")
     parts.push("4. Use `grep` or `lsp` to trace callers, imports, and dependencies — only where the diff leaves genuine doubt.")
     parts.push("5. Produce your review table based on the review criteria above. Do not re-read content you already have.")

@@ -483,7 +483,7 @@ test("buildAdvisorUserMessage: round 2 includes convergence data (fix claims, no
     _advisorRound: 1,
   }
   const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.js"])
-  assert.ok(msg.startsWith("## Round 2 — Verify Prior Table + Flag New Issues"))
+  assert.ok(msg.includes("## Round 2 — Verify Prior Table + Flag New Issues"), "convergence header present (project guide now precedes it)")
   assert.ok(msg.includes("## Prior Issue Table"), "prior table IS injected — the only complete verification list")
   assert.ok(msg.includes(issueTable), "issue rows restated for verification")
   assert.ok(msg.includes("## Agent Response"), "fix claims present as a reference")
@@ -502,7 +502,7 @@ test("buildAdvisorUserMessage: round 3+ uses strict verification header", () => 
     _advisorRound: 2,
   }
   const msg = buildAdvisorUserMessage(agent)
-  assert.ok(msg.startsWith("## Round 3 — Strict Verification"))
+  assert.ok(msg.includes("## Round 3 — Strict Verification"), "strict verification header present (project guide now precedes it)")
 })
 
 test("buildAdvisorUserMessage: _advisorRound===0 skips convergence data", () => {
