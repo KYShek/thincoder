@@ -1041,6 +1041,18 @@ test("hasCodeMutations: src/ 下一切（含 src/prompts/*.md）是产品代码�
   assert.equal(hasCodeMutations({ _touchedFiles: [], _mutatedThisRun: false }), false)
 })
 
+test("hasCodeMutations: 临时文件（tmp-* / .tmp / .temp）不触发 advisor/verify guard", async () => {
+  const { hasCodeMutations } = await import("../src/agent.mjs")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["tmp-c1.mjs"], _mutatedThisRun: true }), false, "tmp-*.mjs → 非代码")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["D:/proj/tmp-check.mjs"], _mutatedThisRun: true }), false, "绝对路径 tmp-* → 非代码")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["scratch.tmp"], _mutatedThisRun: true }), false, ".tmp 扩展 → 非代码")
+  assert.equal(hasCodeMutations({ _touchedFiles: ["data.temp"], _mutatedThisRun: true }), false, ".temp 扩展 → 非代码")
+  // 混合：临时文件 + 真实代码 → 仍算代码
+  assert.equal(hasCodeMutations({ _touchedFiles: ["tmp-x.mjs", "src/app.mjs"], _mutatedThisRun: true }), true, "临时+代码 → 代码")
+  // 文档 + 临时文件 → 仍不算代码
+  assert.equal(hasCodeMutations({ _touchedFiles: ["tmp-x.mjs", "README.md"], _mutatedThisRun: true }), false, "临时+文档 → 非代码")
+})
+
 // ----------------------------------------------------------------
 
 test("runAgent: thinking 模式下 reasoning_content 跨请求回传（DeepSeek 要求）", async () => {

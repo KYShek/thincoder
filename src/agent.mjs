@@ -13,7 +13,7 @@ import { executeToolCalls } from "./agent/dispatch.mjs"
 import { prepareRun } from "./agent/setup.mjs"
 import { injectPostTurn, STALL_WINDOW_SIZE, STALL_THRESHOLD, GOAL_BUDGET_WARN_RATIO } from "./agent/post-turn.mjs"
 import { handleCompletion } from "./agent/completion.mjs"
-import { isDocFile } from "./advisor/repos.mjs"
+import { isDocFile, isTempFile } from "./advisor/repos.mjs"
 import {
   escapeXml, tryCanonicalize, repairHistory, listWorkDir,
   readonlyToolNames, collectGitContext, loadProjectInstructions,
@@ -71,7 +71,7 @@ export const ENG_ON_REMINDER =
 export function hasCodeMutations(agent) {
   const files = agent._touchedFiles ?? []
   if (files.length === 0) return agent._mutatedThisRun
-  return files.some((p) => /(?:^|[\\/])src[\\/]/.test(p) || !isDocFile(p))
+  return files.some((p) => !isTempFile(p) && (/(?:^|[\\/])src[\\/]/.test(p) || !isDocFile(p)))
 }
 
 /** Engineering-mode status injection — one reminder when engineering mode is ON. */

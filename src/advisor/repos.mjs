@@ -99,6 +99,12 @@ export function collectChangedFiles(repos, cwd) {
 
 const DOC_FILE = /(?:^|[/\\])(?:LICENSE|NOTICE|CHANGELOG|AUTHORS)(?:\.\w+)?$|\.(?:md|markdown|mdx|txt|rst|adoc)$/i
 
+/** Temporary/scratch files that must NOT count as code mutations: tmp-* named
+ *  scratch scripts (tmp-c1.mjs, tmp-check.mjs…) and .tmp/.temp extensions.
+ *  The advisor/verify guards skip these — a throwaway diagnostic script is not
+ *  a code change, and writing one must not push the agent into a review loop. */
+const TEMP_FILE = /(?:^|[/\\])tmp-[^/\\]*$|\.(?:tmp|temp)$/i
+
 /** True when a path matches the doc/license pattern by extension or name.
  *  NOTE: this is extension-based only — it does NOT exclude src/ paths.
  *  Callers must separately check the src/ prefix for product-code semantics
@@ -106,6 +112,13 @@ const DOC_FILE = /(?:^|[/\\])(?:LICENSE|NOTICE|CHANGELOG|AUTHORS)(?:\.\w+)?$|\.(
  *  See isDocOnlyChange for the combined check. */
 export function isDocFile(p) {
   return DOC_FILE.test(p ?? "")
+}
+
+/** True when a path is a throwaway temp file (tmp-* name or .tmp/.temp ext).
+ *  Excluded from code-mutation detection so scratch scripts don't trigger
+ *  advisor/verify guards. */
+export function isTempFile(p) {
+  return TEMP_FILE.test(p ?? "")
 }
 
 /** True when all changed files across repos are documentation (md/txt/LICENSE etc.).
