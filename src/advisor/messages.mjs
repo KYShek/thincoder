@@ -27,22 +27,26 @@ const PROJECT_GUIDE_FRACTION = 0.05 // 5% of the reviewer model's context window
 function injectProjectGuide(agent, parts) {
   const path = resolve(agent.cwd, "AGENTS.md")
   parts.push("## Project Guide (AGENTS.md)")
+  let text
   try {
-    const text = readFileSync(path, "utf8")
-    const ctx = specForModel(agent.provider?.model ?? "").context
-    const cap = Math.max(PROJECT_GUIDE_MIN, Math.floor(ctx * PROJECT_GUIDE_FRACTION))
-    const shown = text.length <= cap
-      ? text
-      : text.slice(0, cap) + `\n\n…(truncated at ${cap} chars — read the full file if you need more)`
-    parts.push("This file defines the project's structure and where its requirements/design documents live. Read the documents it points to — the user's requirements live THERE, not only in the conversation background.")
-    parts.push("")
-    parts.push(shown)
-    return true // guide injected — requirement-fit criteria apply
+    text = readFileSync(path, "utf8")
   } catch {
     parts.push("(No AGENTS.md found at the project root — judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
+    parts.push("")
+    return false // no guide — requirement-fit falls back to the conversation
   }
+  // readFileSync succeeded — compute the budget OUTSIDE the try so a spec
+  // lookup failure can never masquerade as "no AGENTS.md".
+  const ctx = specForModel(agent.provider?.model ?? "").context
+  const cap = Math.max(PROJECT_GUIDE_MIN, Math.floor(ctx * PROJECT_GUIDE_FRACTION))
+  const shown = text.length <= cap
+    ? text
+    : text.slice(0, cap) + `\n\n…(truncated at ${cap} chars — read the full file if you need more)`
+  parts.push("This file defines the project's structure and where its requirements/design documents live. Read the documents it points to — the user's requirements live THERE, not only in the conversation background.")
   parts.push("")
-  return false // no guide — requirement-fit falls back to the conversation
+  parts.push(shown)
+  parts.push("")
+  return true // guide injected — requirement-fit criteria apply
 }
 
 /**
@@ -188,8 +192,8 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
 
   // Project guide — the doc map. MUST come before the conversation background:
   // requirement-fit is judged against the docs AGENTS.md points to; the recent
-  // turns are only a supplement (decision 2026-08-08). Injected at the top of
-  // this function so EVERY review path (code + design round 0) gets it.
+  // turns are only a supplement (decision 2026-08-08). Injected early in this
+  // function (before any early return) so EVERY review path gets it.
 
   // Conversation background — recent user↔assistant exchanges for intent context
   const background = extractConversationBackground(agent.history)
@@ -233,7 +237,9 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     const round = (agent._advisorRound || 0) + 1
     parts.push(...buildConvergenceInstructions(round, pathList))
   } else {
-    parts.push("2. The `## Project Guide (AGENTS.md)` section above maps the project — read the requirements/design documents it points to (they are the primary reference for requirement-fit). Use `read` to load those documents.")
+    parts.push("2. " + (guideInjected
+      ? "The `## Project Guide (AGENTS.md)` section above maps the project — read the requirements/design documents it points to (they are the primary reference for requirement-fit). Use `read` to load those documents."
+      : "No AGENTS.md was found at the project root — rely on the conversation background for the user's requirements. If the requirements are unclear, state so explicitly."))
     parts.push("3. `read` the files in the Review Scope in full — they define exactly what to inspect. Batch independent reads/greps in a single reply instead of one call per round-trip.")
     parts.push("4. Use `grep` or `lsp` to trace callers, imports, and dependencies — only where the diff leaves genuine doubt.")
     parts.push("5. Produce your review table based on the review criteria above. Do not re-read content you already have.")
