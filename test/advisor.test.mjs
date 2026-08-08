@@ -1075,16 +1075,29 @@ test("buildAdvisorUserMessage: 多项目工作区——评审范围在子目录�
   }
 })
 
-test("buildAdvisorUserMessage: cwd 自身有 AGENTS.md 时仍是项目根（单项目优先）", () => {
+test("buildAdvisorUserMessage: cwd 有 AGENTS.md 但评审在子项目 → 子项目地图胜出（工作区级地图不遮蔽）", () => {
   const tmp = mkdtempSync(join(tmpdir(), "advisor-root-"))
   try {
     mkdirSync(join(tmp, "sub"), { recursive: true })
-    writeFileSync(join(tmp, "AGENTS.md"), "# Root guide\n根需求。\n")
-    writeFileSync(join(tmp, "sub", "AGENTS.md"), "# Sub guide\n")
+    writeFileSync(join(tmp, "AGENTS.md"), "# Root meta guide\n工作区级元地图。\n")
+    writeFileSync(join(tmp, "sub", "AGENTS.md"), "# Sub guide\n子项目需求。\n")
     const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {}, provider: { model: "m" } }
     const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["sub/file.mjs"])
-    assert.ok(msg.includes("Root guide"), "cwd 有 AGENTS.md → cwd 是项目根，不用子目录的")
-    assert.ok(!msg.includes("Sub guide"), "子目录 AGENTS.md 不覆盖")
+    assert.ok(msg.includes("Sub guide"), "评审在 sub/ → sub 的项目地图胜出")
+    assert.ok(!msg.includes("Root meta guide"), "cwd 的元地图不遮蔽子项目地图")
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("buildAdvisorUserMessage: 单项目（cwd 有 AGENTS.md、子目录没有）→ cwd 地图", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "advisor-single-"))
+  try {
+    mkdirSync(join(tmp, "src"), { recursive: true })
+    writeFileSync(join(tmp, "AGENTS.md"), "# Single project guide\n")
+    const agent = { _touchedFiles: [], cwd: tmp, history: [], _advisorRound: 0, config: {}, provider: { model: "m" } }
+    const msg = buildAdvisorUserMessage(agent, null, "code", null, null, ["src/app.mjs"])
+    assert.ok(msg.includes("Single project guide"), "walk 最后一步落到 cwd 的 AGENTS.md")
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

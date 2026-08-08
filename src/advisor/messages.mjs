@@ -21,18 +21,17 @@ const PROJECT_GUIDE_FRACTION = 0.05 // 5% of the reviewer model's context window
  * Discover the project root for the review — user decision 2026-08-08:
  * the project root is a SUBDIRECTORY of the working directory, never an
  * ancestor above it. Priority:
- *   1. cwd itself has AGENTS.md → cwd IS the project root (single-project).
- *   2. Otherwise walk UP from the first review-scope file's directory,
- *      bounded by cwd — the nearest AGENTS.md inside the workspace wins
- *      (monorepo / multi-project workspace: the reviewed files belong to a
- *      subproject, and that subproject's AGENTS.md is the right doc map).
- *   3. Nothing found → cwd (honest degradation at the injection site).
+ *   1. Walk UP from each review-scope file's directory, bounded by cwd —
+ *      the NEAREST AGENTS.md inside the workspace wins. In a monorepo this is
+ *      the subproject's own doc map even when cwd itself has an AGENTS.md
+ *      (a workspace-level meta map must not shadow the subproject guide).
+ *   2. No scope files / nothing found → cwd (single project; the walk's
+ *      last step naturally lands on cwd's own AGENTS.md when it exists).
  * @param {string} cwd — the agent's working directory (workspace root)
  * @param {string[]} scopeFiles — cwd-relative review-scope paths (may be empty)
  * @returns {string|null} absolute project root with an AGENTS.md, or null
  */
 function findProjectRoot(cwd, scopeFiles) {
-  if (existsSync(join(cwd, "AGENTS.md"))) return cwd
   const isInside = (dir) => dir === cwd || dir.startsWith(cwd + sep)
   for (const f of scopeFiles) {
     let dir = dirname(resolve(cwd, f))
@@ -41,6 +40,10 @@ function findProjectRoot(cwd, scopeFiles) {
       dir = dirname(dir)
     }
   }
+  // No scope files, or none found in the walk — cwd itself (its AGENTS.md is
+  // checked as the walk's final step for scope files; for empty scopes, check
+  // it explicitly so a bare cwd project still gets its guide).
+  if (existsSync(join(cwd, "AGENTS.md"))) return cwd
   return null
 }
 
@@ -61,7 +64,11 @@ function injectProjectGuide(agent, parts, scopeFiles = []) {
   let text
   try {
     text = readFileSync(path, "utf8")
-  } catch {
+  } catch (e) {
+    if (e.code !== "ENOENT") {
+      // File exists but is unreadable (EACCES etc.) — log, don't masquerade as "not found".
+      console.warn(`[advisor] AGENTS.md unreadable at ${path}: ${e.message}`)
+    }
     parts.push("(No AGENTS.md found — neither at the working directory root nor in any review-scope subdirectory. Judge the user's requirements from the conversation background, and say so explicitly if the requirements are unclear.)")
     parts.push("")
     return false // no guide — requirement-fit falls back to the conversation
@@ -104,8 +111,9 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
   // to the requirements docs is needed for design reviews too (design must fit
   // the requirements, not just the methodology). Design round 0 early-returns
   // below — the guide must be injected before that return. Project root is
-  // discovered from the review scope (subdirectory of cwd; see findProjectRoot).
-  const guideInjected = injectProjectGuide(agent, parts, pathList)
+  // discovered from the review scope (code paths AND design-doc paths, so a
+  // documents-only design review still finds the subproject guide).
+  const guideInjected = injectProjectGuide(agent, parts, [...pathList, ...docList])
 
   // Design review: simplified message — focus on the design doc, not code
   if (reviewType === "design" && (agent._advisorRound || 0) === 0) {
@@ -222,11 +230,6 @@ export function buildAdvisorUserMessage(agent, prior, reviewType, designToken = 
     parts.push(docList.map((d) => `- ${d} — Read this file in full`).join("\n"))
     parts.push("")
   }
-
-  // Project guide — the doc map. MUST come before the conversation background:
-  // requirement-fit is judged against the docs AGENTS.md points to; the recent
-  // turns are only a supplement (decision 2026-08-08). Injected early in this
-  // function (before any early return) so EVERY review path gets it.
 
   // Conversation background — recent user↔assistant exchanges for intent context
   const background = extractConversationBackground(agent.history)
