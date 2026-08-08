@@ -68,6 +68,17 @@ history 中旧消息嵌有历史 diff，模型可能把"被删除的旧代码"�
 **代价**：注入体积略增（原文 vs 表，评审输出通常 <16KB 可接受）；重启后保守全量重评。
 **宿主判定面**：只保留"评审发生"（`_calledAdvisorThisRun`）+ 轮次预算（`_advisorRound`/cap）——评审"通过/不通过"不是宿主控制流输入，是主 Agent 读评审输出自行判断。
 
+### 4b. 评审触发范围收缩：只跟代码修改绑定（2026-08-08 用户决策）
+
+**背景**：`agent.mjs` 曾对**任何副作用工具**（bash/git 等非只读工具）重置 `_calledAdvisorThisRun`（"评审失效"）——导致"评审通过后仅用 bash 读日志/删临时文件"也再次触发评审推回（观察到 round 2 零问题后仍要求 round 3）。用户否决："我们明确有规定：修改代码以后触发评审，为什么要扩散到 bash 这一类的东西？"
+
+**决策**：
+1. **FILE_MUTATORS**（edit/write/apply_patch 等）调用 → 重置 `_calledAdvisorThisRun` + `_verifiedThisRun`（评审/验证确实过时——文件状态变了）；
+2. **非写文件副作用工具**（bash/git）→ **只重置 verify**（其 diff/状态快照可能过时），**不重置评审标记**——bash 被系统规则禁止写文件（"NEVER use bash to write or modify files"），合规 agent 的 bash 不会改变被评审代码；
+3. 由此"评审 → 只读/环境操作 → 完成"不再触发多余评审轮；"评审 → 再次改代码 → 重新评审"保持。
+
+**残余边界（接受）**：违规 agent 用 bash 改代码文件 → 不进 `_touchedFiles` → `hasCodeMutations` 检测不到 → 评审漏过。这是"bash 写文件被禁"规则下不存在的场景（规则与机械判定的一致性优于对违规行为的兜底）。
+
 ### 5. 证据机械校验（host-verified citations）
 
 提示词的证据规则（"引用必须来自本轮 read"）无法被 LLM 自我强制——模型可以声称读过而实际复述 prior 表（三轮误报实证：引用行号为修复前旧状态）。**宿主侧机械校验**作为最后防线：

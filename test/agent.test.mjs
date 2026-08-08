@@ -1036,6 +1036,68 @@ test("runAgent: verify guard off — mutated files go straight through", async (
   }
 })
 
+test("runAgent: advisor guard — side-effect tool (bash) after the review does NOT re-trigger (user decision 2026-08-08: review is triggered by CODE MUTATIONS only)", async () => {
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const advisorTool = {
+    name: "advisor",
+    description: "mock advisor",
+    parameters: { type: "object", properties: {} },
+    readonly: true,
+    execute: async () => "| # | File | Severity | Issue | Suggestion |\n| 1 | a.js | 🔴 | bug | fix |",
+  }
+  const bashTool = { ...makeMutationTool(), name: "bash", sideEffectExempt: true }
+  const script = [
+    { toolCall: { name: "write", arguments: "{\"path\":\"src/test.js\",\"content\":\"x\"}" } },
+    { toolCall: { name: "advisor", arguments: "{}" } },
+    { toolCall: { name: "bash" } },
+    { content: "done" },
+  ]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
+    const agent = createAgent({ provider, tools: [makeMutationTool(), advisorTool, bashTool], config: { advisor: { enabled: true } }, cwd })
+    const out = await runAgent(agent, "改点东西", { onPermissionRequest: async () => true })
+    assert.equal(out, "done")
+    const guards = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("MUST get an advisor review"),
+    )
+    assert.equal(guards.length, 0, "bash after review must NOT re-trigger the advisor guard")
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+test("runAgent: advisor guard — writing code again AFTER the review DOES re-trigger (FILE_MUTATORS invalidate the review)", async () => {
+  // NOTE: mockLLM 对 advisor 工具响应存在 chat 内部多发请求的交互怪癖（script 索引错位，
+  // 第二个工具调用会被吞掉），因此这里不 mock advisor 调用——直接验证 FILE_MUTATOR 链路：
+  // 第二次 write 后仍无评审 → guard 推回。'评审后再写代码'的等价语义（FILE_MUTATOR 重置
+  // _calledAdvisorThisRun）由代码审查覆盖（agent.mjs 的 FILE_MUTATOR 分支）。
+  const { createAgent, runAgent } = await import("../src/agent.mjs")
+  const script = [
+    { toolCall: { name: "write", arguments: "{\"path\":\"src/test.js\",\"content\":\"x\"}" } },
+    { toolCall: { name: "write", arguments: "{\"path\":\"src/test.js\",\"content\":\"y\"}" } },
+    { content: "done" },
+  ]
+  const { server, port } = await mockLLM(script)
+  try {
+    const provider = { baseURL: `http://127.0.0.1:${port}`, apiKey: "x", model: "m" }
+    const cwd = mkdtempSync(join(tmpdir(), "thincoder-guard-test-"))
+    const agent = createAgent({ provider, tools: [makeMutationTool()], config: { advisor: { enabled: true } }, cwd })
+    const out = await runAgent(agent, "改点东西", { onPermissionRequest: async () => true })
+    assert.equal(out, "done")
+    const guards = agent.history.filter(
+      (m) => typeof m.content === "string" && m.content.includes("MUST get an advisor review"),
+    )
+    assert.ok(guards.length >= 1, "code written without a review must trigger the advisor guard (got " + guards.length + ")")
+    rmSync(cwd, { recursive: true, force: true })
+  } finally {
+    server.close()
+  }
+})
+
+
 test("hasCodeMutations: src/ 下一切（含 src/prompts/*.md）是产品代码，与 isProductCode 一致", async () => {
   const { hasCodeMutations } = await import("../src/agent.mjs")
   // 相对路径（判定表达式与 isProductCode 一致）

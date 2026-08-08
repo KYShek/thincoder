@@ -205,8 +205,8 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       await classifyAndApply(agent, turn).catch(() => {})
     }
 
-    try {
-      response = await chat(agent.provider, {
+    if (process.env.ADVISOR_DEBUG) console.error("[chat-call]", JSON.stringify({ turn, histLen: agent.history.length, lastRole: agent.history.at(-1)?.role }))
+    try {      response = await chat(agent.provider, {
         messages, tools: toolSchemas,
         onToken: callbacks.onToken,
         onReasoning: callbacks.onReasoning,
@@ -374,13 +374,21 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
       pushReal(agent, { role: "tool", tool_call_id: toolCall.id, content: result })
       if (tool && ok) {
         if (FILE_MUTATORS.has(toolCall.name)) {
-          // Direct file edit — code was changed.
+          // Direct file edit — code was changed. The prior advisor review and
+          // verify are stale: a review that ran before the edit no longer
+          // covers the current file state.
           agent._mutatedThisRun = true
-        }
-        if (!tool.readonly && !tool.sideEffectExempt) {
-          // Any side-effect tool (bash, git, etc.) invalidates prior review/verify.
-          // Code may not have changed, but the environment did.
-          if (agent._calledAdvisorThisRun) agent._calledAdvisorThisRun = false
+          agent._calledAdvisorThisRun = false
+          agent._verifiedThisRun = false
+          agent._verifyPassed = undefined
+        } else if (!tool.readonly && !tool.sideEffectExempt) {
+          // Non-mutating side-effect tools (bash, git): do NOT invalidate the
+          // advisor review — a review is triggered by CODE MUTATIONS only
+          // (user decision 2026-08-08: the guard rule is "review after code
+          // changes", not "review after any environment change"; bash is
+          // barred from writing files, so it cannot change the reviewed code).
+          // Verify IS invalidated: its state snapshot (git diff, file list)
+          // may be stale after git/shell operations.
           if (agent._verifiedThisRun) {
             agent._verifiedThisRun = false
             agent._verifyPassed = undefined
