@@ -2,6 +2,10 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.17] - 2026-08-10
+
+- **修复** `kimi/kimi-k3`（Qwen 路由前缀 ID）模型规格匹配 — 正确继承 kimi-k3 的 1M 上下文 / 131K 输出 / 多模态
+
 ## [0.12.16] - 2026-08-10
 
 - **修复** 非 SSE JSON 响应被误判为错误（HTTP 200 + tool_calls 的合法 JSON 响应现在正确解析，而非报 "Response is not SSE"）
