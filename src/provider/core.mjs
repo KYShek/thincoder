@@ -83,7 +83,10 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
     body.temperature = t
   }
   if (provider.thinking) body.thinking = provider.thinking
-  if (provider.reasoningEffort && provider.format !== "anthropic" && provider.format !== "google") {
+  // reasoning_effort is a provider-native parameter — routers/proxies (model ID with "/"
+  // prefix like kimi/kimi-k3) may misinterpret it, causing empty responses or 400s.
+  const isRouter = provider.model.includes("/")
+  if (provider.reasoningEffort && !isRouter && provider.format !== "anthropic" && provider.format !== "google") {
     if (spec.reasoningEffortEnum && !spec.reasoningEffortEnum.includes(provider.reasoningEffort)) {
       throw new Error(
         `reasoning_effort "${provider.reasoningEffort}" not supported by model "${provider.model}"; ` +

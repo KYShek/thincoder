@@ -2,6 +2,10 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.18] - 2026-08-10
+
+- **修复** Qwen 路由等代理的模型 ID（如 `kimi/kimi-k3`）跳过 `reasoning_effort` 参数——路由可能误处理该参数导致空回复
+
 ## [0.12.17] - 2026-08-10
 
 - **修复** `kimi/kimi-k3`（Qwen 路由前缀 ID）模型规格匹配 — 正确继承 kimi-k3 的 1M 上下文 / 131K 输出 / 多模态
