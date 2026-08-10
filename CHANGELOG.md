@@ -2,6 +2,11 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.16] - 2026-08-10
+
+- **修复** 非 SSE JSON 响应被误判为错误（HTTP 200 + tool_calls 的合法 JSON 响应现在正确解析，而非报 "Response is not SSE"）
+- **改进** API 错误信息可读性：非 SSE 错误响应包含 HTTP 状态码 + 具体错误原因
+
 ## [0.12.15] - 2026-08-10
 
 - **改进** API 错误信息可读性：非 SSE 响应预拦截，提取 HTTP 状态码 + 具体错误原因（替代原来模糊的 "Response is not SSE"）

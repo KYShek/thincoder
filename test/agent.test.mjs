@@ -2307,6 +2307,35 @@ test("provider: readSSE — repeat: once 跨 chat 调用不重复触发（共享
   assert.equal(r2.content, "text FORBIDDEN end")
 })
 
+test("provider: readSSE — non-SSE JSON chunk with tool_calls parsed as valid completion", async () => {
+  const { readSSE } = await import("../src/provider/core.mjs")
+  // API returned HTTP 200 with JSON instead of SSE (proxy stripped SSE framing)
+  const jsonBody = JSON.stringify({
+    id: "chatcmpl-test",
+    object: "chat.completion.chunk",
+    model: "kimi/kimi-k3",
+    choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+    usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+  })
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({ start(c) { c.enqueue(encoder.encode(jsonBody)); c.close() } })
+  const response = new Response(stream, { status: 200, headers: { "content-type": "application/json" } })
+  const result = await readSSE(response, { onToken: () => {}, onReasoning: () => {} })
+  assert.equal(result.finishReason, "tool_calls", "finish_reason parsed from JSON")
+  assert.equal(result.usage.total_tokens, 150, "usage parsed from JSON")
+})
+
+test("provider: readSSE — non-SSE error response includes HTTP status and body", async () => {
+  const { readSSE } = await import("../src/provider/core.mjs")
+  const errorBody = JSON.stringify({ error: { message: "rate limit exceeded" } })
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({ start(c) { c.enqueue(encoder.encode(errorBody)); c.close() } })
+  const response = new Response(stream, { status: 429, headers: { "content-type": "application/json" } })
+  await assert.rejects(() => readSSE(response, { onToken: () => {} }),
+    (err) => { assert.ok(err.message.includes("HTTP 429"), "includes HTTP status"); assert.ok(err.message.includes("rate limit"), "includes error message"); return true })
+})
+
+
 test("provider: gemini convertMessages — system 消息不进 contents", async () => {
   const { convertMessages } = await import("../src/provider/google.mjs")
   const contents = convertMessages([

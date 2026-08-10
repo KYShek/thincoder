@@ -3,23 +3,49 @@
  * Extracted from core.mjs. Parses Server-Sent Events for LLM chat responses.
  */
 export async function readSSE(response, { onToken, onReasoning, rules, signal, firedPatterns: sharedFired }) {
-  // Early intercept: non-SSE responses are error bodies, not streams.
-  // Read as text to preserve the full error detail (status + body).
+  // Early intercept: non-SSE responses — either error bodies (HTTP >= 400) or
+  // valid single-chunk JSON completions (some APIs return JSON despite stream:true).
   const contentType = response.headers.get("content-type") || ""
   if (!contentType.includes("event-stream")) {
     const body = await response.text().catch(() => "")
-    let errorMsg = ""
+    if (response.status >= 400) {
+      let errorMsg = ""
+      try {
+        const parsed = JSON.parse(body)
+        errorMsg = parsed?.error?.message
+          || parsed?.base_resp?.status_msg
+          || parsed?.detail
+          || parsed?.message
+          || parsed?.msg
+          || (typeof parsed.error === "string" ? parsed.error : "")
+      } catch { /* not JSON */ }
+      if (!errorMsg) errorMsg = body.slice(0, 500)
+      throw new Error(`API error: HTTP ${response.status} — ${errorMsg}`)
+    }
+    // HTTP < 400 non-SSE: might be a valid single-chunk JSON response (e.g. proxy
+    // stripped SSE framing). Try to parse as a chat.completion.chunk.
     try {
       const parsed = JSON.parse(body)
-      errorMsg = parsed?.error?.message
-        || parsed?.base_resp?.status_msg
-        || parsed?.detail
-        || parsed?.message
-        || parsed?.msg
-        || (typeof parsed.error === "string" ? parsed.error : "")
-    } catch { /* not JSON */ }
-    if (!errorMsg) errorMsg = body.slice(0, 500) // fallback: show raw body preview
-    throw new Error(`API error: HTTP ${response.status} — ${errorMsg}`)
+      const choice = parsed.choices?.[0]
+      if (choice) {
+        const result = { content: "", reasoning: "", toolCalls: [], usage: parsed.usage ?? null, finishReason: null }
+        const delta = choice.delta ?? {}
+        result.content = delta.content ?? ""
+        result.reasoning = delta.reasoning_content ?? ""
+        result.finishReason = choice.finish_reason ?? null
+        for (const tc of delta.tool_calls ?? []) {
+          const slot = (result.toolCalls[tc.index ?? result.toolCalls.length] ??= { id: "", name: "", arguments: "" })
+          if (tc.id) slot.id = tc.id
+          if (tc.function?.name && !slot.name) slot.name = tc.function.name
+          if (tc.function?.arguments) slot.arguments += tc.function.arguments
+        }
+        if (result.content) onToken?.(result.content)
+        if (result.reasoning) onReasoning?.(result.reasoning)
+        return result
+      }
+    } catch { /* not parseable JSON */ }
+    // Not an error response but not a valid chunk either — unexpected
+    throw new Error(`API error: HTTP ${response.status} — unexpected non-SSE response: ${body.slice(0, 200)}`)
   }
 
   const result = { content: "", reasoning: "", toolCalls: [], usage: null, finishReason: null }
