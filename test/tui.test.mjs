@@ -485,6 +485,23 @@ test("translateShiftEnter: CSI-u and modifyOtherKeys Shift+Enter map to \\x1b\\r
   assert.equal(translateShiftEnter("\x1b[13;3u"), "\x1b[13;3u", "Alt+Enter CSI-u untouched (modifier 3 ≠ shift)")
 })
 
+test("stripKeyboardProtocol: CSI u and modifyOtherKeys sequences stripped", async () => {
+  const { stripKeyboardProtocol } = await import("../src/tui/clipboard.mjs")
+  // kitty CSI u — Ctrl+C (\x1b[99;5u) stripped
+  assert.equal(stripKeyboardProtocol("\x1b[99;5u"), "")
+  // kitty CSI u — Ctrl+A (\x1b[97;5u) stripped
+  assert.equal(stripKeyboardProtocol("\x1b[97;5u"), "")
+  // modifyOtherKeys function key — Ctrl+F1 (\x1b[27;5;11~) stripped
+  assert.equal(stripKeyboardProtocol("\x1b[27;5;11~"), "")
+  // plain text untouched
+  assert.equal(stripKeyboardProtocol("hello"), "hello", "plain text untouched")
+  // in sequence with other text
+  assert.equal(stripKeyboardProtocol("ab\x1b[99;5ucd"), "abcd")
+  // Shift+Enter already handled by translateShiftEnter before this runs — still stripped if missed
+  assert.equal(stripKeyboardProtocol("\x1b[13;2u"), "")
+})
+
+
 test("keyHandler: shift+enter via translated CSI-u inserts newline", () => {
   // End-to-end shape: stdin layer turns \x1b[13;2u into \x1b\r, readline yields meta+return
   const state = tuiState({ input: [..."ab"], cursor: 2 })
@@ -557,15 +574,35 @@ test("keyHandler: up/down cycle through input history (down past end restores th
   assert.equal(state._draft, null, "draft cleared after restore")
 })
 
-test("keyHandler: up with empty input leaves no draft; down past end goes to blank", () => {
+test("keyHandler: up with empty input stashes empty draft; down past end restores blank", () => {
   const state = tuiState({ history: [[..."only"]], historyIndex: -1, input: [] })
   const handler = createKeyHandler(keyCtx(state))
   handler("", { name: "up" })
-  assert.equal(state._draft, null, "no draft when input was empty")
+  assert.deepEqual(state._draft, [], "empty draft stashed when input was empty")
   handler("", { name: "down" })
   assert.equal(state.input.join(""), "")
   assert.equal(state.historyIndex, -1)
 })
+
+test("keyHandler: history draft survives typing then re-navigating (scenario regression)", () => {
+  // Scenario: empty input → ↑ (history) → clear → type "abc" → ↑ → ↓ past newest → restores "abc"
+  const state = tuiState({ history: [[..."prev"]], historyIndex: -1, input: [] })
+  const handler = createKeyHandler(keyCtx(state))
+  handler("", { name: "up" })
+  // clear the history entry, then type "abc"
+  handler("", { name: "u", ctrl: true })
+  const chars = [..."abc"]
+  for (const ch of chars) handler(ch, {})
+  assert.equal(state.input.join(""), "abc")
+  // press ↑ — should save "abc" as draft before navigating
+  handler("", { name: "up" })
+  assert.deepEqual(state._draft, [..."abc"], "typed text saved as draft on re-navigate")
+  // press ↓ past newest → restores "abc"
+  handler("", { name: "down" })
+  handler("", { name: "down" })
+  assert.equal(state.input.join(""), "abc", "typed text restored from draft after navigating back")
+})
+
 
 test("keyHandler: Alt+V (meta+v) triggers image paste — key.alt alone is dead (readline sets meta)", () => {
   // BUG-8 regression: the old branch checked key.alt, but readline parses ESC-prefixed
@@ -1161,7 +1198,7 @@ test("keyHandler: picker PgDn 步长跟随 layout 小终端压缩后的实际可
   }
 })
 
-test("layout: 极端小终端（rows=9 + picker + tasks + permission）不抛异常，按序压缩", () => {
+test("layout: 极端小终端（rows=9 + picker + tasks + permission）按序压缩，permission 被压缩", () => {
   const state = tuiState({
     picker: pickerState(),
     tasks: [{ title: "t1", status: "in_progress" }, { title: "t2", status: "pending" }],
@@ -1171,9 +1208,10 @@ test("layout: 极端小终端（rows=9 + picker + tasks + permission）不抛异
   const layout = computeLayout(state, { cols: 80, rows: 9 })
   assert.equal(layout.panels.conversation.h, 1, "conversation 先压到最小 1 行")
   assert.equal(layout.panels.picker.h, 3, "picker 再压到最小 3 行")
-  // best-effort 语义：其余面板不裁剪，总行数允许超过 rows（锁定当前行为）
-  const total = Object.values(layout.panels).reduce((s, p) => s + (p ? p.h : 0), 0)
-  assert.ok(total > 9, `极端情况补偿后仍溢出（total=${total} > 9）`)
+  // permission 被压到 1 行（仅标题），输入框 y 相比修复前上移（之前 permission 不压缩导致输入框完全溢出）
+  assert.equal(layout.panels.permission.h, 1, "permission preview 被压缩到 1 行")
+  assert.ok(layout.panels.inputBox.y < 9,
+    `输入框起始行在屏幕内（y=${layout.panels.inputBox.y} < 9）`)
 })
 
 test("keyHandler: picker Enter 调 popPicker(选中项)、Esc 调 popPicker(null)", () => {

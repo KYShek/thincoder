@@ -8,12 +8,12 @@ export function createInteraction(ctx) {
 
   /** Key info for permission request (customized by tool), returns array of lines. name may have subagent prefix ("coder/bash"), use base name to match */
   function formatPermission(name, args) {
-    const cap = (s, n = 1000) => (s.length > n ? `${s.slice(0, n)}…(${s.length} chars total)` : s)
+    const cap = (s, n = 3000) => (s.length > n ? `${s.slice(0, n)}…(${s.length} chars total)` : s)
     const base = name.includes("/") ? name.split("/").pop() : name
     if (base === "bash") return cap(args.command ?? "").split("\n")
     if (base === "write") {
       // approving file writes must show what's being written: path + content preview
-      return [`${args.path} (write ${(args.content ?? "").length} chars)`, ...cap(args.content ?? "", 1000).split("\n")]
+      return [`${args.path} (write ${(args.content ?? "").length} chars)`, ...cap(args.content ?? "", 3000).split("\n")]
     }
     if (base === "edit") {
       // simple diff: - old content / + new content

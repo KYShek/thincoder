@@ -2,6 +2,15 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.14] - 2026-08-10
+
+- **修复** 小终端 permission 面板挤出输入框（layout 溢出补偿新增 permission 压缩）
+- **修复** iTerm2 Ctrl+C 键盘协议序列泄漏（stdin 剥离未处理的 CSI u 序列）
+- **修复** eng 模式 advisor token 正则错配（改用完整 token 构建正则，与 prompt 格式一致）
+- **修复** 输入框 ↑ 键历史导航草稿丢失（进入/编辑历史模式时扩容草稿保护）
+- **重构** key-handler 拆分搜索模块（key-handler-search.mjs）
+- **文档** 架构文档计数/模块/状态同步更新
+
 ## [0.12.13] - 2026-08-08
 
 评审机制全面重构（用户驱动的三轮决策）：

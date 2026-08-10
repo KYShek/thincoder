@@ -25,14 +25,27 @@ thincoder/
 │   ├── agent/            # agent 循环辅助
 │   │   ├── dispatch.mjs  # 两段式工具调度
 │   │   ├── setup.mjs     # 系统提示词组装
-│   │   └── helpers.mjs   # 工具函数与常量
+│   │   ├── helpers.mjs   # 工具函数与常量
+│   │   ├── completion.mjs # 完成处理（空回复重试/pending task pushback）
+│   │   └── post-turn.mjs # turn 结束后处理（advisor/verify guard）
 │   ├── agent-tools/      # 自律工具（task/plan/goal/verify/subagent/skill/recent_changes）
 │   ├── agent-tools.mjs   # 自律工具注册入口
+│   ├── advisor/           # 独立评审子系统
+│   │   ├── run.mjs       # 评审主流程
+│   │   ├── messages.mjs  # 消息构建
+│   │   ├── repos.mjs     # 仓库分析（isDocFile/isProductCode）
+│   │   ├── convergence.mjs # 收敛逻辑
+│   │   ├── citations.mjs # 引用验证
+│   │   └── history.mjs   # 评审历史管理
+│   ├── advisor.mjs        # advisor 入口
 │   ├── provider/         # LLM 调用
 │   │   ├── core.mjs      # SSE 流式 + reasoning_content + usage
 │   │   ├── rate.mjs      # TPM/RPM 闸门
+│   │   ├── sse.mjs       # SSE 解析
+│   │   ├── anthropic.mjs # Anthropic Messages API transport
+│   │   ├── google.mjs    # Gemini generateContent transport
 │   │   └── index.mjs     # 入口（chat / listModels / createProvider）
-│   ├── tui/              # 裸 ANSI TUI（~24 个模块）
+│   ├── tui/              # 裸 ANSI TUI（45 个模块）
 │   │   ├── index.mjs     # startTUI + render 副作用
 │   │   ├── layout.mjs    # 声明式面板布局引擎
 │   │   ├── render.mjs    # 绘制原语（charWidth / wrapText / formatTables / sanitize）
@@ -43,9 +56,15 @@ thincoder/
 │   │   ├── startup.mjs       # 启动画面 + 会话恢复 + 后台索引
 │   │   ├── interaction.mjs   # 权限审批 + Q&A
 │   │   ├── pickers.mjs       # 通用列表选择器 + 模型选择器
+│   │   ├── mouse.mjs          # SGR 鼠标点击处理
+│   │   ├── render-conversation.mjs # 对话面板行构建（缓存/搜索高亮/折叠）
+│   │   ├── render-loop.mjs    # 渲染循环
+│   │   ├── markdown.mjs       # 行内标记 ANSI 渲染
+│   │   ├── key-handler-search.mjs # 搜索模式键盘处理
+│   │   ├── tool-summaries.mjs # 工具结果摘要渲染
 │   │   ├── wizard.mjs        # 首次启动配置向导
 │   │   ├── slash-commands.mjs # 斜杠命令分发 + Tab 补全
-│   │   ├── cmd-*.mjs         # 各命令实现（17 个）
+│   │   ├── cmd-*.mjs         # 各命令实现（24 个）
 │   │   ├── config-helpers.mjs # 配置持久化辅助
 │   │   └── clipboard.mjs     # 剪贴板图片粘贴
 │   ├── tui.mjs           # 重导出 shim → src/tui/index.mjs
@@ -57,8 +76,11 @@ thincoder/
 │   │   ├── web.mjs       # websearch / fetch
 │   │   ├── patch.mjs     # apply_patch / syntax_check / delete
 │   │   ├── shared.mjs    # 工具共享工具函数
+│   │   ├── linter.mjs    # lint（node --check / eslint）
+│   │   ├── lsp.mjs       # LSP 代码智能
+│   │   ├── codemode.mjs  # 沙箱代码执行（execute 工具）
+│   │   ├── checklist.mjs # 项目级 checklist 管理
 │   │   ├── repomap.mjs   # 依赖大纲（repo_outline 工具）
-│   │   ├── repomap-parse.mjs # import/export 解析 + 依赖图
 │   │   └── *.md          # 工具描述（19 个）
 │   ├── tools.mjs         # 重导出 shim → src/tools/index.mjs
 │   ├── context.mjs       # 上下文压缩（关键决策保存 + task/plan 回注）
@@ -77,10 +99,16 @@ thincoder/
 │   ├── skills.mjs        # 项目技能加载
 │   ├── markdown.mjs      # frontmatter 解析（零依赖）
 │   ├── distill.mjs       # 会话知识提取
+│   ├── generate-title.mjs # 会话标题生成
+│   ├── auto-think.mjs     # 自动思考模式分类器
+│   ├── hooks.mjs          # 生命周期钩子
+│   ├── rules.mjs          # 项目规则发现
+│   ├── upgrade.mjs        # CLI 版本升级检查
 │   ├── prompts/          # 提示词文本
 │   │   ├── system.md     # 核心规则（主/子通用）
 │   │   ├── discipline.md # 编码/测试纪律
 │   │   ├── main.md       # 主 agent 专属条款（subagent/goal/verify/skill/plan）
+│   │   ├── engineering.md # 工程模式 work loop
 │   │   ├── explore.md / coder.md / plan.md  # 子 agent 角色 overlay
 │   └── cli/              # CLI 命令（distill / memory / permission / wizard）
 ├── test/
@@ -96,7 +124,7 @@ thincoder/
     └── PHILOSOPHY.md
 ```
 
-总源文件 ~82 个 `.mjs` + 19 个 `.md` 工具描述。测试用 Node 内置 `node:test` + `node:assert`，不引 vitest。
+总源文件 ~123 个 `.mjs` + 19 个 `.md` 工具描述。测试用 Node 内置 `node:test` + `node:assert`，不引 vitest。
 
 ## 模块接口
 
@@ -371,7 +399,7 @@ apiKey 也可走环境变量（`THINCODER_API_KEY` 或 provider 惯用变量）�
 ### tui/ — 裸 ANSI 终端 UI
 > 详细设计见 [`TUI.md`](TUI.md)。
 
-`src/tui/index.mjs` 是入口，~24 个模块约 3,000 行，全部自研零依赖。
+`src/tui/index.mjs` 是入口，45 个模块约 5,500 行，全部自研零依赖。
 
 ```
 src/tui/
@@ -388,10 +416,16 @@ src/tui/
 ├── pickers.mjs        # 通用列表选择器 + 模型管理选择器
 ├── wizard.mjs         # 首次启动配置向导
 ├── slash-commands.mjs # 斜杠命令分发 + Tab 补全
-├── cmd-*.mjs          # 各命令实现（22 个：model/think/session/config/…）
+├── cmd-*.mjs          # 各命令实现（24 个：model/think/session/config/…）
 ├── startup.mjs        # 启动画面 + 会话恢复 + 后台索引
 ├── clipboard.mjs      # 剪贴板：图片粘贴 + 文本复制/读取
 ├── distill-cmd.mjs    # /distill 命令
+├── key-handler-search.mjs # 搜索模式键盘处理
+├── markdown.mjs       # 行内标记 ANSI 渲染
+├── mouse.mjs          # SGR 鼠标点击
+├── render-conversation.mjs # 对话面板行构建
+├── render-loop.mjs    # 渲染循环
+├── tool-summaries.mjs # 工具结果摘要
 └── config-helpers.mjs # 配置持久化辅助
 ```
 
@@ -424,19 +458,18 @@ thincoder config       # 查看/设置配置
 
 ## 开发顺序（里程碑）
 
-| 里程碑 | 内容 | 验证标准 |
-|---|---|---|
-| M1 | provider + 最简 chat 命令（无 TUI） | `thincoder chat "hello"` 流式输出真实回复 |
-| M2 | tools + agent 主循环 | `thincoder chat "读一下 package.json 总结它"` 能调工具完成 |
-| M3 | TUI | 交互式对话跑通，流式渲染、权限确认可用 |
-| M4 | context 压缩 | 构造超长对话，压缩后任务不断片 |
-| M5 | memory | agent 能自主存取记忆，跨会话生效 |
+| 里程碑 | 内容 | 验证标准 | 状态 |
+|---|---|---|---|
+| M1 | provider + 最简 chat 命令（无 TUI） | `thincoder chat "hello"` 流式输出真实回复 | ✅ |
+| M2 | tools + agent 主循环 | `thincoder chat "读一下 package.json 总结它"` 能调工具完成 | ✅ |
+| M3 | TUI | 交互式对话跑通，流式渲染、权限确认可用 | ✅ |
+| M4 | context 压缩 | 构造超长对话，压缩后任务不断片 | ✅ |
+| M5 | memory | agent 能自主存取记忆，跨会话生效 | ✅ |
 
-每个里程碑完成后才可进入下一个——不允许出现"全写完再第一次运行"。
+全部里程碑已完成（2026-08）。v1 额外提前交付：checkpoint、子 agent、MCP、advisor 评审、工程模式、团队记忆三层体系。
 
 ## 明确排除（防范围蔓延）
 
 - TypeScript / 任何构建步骤 / 任何 npm 运行时依赖
-- checkpoint、子 agent、MCP、工作流引擎（v2+ 再议）
-- Anthropic 原生协议、embedding 向量检索（v1 记忆仅 FTS5）
+- GUI 桌面客户端 / 工作流引擎
 - Windows 特殊处理以外的平台适配（win32 控制台 quirks 遇到再修）

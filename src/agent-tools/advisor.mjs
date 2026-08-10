@@ -50,23 +50,14 @@ export function validateDesignToken(token) {
   return signature === expectedSig
 }
 
-/** Extract UUID from signed token for regex matching */
-function extractTokenUUID(token) {
-  const parts = token.split(":")
-  return parts.length >= 1 ? parts[0] : token
-}
-
-/** Build a [DESIGN-TOKEN:...] regex; escapes special chars as a safety net even though UUIDs contain only hex/hyphens.
- *  Flexible matching: allows token to be on its own line, in a code block, or surrounded by whitespace.
- *  Rejects partial matches by requiring word boundaries or brackets around the token. */
+/** Build a [DESIGN-TOKEN:...] regex; escapes special chars as a safety net.
+ *  Matches the FULL token (uuid:expiresAt:signature) — prompt tells advisor
+ *  to echo the complete token verbatim, not just the UUID segment.
+ *  Flexible matching: allows token to be on its own line, in a code block,
+ *  or surrounded by whitespace. */
 const makeDesignTokenRegex = (token, flags = "") => {
-  // Extract UUID from signed token (format: uuid:expiresAt:signature)
-  const uuid = extractTokenUUID(token)
-  const escaped = uuid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  // Match [DESIGN-TOKEN: <uuid>] with flexible surrounding context:
-  // - Allow leading/trailing whitespace and newlines
-  // - Allow being inside code blocks (```...```)
-  // - Require complete token (not truncated)
+  // Escape the entire token, not just UUID — advisor echoes [DESIGN-TOKEN:uuid:expiresAt:signature]
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   return new RegExp(
     `(?:^|\\s|\`|\\*)\\[DESIGN-TOKEN:\\s*${escaped}\\s*\\](?:\\s|$|\`|\\*)`,
     flags + "ms"
@@ -165,7 +156,6 @@ export const advisorTool = {
         if (agent._role === "eng-coder") agent._engDesignReviewed = true
         // Strip the bracketed token so only ONE unambiguous format (plain UUID) reaches the main agent
         const cleanResult = result.replace(makeDesignTokenRegex(designToken, "g"), "").trim()
-        const tokenUUID = extractTokenUUID(designToken)
         return `${cleanResult}\n\nApproved. Pass this exact token to eng-coder (designToken parameter): ${designToken}`
       }
       // Review failed (or advisor chose not to pass) → invalidate any previously-issued token.

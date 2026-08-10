@@ -1,6 +1,6 @@
 # ACP Client Protocol 接入 — thincoder acp 设计
 
-> 状态：2026-08-04 设计初稿（待确认后编码）。
+> 状态：**已实现**（2026-08-04，`src/acp/` 含 transport/bridge/session 三层，`test/acp.test.mjs` 39 测试全绿）。
 > 目标：`thincoder acp` 子命令——通过 [Agent Client Protocol](https://agentclientprotocol.com/)
 > 在 stdio 上暴露 thincoder agent，使 Zed / JetBrains AI Chat / Paseo 等 ACP 客户端可直接驱动。
 > 实证来源：① **协议权威**——`agentclientprotocol/agent-client-protocol` 仓库 `schema/v1/schema.json`

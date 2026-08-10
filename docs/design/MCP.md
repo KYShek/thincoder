@@ -1,6 +1,6 @@
 # MCP 工具机制统一规范（CLI / VS Code 一致落地）
 
-> 状态：设计稿 v1（待拍板）
+> 状态：**已实现**（2026-08，`src/mcp/` 含 stdio/HTTP/WebSocket 三传输，`test/tools.test.mjs` 含 MCP 集成测试）。
 > 目标：**VS Code 向 CLI 对齐**——MCP 工具动态展开为独立原生工具，废弃"网关式"mcp 工具。
 > 原则：与 CONTEXT-COMPACTION.md 相同——一套语义，两端一致；正确性/可用性优先于 token 节省。
 

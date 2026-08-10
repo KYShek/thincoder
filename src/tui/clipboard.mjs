@@ -47,6 +47,14 @@ export function translateShiftEnter(text) {
   return text.replace(/\x1b\[13;2u/g, "\x1b\r").replace(/\x1b\[27;2;13~/g, "\x1b\r")
 }
 
+/** Strip keyboard protocol CSI sequences that readline in raw mode does not recognize.
+ *  Kitty CSI u:     \x1b[key;modu     — regular keys (e.g. Ctrl+C → \x1b[99;5u)
+ *  modifyOtherKeys: \x1b[27;mod;key~  — function keys
+ *  Call AFTER translateShiftEnter (which already handles Shift+Enter). */
+export function stripKeyboardProtocol(text) {
+  return text.replace(/\x1b\[\d+;\d+u/g, "").replace(/\x1b\[27;\d+;\d+~/g, "")
+}
+
 /** Ctrl+V / Alt+V: read clipboard image → write temp file in working directory → insert read_image command into input box.
  *  Extracted from index.mjs.
  *  ctx: { agent, state, pushLine, render } */

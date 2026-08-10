@@ -78,7 +78,7 @@ export function computeLayout(state, { cols, rows }) {
   let permPreviewLines = []
   let permPreviewH = 0
   if (state.permission) {
-    const maxLines = Math.max(1, rows - 8)
+    const maxLines = Math.min(8, Math.max(1, rows - 10))
     outer: for (const l of state.permissionPreview) {
       for (const wrapped of wrapText(`  ${l}`, W - 1)) {
         if (permPreviewLines.length >= maxLines) break outer
@@ -95,14 +95,22 @@ export function computeLayout(state, { cols, rows }) {
   const fixedH = headerH + inputBoxH + statusH + pickerH + taskPanelH + subPanelH + outputPanelsH + permPreviewH + queueH
   let convH = Math.max(1, rows - fixedH)
 
-  // 小终端高度补偿（best-effort，不保证总行数 ≤ rows）：先压 conversation 到最小 1 行，
-  // 仍超出再压 picker 到最小 3 行。极端情况（permission preview + tasks 等同屏）补偿后仍可能
-  // 溢出 —— 其余面板不强行裁剪，由渲染层自行截断
+  // 小终端高度补偿：先压 conversation 到最小 1 行，再压 picker 到最小 3 行，
+  // 仍溢出再压 permission preview 到最小 1 行（仅标题）。
   let pickerFinalH = pickerH
+  let permFinalH = permPreviewH
   const overflow = fixedH + convH - rows
-  if (overflow > 0 && pickerH > 0) {
-    pickerFinalH = Math.max(Math.min(3, pickerH), pickerH - overflow)
-    convH = Math.max(1, rows - (fixedH - pickerH + pickerFinalH))
+  if (overflow > 0) {
+    if (pickerH > 0) {
+      pickerFinalH = Math.max(Math.min(3, pickerH), pickerH - overflow)
+    }
+    const afterPicker = fixedH - pickerH + pickerFinalH
+    convH = Math.max(1, rows - afterPicker)
+    const remaining = afterPicker + convH - rows
+    if (remaining > 0 && permPreviewH > 0) {
+      permFinalH = Math.max(1, permPreviewH - remaining)
+      convH = Math.max(1, rows - (afterPicker - permPreviewH + permFinalH))
+    }
   }
 
   // --- Y coordinates (0-indexed, +1 when used with ANSI) ---
@@ -113,7 +121,7 @@ export function computeLayout(state, { cols, rows }) {
   const output = outputPanelsH > 0 ? { y, h: outputPanelsH } : null; y += outputPanelsH
   const todo = taskPanelH > 0 ? { y, h: taskPanelH } : null; y += taskPanelH
   const picker = pickerFinalH > 0 ? { y, h: pickerFinalH } : null; y += pickerFinalH
-  const permission = permPreviewH > 0 ? { y, h: permPreviewH } : null; y += permPreviewH
+  const permission = permFinalH > 0 ? { y, h: permFinalH } : null; y += permFinalH
   const queue = queueH > 0 ? { y, h: queueH } : null; y += queueH
   const inputBox = { y, h: inputBoxH }; y += inputBoxH
   const status = { y, h: statusH }

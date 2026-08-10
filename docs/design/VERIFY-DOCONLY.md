@@ -1,6 +1,6 @@
 # Verify 工具文档改动快路径
 
-> 状态：设计（待批准）
+> 状态：**已实现**（2026-08-03，`src/agent-tools/verify.mjs` 含 doc-only 快路径，`src/advisor/repos.mjs` 的 `isDocFile` 三处判定统一）。
 > 关联：`src/agent-tools/verify.mjs`、`src/advisor/repos.mjs`（isDocFile）
 
 ## 问题陈述

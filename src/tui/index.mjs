@@ -27,7 +27,7 @@ import { createWizard } from "./wizard.mjs"
 import { createPickers } from "./pickers.mjs"
 import { runDistill as runDistillImpl } from "./distill-cmd.mjs"
 import { createInteraction } from "./interaction.mjs"
-import { pasteClipboardImage as pasteClipboardImageImpl, insertPastedText, translateShiftEnter } from "./clipboard.mjs"
+import { pasteClipboardImage as pasteClipboardImageImpl, insertPastedText, translateShiftEnter, stripKeyboardProtocol } from "./clipboard.mjs"
 import { parseMouseClicks, handleMouseClick } from "./mouse.mjs"
 import { runAgentTurn } from "./agent-turn.mjs"
 import { createKeyHandler } from "./key-handler.mjs"
@@ -201,6 +201,7 @@ export async function startTUI(agent, opts = {}) {
 
     // Shift+Enter (keyboard-enhanced terminals) → Alt+Enter path (\x1b\r = meta+return)
     text = translateShiftEnter(text)
+    text = stripKeyboardProtocol(text)
 
     if (state.scroll !== lastRenderedScroll) {
       lastRenderedScroll = state.scroll
@@ -280,8 +281,10 @@ export async function startTUI(agent, opts = {}) {
     state.input = []
     state.cursor = 0
     state.history.push(text)
+    const wasInHistory = state.historyIndex !== -1
+    state.history.push(text)
     state.historyIndex = -1
-    state._draft = null // submitted — the draft is now history
+    if (!wasInHistory) state._draft = null // submitted — the draft is now history. Keep draft when submitting from history mode (↓ can recover)
     state.scroll = 0
 
     // Slash commands: handled locally, don't enter agent loop
