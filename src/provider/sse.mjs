@@ -3,6 +3,25 @@
  * Extracted from core.mjs. Parses Server-Sent Events for LLM chat responses.
  */
 export async function readSSE(response, { onToken, onReasoning, rules, signal, firedPatterns: sharedFired }) {
+  // Early intercept: non-SSE responses are error bodies, not streams.
+  // Read as text to preserve the full error detail (status + body).
+  const contentType = response.headers.get("content-type") || ""
+  if (!contentType.includes("event-stream")) {
+    const body = await response.text().catch(() => "")
+    let errorMsg = ""
+    try {
+      const parsed = JSON.parse(body)
+      errorMsg = parsed?.error?.message
+        || parsed?.base_resp?.status_msg
+        || parsed?.detail
+        || parsed?.message
+        || parsed?.msg
+        || (typeof parsed.error === "string" ? parsed.error : "")
+    } catch { /* not JSON */ }
+    if (!errorMsg) errorMsg = body.slice(0, 500) // fallback: show raw body preview
+    throw new Error(`API error: HTTP ${response.status} — ${errorMsg}`)
+  }
+
   const result = { content: "", reasoning: "", toolCalls: [], usage: null, finishReason: null }
   const decoder = new TextDecoder()
   let buffer = ""
@@ -86,26 +105,20 @@ export async function readSSE(response, { onToken, onReasoning, rules, signal, f
   }
 
   if (!hasChoices) {
-    const contentType = response.headers.get("content-type") || ""
+    // Stream started as SSE but no choices were parsed — unusual. Include status for debugging.
+    const raw = buffer.trim()
     let errorMsg = ""
     try {
-      const raw = buffer.trim() || ""
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        errorMsg = parsed?.error?.message
-          || parsed?.base_resp?.status_msg
-          || parsed?.detail
-          || parsed?.message
-          || parsed?.msg
-          || (typeof parsed.error === "string" ? parsed.error : "")
-      }
+      const parsed = raw ? JSON.parse(raw) : null
+      errorMsg = parsed?.error?.message
+        || parsed?.base_resp?.status_msg
+        || parsed?.detail
+        || parsed?.message
+        || parsed?.msg
+        || (typeof parsed.error === "string" ? parsed.error : "")
     } catch { /* not JSON */ }
-    if (!errorMsg && !contentType.includes("event-stream")) {
-      errorMsg = `Response is not SSE (Content-Type: ${contentType || "unknown"})`
-    }
-    if (errorMsg) {
-      throw new Error(`API error: ${errorMsg}`)
-    }
+    if (!errorMsg) errorMsg = `SSE stream contained no choices (HTTP ${response.status})`
+    throw new Error(`API error: ${errorMsg}`)
   }
 
   return result

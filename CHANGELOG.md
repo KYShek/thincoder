@@ -2,6 +2,10 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.15] - 2026-08-10
+
+- **改进** API 错误信息可读性：非 SSE 响应预拦截，提取 HTTP 状态码 + 具体错误原因（替代原来模糊的 "Response is not SSE"）
+
 ## [0.12.14] - 2026-08-10
 
 - **修复** 小终端 permission 面板挤出输入框（layout 溢出补偿新增 permission 压缩）
