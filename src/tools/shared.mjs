@@ -256,9 +256,13 @@ export function isDestructiveCommand(seg) {
   if (/\bformat\b\s+\S/i.test(s) && !/--format\b/i.test(s)) return true
   if (/\bshred\b/i.test(s)) return true
   if (/\bdd\b/.test(s) && /\bof=/i.test(s)) return true
-  if (/\bDROP\s+TABLE\b/i.test(s)) return true
-  if (/\bDELETE\s+FROM\b/i.test(s)) return true
-  if (/\bTRUNCATE\b/i.test(s)) return true
+  // SQL keywords (DROP TABLE / DELETE FROM / TRUNCATE) deliberately NOT blocked:
+  // 1. false positives — plain text (commit messages, docs, SQL files) containing
+  //    these words gets blocked; 2. security theater — a determined model bypasses
+  //    via whitespace/heredoc/node -e; real security is at the tool approval layer
+  //    (same rationale as env-var pass-through). Project tools with their own
+  //    confirm gates (e.g. thin5 scripts/db.mjs --write/--danger) must not be
+  //    double-blocked.
   return false
 }
 

@@ -1438,3 +1438,14 @@ test("isDestructiveCommand: rm -r without -f is destructive (conservative)", () 
   assert.equal(isDestructiveCommand("rm somefile.txt"), false, "plain rm of a single file is not tree-destructive")
 })
 
+test("isDestructiveCommand: SQL keywords NOT blocked (false positives + security theater)", () => {
+  // 决策:SQL 关键词不做文本拦截——commit message/SQL 文件/文档里的纯文本会被误伤;
+  // 且恶意模型可用空白/heredoc/node -e 绕过,真正防线在工具审批层。
+  // 项目自带确认门的工具(如 thin5 scripts/db.mjs --write/--danger)不应被双重拦截。
+  assert.equal(isDestructiveCommand("node scripts/db.mjs query \"DELETE FROM user_configs WHERE key='x'\" --write"), false)
+  assert.equal(isDestructiveCommand("git commit -m \"fix: DROP TABLE migration\""), false)
+  assert.equal(isDestructiveCommand("TRUNCATE TABLE audit_log"), false)
+  assert.equal(isDestructiveCommand("DROP TABLE IF EXISTS users"), false)
+  assert.equal(isDestructiveCommand("psql -c \"DELETE FROM t\""), false)
+})
+
