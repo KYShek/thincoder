@@ -20,6 +20,7 @@
  * `{ stopReason: "end_turn" }` (kimi session.ts parity).
  */
 import { join } from "node:path"
+import { detectDanger } from "../tools/shared.mjs"
 
 /** ACP ToolKind inference (schema v1 enum) — best-effort, clients render by kind. */
 function inferToolKind(name) {
@@ -99,10 +100,16 @@ export function buildAcpCallbacks({ sessionId, notify, request, log = () => {} }
      * client. Any transport failure → reject (safety-first, kimi parity).
      */
     onPermissionRequest: async (name, args) => {
+      // 危险命令标注(只提示不拦截):kimi 同款模式,帮助编辑器端用户审批
+      const base = name.includes("/") ? name.split("/").pop() : name
+      const danger = base === "bash" ? detectDanger(args?.command ?? "") : undefined
+      const content = [contentBlock(`Requesting approval to run ${name}`)]
+      if (danger) content.push(contentBlock(`⚠️ Dangerous: ${danger}`))
+      content.push(contentBlock(JSON.stringify(args ?? {})))
       const toolCall = {
         toolCallId: toolIds.get(name) ?? toolCallId(),
         title: name,
-        content: [contentBlock(`Requesting approval to run ${name}`), contentBlock(JSON.stringify(args ?? {}))],
+        content,
       }
       try {
         const response = await request("session/request_permission", {

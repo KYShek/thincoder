@@ -254,6 +254,34 @@ export function isDestructiveCommand() {
   return false
 }
 
+/**
+ * 危险命令识别(只标注、不拦截)——参考 kimi-code apps/kimi-code/src/tui/reverse-rpc/approval/adapter.ts
+ * DANGER_PATTERNS。定位:给审批中的人打红色警告标签,提升决策信息,不是机器防线。
+ * 拦截无用(可绕过),标注有用(人看到了才知道该多看一眼)。
+ */
+const DANGER_PATTERNS = [
+  { pattern: /\brm\s+(-[a-zA-Z]*[rRfF][a-zA-Z]*|--recursive|--force)/i, label: "recursive delete" },
+  { pattern: /\bsudo\b/i, label: "sudo" },
+  { pattern: /\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh)\b/i, label: "pipe to shell" },
+  { pattern: /\bdd\b[^|]*\bof=/i, label: "dd write" },
+  { pattern: /\bmkfs\b/i, label: "mkfs" },
+  { pattern: />\s*\/dev\/(sd|nvme|disk|hd)/i, label: "write to raw device" },
+  { pattern: /\bchmod\s+(?:-[rR]\s+)?777\b/i, label: "chmod 777" },
+  { pattern: /:\(\)\s*\{\s*:\|:&\s*\}/i, label: "fork bomb" },
+]
+
+/** 返回危险标注 label(如 "recursive delete");无危险返回 undefined。
+ *  引号感知:引号(单/双)内的内容清空后再检测——commit message、echo 文本等
+ *  纯文本不误标;危险命令(rm -rf "$dir")的参数在引号外,仍命中。
+ *  反引号内容保留(命令替换会执行)。 */
+export function detectDanger(command) {
+  const s = blankQuoted(String(command ?? ""))
+  for (const { pattern, label } of DANGER_PATTERNS) {
+    if (pattern.test(s)) return label
+  }
+  return undefined
+}
+
 
 /** Convert glob pattern to regex */
 export function globToRegex(pattern) {

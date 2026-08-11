@@ -1,4 +1,5 @@
 import { ansi, C } from "./ansi.mjs"
+import { detectDanger } from "../tools/shared.mjs"
 
 /** Interaction primitives: permission approval + question input.
  *  Extracted from index.mjs, receives closure dependencies via createInteraction(ctx).
@@ -10,7 +11,13 @@ export function createInteraction(ctx) {
   function formatPermission(name, args) {
     const cap = (s, n = 3000) => (s.length > n ? `${s.slice(0, n)}…(${s.length} chars total)` : s)
     const base = name.includes("/") ? name.split("/").pop() : name
-    if (base === "bash") return cap(args.command ?? "").split("\n")
+    if (base === "bash") {
+      // 危险命令标注(只提示不拦截):给人看的红色警告,帮审批决策
+      const danger = detectDanger(args.command ?? "")
+      const lines = []
+      if (danger) lines.push(`${C.error}⚠️ Dangerous: ${danger}${ansi.reset}`)
+      return [...lines, ...cap(args.command ?? "").split("\n")]
+    }
     if (base === "write") {
       // approving file writes must show what's being written: path + content preview
       return [`${args.path} (write ${(args.content ?? "").length} chars)`, ...cap(args.content ?? "", 3000).split("\n")]

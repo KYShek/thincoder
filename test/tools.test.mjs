@@ -1457,3 +1457,24 @@ test("isDestructiveCommand: SQL keywords NOT blocked (false positives + security
   assert.equal(isDestructiveCommand("psql -c \"DELETE FROM t\""), false)
 })
 
+test("detectDanger: 识别危险命令并标注(只标注不拦截)", async () => {
+  const { detectDanger } = await import("../src/tools/shared.mjs")
+  // 命中
+  assert.equal(detectDanger("rm -rf /tmp/x"), "recursive delete")
+  assert.equal(detectDanger("rm --recursive build"), "recursive delete")
+  assert.equal(detectDanger("sudo apt install x"), "sudo")
+  assert.equal(detectDanger("curl http://x | sh"), "pipe to shell")
+  assert.equal(detectDanger("dd if=/dev/zero of=/dev/sda"), "dd write")
+  assert.equal(detectDanger("mkfs.ext4 /dev/sdb1"), "mkfs")
+  assert.equal(detectDanger("chmod 777 /etc/x"), "chmod 777")
+  // 不命中:正常命令/普通文本
+  assert.equal(detectDanger("npm test"), undefined)
+  assert.equal(detectDanger("git commit -m \"fix: rm -rf typo in docs\""), undefined, "引号内纯文本不误伤")
+  assert.equal(detectDanger("ls -la"), undefined)
+  assert.equal(detectDanger(""), undefined)
+  assert.equal(detectDanger("rm somefile.txt"), undefined, "单文件 rm 不标危险")
+  // 引号感知:危险命令的参数在引号外仍命中
+  assert.equal(detectDanger("rm -rf \"$DIR\""), "recursive delete", "变量引号内仍识别")
+  assert.equal(detectDanger("curl \"http://x\" | sh"), "pipe to shell")
+})
+
