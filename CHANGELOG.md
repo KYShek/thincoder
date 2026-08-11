@@ -2,6 +2,12 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.19] - 2026-08-11
+
+- **重构** bash 工具安全模型：移除全部破坏性命令文本拦截（rm -rf / DROP TABLE 等）——文本匹配是安全剧场（恶意模型可绕过、误伤正常操作），真实防线 = 审批层（autoApprove）+ 快照（gitGuardSnapshot / checkpoint），与 env 透传、git"快照后放行永不拦截"统一
+- **新增** 危险命令标注（detectDanger，参考 kimi-code）：recursive-delete / sudo / pipe-to-shell / dd / mkfs / 裸设备 / chmod 777 / fork bomb 在 TUI 与 ACP 审批面板红色标注——只提示不拦截，帮人做审批决策；引号感知（commit message 等纯文本不误标，反引号内容保留）
+- **文档** TOOLS.md 安全边界同步（零文本拦截 + 危险标注）
+
 ## [0.12.18] - 2026-08-10
 
 - **修复** Qwen 路由等代理的模型 ID（如 `kimi/kimi-k3`）跳过 `reasoning_effort` 参数——路由可能误处理该参数导致空回复
