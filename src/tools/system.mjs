@@ -6,8 +6,6 @@ import {
   BASH_TIMEOUT_MS,
   IGNORED_DIRS,
   resolveInCwd,
-  shellSegments,
-  isDestructiveCommand,
   hasFileRedirection,
   globToRegex,
   normalizeEOL,
@@ -25,20 +23,15 @@ const MAX_STREAM_BUF = 2_000_000
 
 /**
  * Pre-execution safety checks for bash commands.
- * Layers: file redirection → destructive commands (rm -rf etc.).
- * Git destructive ops are deliberately NOT rejected — the model would just find a
- * way around the rejection; instead gitGuardSnapshot copies every uncommitted file
- * and the command is ALLOWED (snapshot-then-proceed, never block).
+ * Layers: file redirection (guides toward structured tools, not a security gate).
+ * Destructive commands (rm -rf, DROP TABLE, ...) are deliberately NOT rejected:
+ * a determined model bypasses text matching anyway — real security is at the
+ * tool approval layer plus snapshot backups (gitGuardSnapshot / checkpoint).
+ * Git destructive ops: snapshot-then-proceed, never block.
  */
 function checkBashSafety(command, cwd) {
   if (hasFileRedirection(command)) {
     throw new Error("File redirection via bash is not allowed — use the write/edit/insert_after tools instead")
-  }
-  if (shellSegments(command).some(isDestructiveCommand)) {
-    throw new Error(
-      "Destructive command blocked — use specific tools or confirm with the user first. " +
-      "(If work was already destroyed, recover from auto-snapshot: checkpoint action=list then action=rewind.)"
-    )
   }
 }
 

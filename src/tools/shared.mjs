@@ -241,28 +241,16 @@ export function hasFileRedirection(command) {
   return /(^|[\s;&|0-9])>{1,2}\s*\S/.test(bare) || /(^|[\s;&|0-9])<\s*\S/.test(bare)
 }
 
-/** Whether a single command segment is a destructive non-git command (conservative: prefer false positives) */
-export function isDestructiveCommand(seg) {
-  const s = seg
-  // rm with recursive (-r/-R/--recursive): destructive WITH or WITHOUT -f
-  // (recursive delete removes trees non-interactively in many setups; -rf is
-  // the classic case). Conservative: prefer blocking. The \s before the flag
-  // requires a separator — "rm-rf" is not a valid command (no such program).
-  if (/\brm\b/.test(s) && (/\s-\S*r/i.test(s) || /\s--recursive\b/i.test(s))) return true
-  if (/\brmdir\b/i.test(s)) return true
-  if (/\bdel\b/i.test(s) && /\/f\b/i.test(s)) return true
-  if (/\brd\b/i.test(s) && /\/s\b/i.test(s)) return true
-  // format called as a command (exclude --format= option false positives)
-  if (/\bformat\b\s+\S/i.test(s) && !/--format\b/i.test(s)) return true
-  if (/\bshred\b/i.test(s)) return true
-  if (/\bdd\b/.test(s) && /\bof=/i.test(s)) return true
-  // SQL keywords (DROP TABLE / DELETE FROM / TRUNCATE) deliberately NOT blocked:
-  // 1. false positives — plain text (commit messages, docs, SQL files) containing
-  //    these words gets blocked; 2. security theater — a determined model bypasses
-  //    via whitespace/heredoc/node -e; real security is at the tool approval layer
-  //    (same rationale as env-var pass-through). Project tools with their own
-  //    confirm gates (e.g. thin5 scripts/db.mjs --write/--danger) must not be
-  //    double-blocked.
+/**
+ * Whether a single command segment is destructive — ALWAYS FALSE (deliberate).
+ *
+ * 决策(2026-08):文本拦截对恶意模型是安全剧场——空白变体/heredoc/node -e/写脚本执行
+ * 都能绕过,拦住的只有正常操作(如清理临时目录、rm node_modules 重装)。
+ * 真实防线在工具审批层(autoApprove)与快照兜底(gitGuardSnapshot / checkpoint auto-snapshot),
+ * 与 env 过滤、git 破坏操作"快照后放行、永不拦截"同一哲学。
+ * 项目工具自带确认门(如 thin5 scripts/db.mjs --write/--danger)不应被双重拦截。
+ */
+export function isDestructiveCommand() {
   return false
 }
 

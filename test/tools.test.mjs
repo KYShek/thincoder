@@ -776,10 +776,18 @@ test("htmlToText: malformed numeric entities do not throw (mirrors stripTags gua
 
 })
 
-test("isDestructiveCommand: long-form --recursive delete is destructive", async () => {
+test("isDestructiveCommand: 决策——全部放行(文本拦截是安全剧场,防线在审批层+快照)", async () => {
   const { isDestructiveCommand } = await import("../src/tools/shared.mjs")
-  assert.equal(isDestructiveCommand("rm --recursive /tmp/x"), true)
-  assert.equal(isDestructiveCommand("rm -rf /tmp/x"), true)
+  // 文件系统删除类也不再拦截:恶意模型可绕过(空白/heredoc/node -e),拦截只误伤正常操作
+  assert.equal(isDestructiveCommand("rm --recursive /tmp/x"), false)
+  assert.equal(isDestructiveCommand("rm -rf /tmp/x"), false)
+  assert.equal(isDestructiveCommand("rmdir /tmp/x"), false)
+  assert.equal(isDestructiveCommand("shred /tmp/x"), false)
+  assert.equal(isDestructiveCommand("dd if=/dev/zero of=/dev/sda"), false)
+  // 普通命令同样放行
+  assert.equal(isDestructiveCommand("rm somefile.txt"), false)
+  // SQL 关键词放行(上一轮决策)
+  assert.equal(isDestructiveCommand("node scripts/db.mjs query \"DELETE FROM t\" --write"), false)
 })
 
 
@@ -1431,11 +1439,11 @@ test("isPrivateHost: blocks loopback, private ranges, metadata, link-local (SSRF
   }
 })
 
-test("isDestructiveCommand: rm -r without -f is destructive (conservative)", () => {
-  assert.equal(isDestructiveCommand("rm -rf /tmp/x"), true)
-  assert.equal(isDestructiveCommand("rm -r /tmp/x"), true, "recursive rm without force still destroys trees")
-  assert.equal(isDestructiveCommand("rm -R dir"), true)
-  assert.equal(isDestructiveCommand("rm somefile.txt"), false, "plain rm of a single file is not tree-destructive")
+test("isDestructiveCommand: rm -r 不再拦截(决策:文本拦截对恶意模型无效,只误伤正常操作)", () => {
+  assert.equal(isDestructiveCommand("rm -rf /tmp/x"), false)
+  assert.equal(isDestructiveCommand("rm -r /tmp/x"), false)
+  assert.equal(isDestructiveCommand("rm -R dir"), false)
+  assert.equal(isDestructiveCommand("rm somefile.txt"), false)
 })
 
 test("isDestructiveCommand: SQL keywords NOT blocked (false positives + security theater)", () => {
