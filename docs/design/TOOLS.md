@@ -14,7 +14,7 @@
 | 面 | 机制 |
 |---|---|
 | **路径** | `resolveInCwd(ctx, p)`（防 `../` 逃逸到工作区外）+ `assertInside` + `realpathNearest`（符号链接解算）；`resolveExternal` 显式白名单外部路径（仅 question 等特殊工具） |
-| **命令**（bash） | `shellSegments` 分词（引号/转义感知）→ `isDestructiveCommand`（rm -rf 等）→ **默认拒绝并提示改用专用工具**；`hasFileRedirection` 检测重定向（禁止 bash 写文件，路由到 write/edit）；`isDestructiveGitSegment`（force-push 等）；超时 120s |
+| **命令**（bash） | **零文本拦截**：破坏性命令（rm -rf/DROP TABLE 等）一律放行——恶意模型可用空白变体/heredoc/node -e 绕过，文本匹配拦不住且误伤正常操作；真实防线 = 审批层 + 快照。保留：`hasFileRedirection`（禁止 bash 写文件，路由到 write/edit，引导性非安全门）、`detectDanger`（危险标注只提示不拦截：recursive-delete/sudo/pipe-to-shell/dd/mkfs/raw-device/chmod-777/fork-bomb，审批面板红标，引号感知防 commit message 误标）、git 破坏操作快照后放行（gitGuardSnapshot，永不拦截）；超时 120s |
 | **网络**（websearch/fetch） | `isPrivateHost`（localhost/内网/云元数据 169.254.169.254）——SSRF 防护；响应体 ≤5MB；HTML 转文本（stripTags/htmlToText） |
 | **文件** | `MAX_READ_LINES=2000`、`MAX_OUTPUT_CHARS=200_000`（超限落盘，模型见预览）；`normalizeEOL`（CRLF 统一）；write 前 `autoSyntaxCheck`（JS 文件自动 node --check 预检） |
 | **lint** | `node --check` fast path + eslint 级联（flat config 检测）——取代旧 syntax_check |
@@ -41,7 +41,7 @@
 | 决策 | 理由 |
 |---|---|
 | md 文件即 description | 长文档描述模型才理解边界；与代码分离便于迭代不触发 schema 变更 |
-| bash 破坏性命令默认拒 | 安全第一；强制走专用工具（write/delete/git）使变更可审计可撤销 |
+| bash 命令零文本拦截 | 文本匹配是安全剧场：恶意模型必然绕过（空白/heredoc/node -e），拦住的只有正常操作；真实防线 = 审批层（autoApprove）+ 快照（gitGuardSnapshot/checkpoint）。危险标注（detectDanger）只给人看，不构成边界 |
 | 超限落盘而非截断 | 模型可再用 read 工具读全量；预览 2K 字符足够决策 |
 | 沙箱只出不进 | 模型执行用户代码时，网络/文件系统读写按工具授权而非代码内自由 |
 | 工具全部字符串返回 | schema 简单、dispatch 统一、流式展示统一 |
