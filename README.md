@@ -152,6 +152,12 @@ Environment variables: `THINCODER_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_
       },
     ],
   },
+  "websearch": {
+    // optional: Tavily structured search (stable JSON API, no HTML scraping).
+    // Empty apiKey → silently falls back to Bing HTML extraction (zero-config).
+    "provider": "tavily",
+    "apiKey": "tvly-...", // https://tavily.com — has a free monthly tier
+  },
 }
 ```
 
