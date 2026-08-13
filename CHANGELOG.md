@@ -2,6 +2,11 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.21] - 2026-08-13
+
+- **修复** 恢复会话大量重复 "❯ ThinCoder:" 标签——history 按每次 LLM 调用存一条 assistant 消息（一个 turn 多段），恢复时每段都渲染了标签；现在只在 turn 开始渲染一次，跨页懒加载边界状态正确保留
+- **改进** 恢复保真度：完整工具结果（不再一行摘要）+ reasoning 思考流以 dim 行恢复（超长自动折叠）——恢复后的会话与退出前基本一致；首帧渲染实测约 50ms
+
 ## [0.12.20] - 2026-08-13
 
 - **修复** TUI 恢复旧 display 快照导致"看不到最新消息"——display 字段彻底废弃（saveSession 不再写、loadSession 不再读），恢复永远从 history 重建；配合 VS Code 端 0.1.5 的清空，跨端会话漂移根治
