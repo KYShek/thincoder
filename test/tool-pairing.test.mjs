@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { normalizeToolPairing } from "../src/provider/core.mjs"
+import { normalizeToolPairing, stripImagesForTextModel } from "../src/provider/core.mjs"
 
 /** 校验 OpenAI tool 协议：每个 tool 消息必须紧跟在声明了其 tool_call_id 的 assistant 之后（中间不得有其他角色） */
 function assertPairingValid(messages, label = "") {
@@ -186,4 +186,39 @@ test("runAgent: 并行 read_image + 普通工具 — tool 结果全部紧邻，u
   } finally {
     server.close()
   }
+})
+
+// ---------------------------------------------------------------- stripImagesForTextModel 单元
+
+test("stripImages: 多模态模型保留 png、剥离 svg/bmp 为占位文本（Kimi svg 400 毒化会话回归）", () => {
+  const spec = { multimodal: true }
+  const msgs = [
+    { role: "user", content: [
+      { type: "text", text: "看图" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+    ] },
+    { role: "user", content: [
+      { type: "text", text: "svg" },
+      { type: "image_url", image_url: { url: "data:image/svg+xml;base64,PHN2Zz4=" } },
+    ] },
+  ]
+  const out = stripImagesForTextModel(msgs, spec)
+  assert.equal(out[0], msgs[0]) // png 原样保留（同引用，无拷贝）
+  assert.deepEqual(out[1].content, [
+    { type: "text", text: "svg" },
+    { type: "text", text: "[image omitted — unsupported format image/svg+xml]" },
+  ])
+  // 历史本身不被改写（发送时净化，切回支持的模型/格式可恢复）
+  assert.equal(msgs[1].content[1].type, "image_url")
+})
+
+test("stripImages: 非多模态模型剥离所有 data 图片；http 图片引用放行", () => {
+  const spec = { multimodal: false }
+  const msgs = [{ role: "user", content: [
+    { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+    { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+  ] }]
+  const out = stripImagesForTextModel(msgs, spec)
+  assert.deepEqual(out[0].content[0], { type: "text", text: "[image omitted — this model does not support image input]" })
+  assert.equal(out[0].content[1].image_url.url, "https://example.com/a.png")
 })

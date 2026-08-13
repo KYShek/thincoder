@@ -75,7 +75,10 @@ export const readTool = {
 
 // ---------------------------------------------------------------- read_image
 
-const IMAGE_EXTENSIONS = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml" }
+// Raster formats only — every mainstream vision API (Kimi, Anthropic, OpenAI, Gemini)
+// rejects svg/bmp. svg is served as text source below; bmp is refused with a hint.
+const IMAGE_EXTENSIONS = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" }
+const MAX_SVG_CHARS = 100_000
 
 export const readImageTool = {
   name: "read_image",
@@ -83,7 +86,7 @@ export const readImageTool = {
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "Path to image file (relative to cwd or absolute). Supports png, jpg, gif, webp, bmp, svg." },
+      path: { type: "string", description: "Path to image file (relative to cwd or absolute). Supports png, jpg, gif, webp. svg files are returned as text source (no vision API accepts svg)." },
     },
     required: ["path"],
   },
@@ -91,6 +94,19 @@ export const readImageTool = {
   multimodal: true, // returns JSON { text, images } — agent loop converts to multimodal user message
   /** Returns JSON: { text, images }, for the agent layer to convert into multimodal user messages */
   async execute(args, ctx) {
+    const abs = resolveInCwd(ctx, args.path)
+    const ext = abs.slice(abs.lastIndexOf(".") + 1).toLowerCase()
+
+    // SVG is text markup — return the source directly. Works with text-only models too
+    // (no vision gate), and never poisons history with an image part the API will 400 on.
+    if (ext === "svg") {
+      const st = await stat(abs).catch(() => null)
+      if (st && st.size > MAX_IMAGE_BYTES) throw new Error(`Image too large: ${Math.round(st.size / 1_000_000)}MB (max 15MB)`)
+      const src = normalizeEOL(await readFile(abs, "utf8"))
+      return `[read_image: ${args.path} (svg source, ${src.length} chars — no vision API accepts image/svg+xml, showing markup instead)]\n` +
+        truncate(src, MAX_SVG_CHARS)
+    }
+
     // Vision capability gate: injecting an image into a text-only model's history poisons the whole
     // conversation (every subsequent request 400s on the image part). Refuse before reading the file.
     const model = ctx.agent?.provider?.model
@@ -100,10 +116,11 @@ export const readImageTool = {
         `Verify visual output programmatically (file size, dimensions, pixel checks via code) or ask the user to switch to a vision-capable provider.`
       )
     }
-    const abs = resolveInCwd(ctx, args.path)
-    const ext = abs.slice(abs.lastIndexOf(".") + 1).toLowerCase()
     const mime = IMAGE_EXTENSIONS[ext]
-    if (!mime) throw new Error(`Unsupported image format: .${ext}. Supported: ${Object.keys(IMAGE_EXTENSIONS).join(", ")}`)
+    if (!mime) {
+      const hint = ext === "bmp" ? " Convert it to PNG first (no mainstream vision API accepts BMP)." : ""
+      throw new Error(`Unsupported image format: .${ext}. Supported: ${Object.keys(IMAGE_EXTENSIONS).join(", ")}, svg (as text source).${hint}`)
+    }
     // Check size before reading — prevent huge images from blowing up memory (20MB base64 ≈ 15MB raw)
     const imgStat = await stat(abs).catch(() => null)
     if (imgStat && imgStat.size > MAX_IMAGE_BYTES) throw new Error(`Image too large: ${Math.round(imgStat.size / 1_000_000)}MB (max 15MB)`)

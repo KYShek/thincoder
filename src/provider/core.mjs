@@ -40,6 +40,11 @@ export function createProvider(config) {
 
 /** Send a streaming chat completion request with automatic continuation on truncation */
 export async function chat(provider, { messages, tools, onToken, onReasoning, onWait, signal, streamRules, firedPatterns }) {
+  // Sanitize BEFORE format dispatch — image poisoning bricks anthropic/google sessions
+  // the same way it bricks OpenAI-format ones (all raster-only).
+  const spec = specForModel(provider.model)
+  messages = stripImagesForTextModel(messages, spec)
+
   // Format dispatch: delegate to non-OpenAI transports
   if (provider.format === "anthropic") {
     const { chat: anthropicChat } = await import("./anthropic.mjs")
@@ -62,8 +67,7 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
     return result
   }
 
-  const spec = specForModel(provider.model)
-  messages = normalizeToolPairing(stripImagesForTextModel(messages, spec))
+  messages = normalizeToolPairing(messages)
   // Compile string-pattern rules to RegExp at call time
   const rules = compileStreamRules(streamRules)
   const body = {
@@ -181,23 +185,37 @@ export async function chat(provider, { messages, tools, onToken, onReasoning, on
 }
 
 /**
- * Replace image parts with text placeholders when the model has no vision support.
- * History may contain image_url parts (e.g. a session resumed after switching from a vision model
- * to a text-only one); text-only APIs like DeepSeek reject the ENTIRE request with 400 if any
- * message contains an image part, which bricks the conversation. Sanitize at send time — history
- * itself is left untouched, so switching back to a vision model restores the images.
+ * Replace image parts with text placeholders when they would 400 the request:
+ * - the model has no vision support at all (history may carry image_url parts from a
+ *   session resumed after switching from a vision model — text-only APIs like DeepSeek
+ *   reject the ENTIRE request, bricking the conversation);
+ * - the model IS vision-capable but the data URL is not a raster format it can ingest
+ *   (Kimi/Anthropic/OpenAI/Gemini are all raster-only — Kimi 400s "unsupported image
+ *   format" on EVERY subsequent request once an svg/bmp part sits in history).
+ * Sanitize at send time — history itself is left untouched, so switching back to a
+ * capable model/format restores the images. Non-data-URL image refs (http) pass through.
  */
+const RASTER_IMAGE_URL = /^data:image\/(png|jpe?g|gif|webp);base64,/
+
 export function stripImagesForTextModel(messages, spec) {
-  if (spec.multimodal) return messages
   let changed = false
   const out = messages.map((m) => {
     if (!Array.isArray(m.content) || !m.content.some((p) => p?.type === "image_url")) return m
+    let msgChanged = false
+    const parts = m.content.map((p) => {
+      if (p?.type !== "image_url") return p
+      const url = p.image_url?.url || ""
+      if (!url.startsWith("data:")) return p
+      if (spec.multimodal && RASTER_IMAGE_URL.test(url)) return p
+      msgChanged = true
+      const reason = spec.multimodal
+        ? `unsupported format ${url.match(/^data:([^;,]+)/)?.[1] || "unknown"}`
+        : "this model does not support image input"
+      return { type: "text", text: `[image omitted — ${reason}]` }
+    })
+    if (!msgChanged) return m
     changed = true
-    return {
-      ...m,
-      content: m.content.map((p) =>
-        p?.type === "image_url" ? { type: "text", text: "[image omitted — this model does not support image input]" } : p),
-    }
+    return { ...m, content: parts }
   })
   return changed ? out : messages
 }

@@ -46,6 +46,30 @@ test("read_image: 非视觉模型直接拒绝（防 image_url 毒化会话），
   }
 })
 
+test("read_image: svg 返回文本源码（不进 image_url，任何模型可用），bmp 拒绝并提示转 PNG", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "thincoder-test-"))
+  try {
+    writeFileSync(join(dir, "a.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>')
+    writeFileSync(join(dir, "a.bmp"), Buffer.from([66, 77]))
+    const byName = Object.fromEntries(builtinTools.map((t) => [t.name, t]))
+    // 视觉模型：返回纯文本（JSON.parse 失败 → agent 当普通 tool 结果，不产 image_url 毒化历史）
+    const out = await byName.read_image.execute({ path: "a.svg" }, { cwd: dir, agent: { provider: { model: "kimi-k3" } } })
+    assert.match(out, /svg source/)
+    assert.match(out, /<rect/)
+    assert.throws(() => JSON.parse(out))
+    // 文本模型也可用——svg 不需要视觉能力，在 vision gate 之前分支
+    const out2 = await byName.read_image.execute({ path: "a.svg" }, { cwd: dir, agent: { provider: { model: "deepseek-v4-pro" } } })
+    assert.match(out2, /<svg/)
+    // bmp：没有主流视觉 API 支持，拒绝并提示转换
+    await assert.rejects(
+      () => byName.read_image.execute({ path: "a.bmp" }, { cwd: dir, agent: { provider: { model: "kimi-k3" } } }),
+      /Unsupported image format: \.bmp[\s\S]*Convert it to PNG/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("tools: write / read / edit / glob / grep", async () => {
   const dir = mkdtempSync(join(tmpdir(), "thincoder-test-"))
   const ctx = { cwd: dir }
