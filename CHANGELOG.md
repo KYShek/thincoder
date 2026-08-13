@@ -2,6 +2,11 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.23] - 2026-08-13
+
+- **修复** svg 图片毒化会话——read_image 读 svg 后以 image_url 进历史，Kimi 等视觉 API（全部仅支持位图）此后每轮请求 400 "unsupported image format"，会话永久卡死；现在发送时按格式净化：非 png/jpeg/gif/webp 的 image part 替换为占位文本，净化上移至 format dispatch 之前覆盖 openai/anthropic/google 全部通路，历史本身不改写（切回支持的模型/格式可恢复）
+- **改进** read_image 对 svg 返回文本源码（svg 本是文本标记，任何模型可读，绕过 vision gate）；bmp 拒绝并提示转 PNG（无主流视觉 API 支持）
+
 ## [0.12.22] - 2026-08-13
 
 - **修复** 缓存命中率对 Kimi 显示——usage 缓存字段归一化：Kimi/OpenAI 风格 `prompt_tokens_details.cached_tokens` 映射为 DeepSeek 风格 `prompt_cache_hit_tokens`，miss 由 prompt_tokens − hit 推导（此前 Kimi 的命中率永不显示）
