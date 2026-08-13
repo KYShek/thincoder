@@ -1398,11 +1398,11 @@ test("execute: timeout 生效——无限循环脚本在限定时间内返回错
   }
 })
 
-test("execute: SSRF 拒绝信息同步返回给模型（不是 unhandled rejection 崩进程）", async () => {
+test("execute: require()/process 可用（无伪沙箱——bash 本就能触达任意 Node API）", async () => {
   const dir = mkdtempSync(join(tmpdir(), "thincoder-exec2-"))
   try {
-    const out = await codeModeTool.execute({ code: 'fetch("http://169.254.169.254/latest/meta-data/")' }, { cwd: dir })
-    assert.match(out, /private\/internal host not allowed/)
+    const out = await codeModeTool.execute({ code: 'const fs = require("node:fs"); log(typeof fs.readFileSync, typeof process.cwd)' }, { cwd: dir })
+    assert.equal(out, "function function")
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
