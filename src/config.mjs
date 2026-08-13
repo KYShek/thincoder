@@ -66,6 +66,10 @@ const DEFAULTS = {
   mcp: {
     servers: [],
   },
+  websearch: {
+    provider: "tavily",  // structured search API; empty apiKey → fall back to Bing HTML scraping
+    apiKey: "",          // Tavily key (tvly-...) — optional
+  },
 }
 
 /**

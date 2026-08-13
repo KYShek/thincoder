@@ -40,6 +40,30 @@ function bingUrl(query, page) {
 const ENGINES = [{ name: "bing", label: "Bing", url: bingUrl, extract: extractBing, ua: UA }]
 const ENGINE_NAMES = ENGINES.map(e => e.name)
 
+/** Structured search via Tavily (optional — config.websearch.apiKey). Returns
+ *  { engine, results } or null to fall back to Bing HTML scraping. */
+async function fetchTavily(query, limit, ctx) {
+  const apiKey = ctx?.agent?.config?.websearch?.apiKey
+  if (!apiKey) return null
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT)
+  try {
+    const response = await proxyFetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+      body: JSON.stringify({ query, search_depth: "basic", max_results: limit, include_answer: false, include_raw_content: false }),
+      signal: ctrl.signal,
+    }, resolveWebProxy(ctx))
+    if (!response.ok) return null
+    const data = await response.json()
+    const results = (Array.isArray(data.results) ? data.results : []).map((r) => ({
+      href: r.url, title: r.title ?? "", snippet: r.content ?? "", _engine: "tavily",
+    }))
+    return { engine: "tavily", results }
+  } catch { return null }
+  finally { clearTimeout(timer) }
+}
+
 async function fetchEngine(engine, query, page, ctx) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT)
@@ -73,6 +97,12 @@ export const websearchTool = {
   async execute(args, ctx) {
     const limit = Math.min(args.limit ?? 8, 20)
     const page = Math.max(1, args.page ?? 1)
+    // Structured search first when a Tavily key is configured — stable, dated,
+    // no HTML scraping. Falls back to Bing silently.
+    const tavily = await fetchTavily(args.query, limit, ctx)
+    if (tavily && tavily.results.length > 0) {
+      return truncate(tavily.results.slice(0, limit).map((r, i) => `${i + 1}. [tavily] ${r.title}\n   ${r.href}\n   ${r.snippet}`).join("\n\n"))
+    }
     if (args.engine) {
       const engine = ENGINES.find(e => e.name === args.engine)
       if (!engine) return `Unknown engine '${args.engine}'. Available: ${ENGINE_NAMES.join(", ")}`

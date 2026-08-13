@@ -290,6 +290,44 @@ test("fetch: 重定向目标做 SSRF 检查（302 跳内网被拦截，相对 UR
   assert.ok(resolveRedirectTarget("http://[", base).error)
 })
 
+test("websearch: Tavily 结构化搜索优先，无 key 回退 Bing", async () => {
+  const { websearchTool } = await import("../src/tools/web.mjs")
+  const origFetch = globalThis.fetch
+  let hitTavily = false
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes("api.tavily.com")) {
+      hitTavily = true
+      return new Response(JSON.stringify({
+        results: [
+          { title: "Tavily Result", url: "https://example.com/a", content: "snippet A", score: 0.9 },
+          { title: "Result 2", url: "https://example.com/b", content: "snippet B", score: 0.8 },
+        ],
+      }), { status: 200, headers: { "content-type": "application/json" } })
+    }
+    throw new Error("should not reach Bing when Tavily is configured")
+  }
+  try {
+    const ctx = { agent: { config: { proxy: { web: false }, websearch: { provider: "tavily", apiKey: "tvly-test" } } } }
+    const out = await websearchTool.execute({ query: "test", limit: 2 }, ctx)
+    assert.ok(hitTavily, "Tavily endpoint called")
+    assert.match(out, /\[tavily\] Tavily Result/)
+    assert.match(out, /snippet A/)
+    assert.doesNotMatch(out, /\[bing\]/)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+
+  // 无 key → 不回退到 Tavily（fetchTavily 返回 null），走 Bing（此处 mock 成空结果即可）
+  globalThis.fetch = async () => new Response("", { status: 200 })
+  try {
+    const ctx = { agent: { config: { proxy: { web: false }, websearch: { provider: "tavily", apiKey: "" } } } }
+    const out = await websearchTool.execute({ query: "test", limit: 2 }, ctx)
+    assert.doesNotMatch(out, /\[tavily\]/, "no key → no tavily prefix")
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
 // ---------------------------------------------------------------- bash 流式
 
 test("bash: 流式输出实时透传（onOutput 分块到达）", async () => {
