@@ -2,6 +2,41 @@ import { listSlots } from "../session.mjs"
 import { sliceByWidth } from "./render.mjs"
 import { ansi, C } from "./ansi.mjs"
 
+/** Lazy history window (parity with VS Code HISTORY_PAGE_SIZE): first paint loads
+ *  the latest INITIAL_HISTORY_MESSAGES, then PgUp-at-top loads HISTORY_PAGE_MESSAGES
+ *  more. Rebuilding an 8000-message session eagerly froze startup + first render. */
+export const INITIAL_HISTORY_MESSAGES = 200
+export const HISTORY_PAGE_MESSAGES = 50
+
+/**
+ * Convert history[startIdx, endIdx) into conversation source lines (label lines
+ * with a leading blank separator, content lines, tool summaries). `history` is the
+ * FULL array so the tool-result lookahead (history[i+1]) works across the page edge.
+ */
+export function historyToLines(history, startIdx, endIdx) {
+  const lines = []
+  for (let i = startIdx; i < endIdx; i++) {
+    const m = history[i]
+    if (m.role === "user") {
+      if (typeof m.content === "string" && m.content.startsWith("[System reminder:")) continue
+      if (lines.length > 0) lines.push({ text: "", color: C.dim })
+      lines.push({ text: "❯ You:", color: ansi.bold + C.user })
+      if (typeof m.content === "string" && m.content) lines.push({ text: m.content, color: C.text })
+    } else if (m.role === "assistant") {
+      if (lines.length > 0) lines.push({ text: "", color: C.dim })
+      lines.push({ text: "❯ ThinCoder:", color: ansi.bold + C.assistant })
+      if (typeof m.content === "string" && m.content) lines.push({ text: m.content, color: C.text })
+      for (const tc of m.tool_calls ?? []) {
+        const toolResult = history[i + 1]
+        const hasResult = toolResult?.role === "tool" && toolResult?.tool_call_id === tc.id
+        const summary = hasResult ? " → " + sliceByWidth(String(toolResult.content).split("\n")[0], 80) : ""
+        lines.push({ text: `  [tool] ${tc.function?.name ?? "?"}${summary}`, color: C.tool })
+      }
+    }
+  }
+  return lines
+}
+
 /** Startup screen + session recovery + background indexing.
  *  Extracted from index.mjs.
  *  ctx: { agent, state, opts, pushLine, pushLabel, render, startWizard } */
@@ -25,27 +60,19 @@ export function showStartup(ctx) {
     const recoveryNote = opts.restored._recovered ? " (recovered from backup)" : ""
     pushLabel(`── Restored previous session${recoveryNote}; /new for a fresh session ──`, C.warn)
   } else if (opts.restored?.history?.length) {
-    // Rebuild conversation: user/assistant messages shown one by one, tool result lines show only first-line summary
-    for (let i = 0; i < opts.restored.history.length; i++) {
-      const m = opts.restored.history[i]
-      if (m.role === "user") {
-        if (typeof m.content === "string" && m.content.startsWith("[System reminder:")) continue
-        pushLabel(`❯ You:`, ansi.bold + C.user)
-        if (typeof m.content === "string" && m.content) pushLine(m.content, C.text)
-      } else if (m.role === "assistant") {
-        pushLabel(`❯ ThinCoder:`, ansi.bold + C.assistant)
-        if (typeof m.content === "string" && m.content) pushLine(m.content, C.text)
-        for (const tc of m.tool_calls ?? []) {
-          // Find the next corresponding tool result, show first-line summary
-          const toolResult = opts.restored.history[i + 1]
-          const hasResult = toolResult?.role === "tool" && toolResult?.tool_call_id === tc.id
-          const summary = hasResult ? " → " + sliceByWidth(String(toolResult.content).split("\n")[0], 80) : ""
-          pushLine(`  [tool] ${tc.function?.name ?? "?"}${summary}`, C.tool)
-        }
-      }
-      // Tool messages aren't rendered separately — already shown as summary after assistant's tool_calls
+    // Lazy rebuild: only the latest INITIAL_HISTORY_MESSAGES are materialized on
+    // startup; the rest loads on demand (PgUp at top). state._history* fields are
+    // read by the loadOlder closure in index.mjs.
+    const total = opts.restored.history.length
+    const start = Math.max(0, total - INITIAL_HISTORY_MESSAGES)
+    state.lines.push(...historyToLines(opts.restored.history, start, total))
+    state._historyLoaded = total - start
+    state._historyTotal = total
+    state._hasOlder = start > 0
+    if (state._hasOlder) {
+      state.lines.unshift({ text: `… ${start} more earlier messages (PgUp at top to load)`, color: C.dim })
     }
-    pushLabel(`── Restored previous session (${opts.restored.history.length} messages); /new for a fresh session ──`, C.warn)
+    pushLabel(`── Restored previous session (${total} messages); /new for a fresh session ──`, C.warn)
   }
 
   // Hint when multiple sessions exist

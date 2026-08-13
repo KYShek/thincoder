@@ -31,7 +31,8 @@ import { pasteClipboardImage as pasteClipboardImageImpl, insertPastedText, trans
 import { parseMouseClicks, handleMouseClick } from "./mouse.mjs"
 import { runAgentTurn } from "./agent-turn.mjs"
 import { createKeyHandler } from "./key-handler.mjs"
-import { showStartup, backgroundIndex } from "./startup.mjs"
+import { showStartup, backgroundIndex, historyToLines, HISTORY_PAGE_MESSAGES } from "./startup.mjs"
+import { countConvLines } from "./render-conversation.mjs"
 import { createConfigHelpers } from "./config-helpers.mjs"
 
 /** 升级失败提示文案：附 npm 输出尾部（最多 3 行），方便定位失败原因。 */
@@ -92,6 +93,11 @@ export async function startTUI(agent, opts = {}) {
     expandedBlocks: new Set(), // block hashes that are expanded (Enter toggles)
     foldEnabled: true, // global fold toggle — /fold on|off
     exitArmed: false, // Ctrl+C double-confirm: first press arms, second (within window) exits
+    // Lazy history window (parity with VS Code): only the latest messages are
+    // materialized on restore; PgUp-at-top loads earlier pages via loadOlder.
+    _historyLoaded: 0, // messages loaded from the TAIL of _fullHistory
+    _historyTotal: 0, // total messages in the restored session
+    _hasOlder: false, // more earlier messages remain unloaded
   }
 
   // On session restore, if all tasks are completed, auto-collapse the todo panel (match runtime behavior)
@@ -252,6 +258,39 @@ export async function startTUI(agent, opts = {}) {
     render()
   }
 
+  /**
+   * Load the next earlier page of restored history (lazy, parity with VS Code
+   * loadOlder). Prepends earlier source lines and compensates scroll so the
+   * visible content does not jump. Called from key-handler when PgUp hits the top.
+   */
+  const loadOlder = () => {
+    if (!state._hasOlder) return
+    const full = agent._fullHistory ?? []
+    const loaded = state._historyLoaded
+    const start = Math.max(0, full.length - loaded - HISTORY_PAGE_MESSAGES)
+    const end = full.length - loaded
+    if (start >= end) return
+
+    const cols = process.stdout.columns || 80
+    const before = countConvLines(state, cols)
+
+    // Drop the old placeholder, prepend the older page, re-add the placeholder
+    // (with an updated count) only if more remain.
+    if (state.lines[0]?.text?.startsWith("… ")) state.lines.shift()
+    state.lines.unshift(...historyToLines(full, start, end))
+    state._historyLoaded += end - start
+    state._hasOlder = start > 0
+    if (state._hasOlder) {
+      state.lines.unshift({ text: `… ${start} more earlier messages (PgUp at top to load)`, color: C.dim })
+    }
+
+    // Scroll compensation: prepending N display rows must move scroll by N to
+    // keep the previously-visible bottom-anchored content in place.
+    const after = countConvLines(state, cols)
+    state.scroll += Math.max(0, after - before)
+    render()
+  }
+
   // Only emit the assistant label once per turn (on first token or first tool call)
   let assistantLabeled = false
   const ensureAssistantLabel = () => {
@@ -380,7 +419,7 @@ export async function startTUI(agent, opts = {}) {
     agent, state, render, popPicker, renderPickerLines,
     handleSlash, handleTab, submit, pasteClipboardImage,
     wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
-    renderWizard, pushLine, cleanup, showPicker,
+    renderWizard, pushLine, cleanup, showPicker, loadOlder,
   })
   keyStream.on("keypress", (str, key) => {
     try {

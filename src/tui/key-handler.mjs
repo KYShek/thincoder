@@ -2,6 +2,15 @@ import { ansi, C } from "./ansi.mjs"
 import { readClipboardText, insertPastedText } from "./clipboard.mjs"
 import { computeLayout } from "./layout.mjs"
 import { handleSearchKey } from "./key-handler-search.mjs"
+import { countConvLines } from "./render-conversation.mjs"
+
+/** Current conversation max scroll offset (display lines beyond the visible panel). */
+function convMaxScroll(state) {
+  const cols = process.stdout.columns || 80
+  const rows = process.stdout.rows || 24
+  const layout = computeLayout(state, { cols, rows })
+  return Math.max(0, countConvLines(state, cols) - layout.panels.conversation.h)
+}
 
 /** Keyboard event dispatch: permission confirm / question / picker / wizard / edit / scroll / history / paste.
  *  Extracted from index.mjs.
@@ -10,7 +19,7 @@ import { handleSearchKey } from "./key-handler-search.mjs"
  *         wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems,
  *         renderWizard, pushLine, cleanup, showPicker } */
 export function createKeyHandler(ctx) {
-  const { agent, state, render, popPicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup, showPicker } = ctx
+  const { agent, state, render, popPicker, renderPickerLines, handleSlash, handleTab, submit, pasteClipboardImage, wizardChooseProvider, wizardSubmitText, cancelWizard, wizardProviderItems, renderWizard, pushLine, cleanup, showPicker, loadOlder } = ctx
 
   return function onKeypress(str, key = {}) {
     // permission confirm state: y approve / n deny / a approve + turn ON AUTO (no further prompts)
@@ -268,7 +277,13 @@ export function createKeyHandler(ctx) {
 
     // page scroll
     if (key.name === "pageup") {
-      state.scroll += Math.max(1, (process.stdout.rows || 24) - 8)
+      // At the top of the conversation → load the next earlier history page
+      // (lazy restore, parity with VS Code's scroll-back loadOlder).
+      if (state._hasOlder && loadOlder && state.scroll >= convMaxScroll(state)) {
+        loadOlder()
+      } else {
+        state.scroll += Math.max(1, (process.stdout.rows || 24) - 8)
+      }
       render()
       return
     }
