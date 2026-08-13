@@ -317,8 +317,11 @@ export { isLegacyTransient }
 
 // ========== core read/write ==========
 
-/** Save agent state and display lines to the active slot file (atomic write) */
-export function saveSession(agent, display) {
+/** Save agent state to the active slot file (atomic write). `display` (the old
+ *  WYSIWYG render snapshot) is DEPRECATED — it drifted out of sync with history
+ *  whenever VS Code wrote the slot, and the TUI resumed from a stale snapshot.
+ *  Restore now always rebuilds from history (lazy, see startup.mjs). */
+export function saveSession(agent) {
   // _fullHistory is written at the source via pushReal — no flush needed here.
   // history        = FULL, never-compacted (human-readable; VS Code panel & CLI resume read this)
   // contextHistory = machine context (possibly compacted) so CLI resume keeps the token savings
@@ -333,7 +336,6 @@ export function saveSession(agent, display) {
     updatedAt: Date.now(),
     history,
     contextHistory,
-    display: display ?? [],
     tasks: agent.tasks ?? [],
     planMode: agent.planMode ?? false,
     autoApprove: agent.autoApprove ?? false,
@@ -367,9 +369,6 @@ export function loadSession(cwd) {
       if (!Array.isArray(data.history)) return null
       if (data.cwd && data.cwd.toLowerCase() !== cwd.toLowerCase()) return null
       data.history = data.history.filter((m) => !isLegacyTransient(m))
-      data.display = Array.isArray(data.display)
-        ? data.display.filter((l) => l && typeof l.text === "string").map((l) => ({ text: l.text, color: l.color }))
-        : []
       data._recovered = false
       return data
     } catch (e) {
@@ -473,7 +472,7 @@ export function newSession(cwd) {
   while (m.slots[slot]) slot++
 
   // Write empty session
-  const data = { version: 2, cwd, title: "", updatedAt: Date.now(), history: [], tasks: [], display: [], goal: null, autoApprove: false, advisor: null, pendingReminders: [], sessionStart: null }
+  const data = { version: 2, cwd, title: "", updatedAt: Date.now(), history: [], tasks: [], goal: null, autoApprove: false, advisor: null, pendingReminders: [], sessionStart: null }
   writeSessionFile(slotPath(cwd, slot), data)
   m.slots[slot] = slotDigest(data)
   m.active = slot

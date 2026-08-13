@@ -105,7 +105,7 @@ test("session: 保存/恢复/新建 往返（基于槽位）", async () => {
     { text: "你好", color: "white" },
     { text: "  [done] ls → src/", color: "dim" },
   ]
-  saveSession(agent, display)
+  saveSession(agent)
   // saveSession 直接写入活动槽位
   assert.ok(existsSync(activePath(cwd)))
   const restored = loadSession(cwd)
@@ -114,7 +114,8 @@ test("session: 保存/恢复/新建 往返（基于槽位）", async () => {
   assert.equal(restored.tasks[0].status, "done")
   assert.deepEqual(restored.pendingReminders, ["[System reminder: plan mode is now ON. ...]"])
   assert.equal(restored.sessionStart, "2026-01-01T00:00:00.000Z")
-  assert.deepEqual(restored.display, display)
+  // display 已废弃：saveSession 不再写入 WYSIWYG 快照（TUI 恢复走 history 懒加载）
+  assert.equal(restored.display, undefined)
   // 原子写不残留临时文件
   const { readdirSync } = await import("node:fs")
   const { dirname } = await import("node:path")
@@ -165,21 +166,17 @@ test("session: 旧存档的前缀型临时上下文在加载时清理，cwd 不�
   }
 })
 
-test("session: 畸形 display 不让 TUI 启动崩溃（schema 校验+净化）", async () => {
+test("session: 畸形 display 不影响启动（display 已废弃，loadSession 不再读取）", async () => {
   const { loadSession, activePath, sessionPath } = await import("../src/session.mjs")
   const cwd = join(tmpdir(), "thincoder-session-display-" + Date.now())
   const p = activePath(cwd)
   mkdirSync(dirname(p), { recursive: true })
-  writeFileSync(p, JSON.stringify({ version: 2, cwd, history: [], tasks: [], display: "not-an-array" }), "utf8")
-  assert.deepEqual(loadSession(cwd).display, [])
-  writeFileSync(p, JSON.stringify({
-    version: 2,
-    cwd,
-    history: [],
-    tasks: [],
-    display: [{ text: "ok", color: "dim", extra: 1 }, { noText: true }, null, "str", { text: 42 }],
-  }), "utf8")
-  assert.deepEqual(loadSession(cwd).display, [{ text: "ok", color: "dim" }])
+  // 旧文件里的畸形 display 值：不再被读取/净化，恢复照常
+  writeFileSync(p, JSON.stringify({ version: 2, cwd, history: [{ role: "user", content: "hi" }], tasks: [], display: "not-an-array" }), "utf8")
+  const restored = loadSession(cwd)
+  assert.equal(restored.history.length, 1)
+  // display 不再被净化（透传），但恢复完全不依赖它
+  assert.equal(restored.display, "not-an-array")
   // 清理
   const { unlinkSync } = await import("node:fs")
   try { unlinkSync(p) } catch {}

@@ -1,5 +1,6 @@
 import { listSlots, switchToSlot, applySession } from "../session.mjs"
 import { ansi, C } from "./ansi.mjs"
+import { restoreLines } from "./startup.mjs"
 
 /** /session command: list/switch session slots.
  *  ctx: { agent, state, showPicker, pushLine, pushLabel, render } */
@@ -38,7 +39,9 @@ export async function handleSessionCommand(ctx) {
     return
   }
   applySession(agent, data)
-  state.lines = data.display.length ? [...data.display] : []
+  // Rebuild from history (lazy) — the display snapshot is deprecated.
+  state.lines = []
+  restoreLines(state, data.history)
   state.tasks = agent.tasks ?? []
   if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "done")) {
     state.tasks = []

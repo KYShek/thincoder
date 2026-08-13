@@ -37,6 +37,25 @@ export function historyToLines(history, startIdx, endIdx) {
   return lines
 }
 
+
+/**
+ * Lazy-restore a session into state.lines: materialize only the latest
+ * INITIAL_HISTORY_MESSAGES, set the _history* counters the loadOlder closure
+ * reads, and prepend the "… N more earlier messages" placeholder. Shared by
+ * startup restore and /session switching (the display snapshot is deprecated).
+ */
+export function restoreLines(state, history) {
+  const total = Array.isArray(history) ? history.length : 0
+  if (total === 0) return
+  const start = Math.max(0, total - INITIAL_HISTORY_MESSAGES)
+  state.lines.push(...historyToLines(history, start, total))
+  state._historyLoaded = total - start
+  state._historyTotal = total
+  state._hasOlder = start > 0
+  if (state._hasOlder) {
+    state.lines.unshift({ text: `… ${start} more earlier messages (PgUp at top to load)`, color: C.dim })
+  }
+}
 /** Startup screen + session recovery + background indexing.
  *  Extracted from index.mjs.
  *  ctx: { agent, state, opts, pushLine, pushLabel, render, startWizard } */
@@ -53,26 +72,11 @@ export function showStartup(ctx) {
   }
   pushLine(`Tools: ${agent.tools.map((t) => t.name).join(", ")}`, C.dim)
 
-  // Recover previous session: rebuild conversation display (tool result lines omitted, keep it clean)
-  if (opts.restored?.display?.length) {
-    // User-facing recovery: display is a WYSIWYG snapshot of the conversation before exit
-    state.lines = [...opts.restored.display.map((l) => ({ text: l.text, color: l.color })), ...state.lines]
-    const recoveryNote = opts.restored._recovered ? " (recovered from backup)" : ""
-    pushLabel(`── Restored previous session${recoveryNote}; /new for a fresh session ──`, C.warn)
-  } else if (opts.restored?.history?.length) {
-    // Lazy rebuild: only the latest INITIAL_HISTORY_MESSAGES are materialized on
-    // startup; the rest loads on demand (PgUp at top). state._history* fields are
-    // read by the loadOlder closure in index.mjs.
-    const total = opts.restored.history.length
-    const start = Math.max(0, total - INITIAL_HISTORY_MESSAGES)
-    state.lines.push(...historyToLines(opts.restored.history, start, total))
-    state._historyLoaded = total - start
-    state._historyTotal = total
-    state._hasOlder = start > 0
-    if (state._hasOlder) {
-      state.lines.unshift({ text: `… ${start} more earlier messages (PgUp at top to load)`, color: C.dim })
-    }
-    pushLabel(`── Restored previous session (${total} messages); /new for a fresh session ──`, C.warn)
+  // Recover previous session: rebuild from history (lazy — display snapshot is
+  // deprecated; it drifted out of sync with history on VS Code writes).
+  if (opts.restored?.history?.length) {
+    restoreLines(state, opts.restored.history)
+    pushLabel(`── Restored previous session (${opts.restored.history.length} messages); /new for a fresh session ──`, C.warn)
   }
 
   // Hint when multiple sessions exist

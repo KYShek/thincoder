@@ -227,7 +227,7 @@ export async function startTUI(agent, opts = {}) {
     // Archiving to a slot is handled by /new and /session switch — not on every exit,
     // otherwise simply opening and closing the TUI repeatedly would fill all slots with duplicates.
     try {
-      saveSession(agent, state.lines)
+      saveSession(agent)
     } catch {
       // Save failure shouldn't block exit
     }
