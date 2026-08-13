@@ -227,7 +227,7 @@ export function memoryTools(memory, opts = {}) {
             tags: (args.tags ?? "").split(/\s+/).filter(Boolean),
             author: opts.author ?? "unknown",
           })
-          return `Saved to project memory (${filename}): [${args.type}] ${args.title}\nNote: file written to the repo; commit it yourself when ready.`
+          return `Saved to project memory (${filename}): [${args.type}] ${args.title}`
         }
         if (!opts.team?.dir) {
           throw new Error("team scope not configured: set memory.team in ~/.thincoder/config.json")
