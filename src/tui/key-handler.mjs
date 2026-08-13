@@ -3,6 +3,7 @@ import { readClipboardText, insertPastedText } from "./clipboard.mjs"
 import { computeLayout } from "./layout.mjs"
 import { handleSearchKey } from "./key-handler-search.mjs"
 import { countConvLines } from "./render-conversation.mjs"
+import { QUESTION_CUSTOM } from "./interaction.mjs"
 
 /** Current conversation max scroll offset (display lines beyond the visible panel). */
 function convMaxScroll(state) {
@@ -67,6 +68,15 @@ export function createKeyHandler(ctx) {
           render()
         } else if (key.name === "return") {
           const answer = q.options[q.selected ?? 0]
+          if (answer === QUESTION_CUSTOM) {
+            // Switch to free-text mode — the user wants to type their own answer.
+            q.options = []
+            q.answer = ""
+            q.selected = undefined
+            state.status = "Waiting for answer..."
+            render()
+            return
+          }
           q.resolve(answer)
           state.question = null
           state.status = "Processing..."

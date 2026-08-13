@@ -8,6 +8,7 @@
  * Fixed panels deducted first, conditional panels allocated by priority, remaining space to conversation.
  */
 import { layoutInput, wrapText } from "./render.mjs"
+import { QUESTION_CUSTOM } from "./interaction.mjs"
 
 const MAX_INPUT_LINES = 5
 const MAX_TASK_LINES = 5
@@ -36,7 +37,8 @@ export function computeLayout(state, { cols, rows }) {
     if (q.options.length > 0) {
       const sel = q.selected ?? 0
       const start = Math.max(0, Math.min(sel - 2, q.options.length - QWIN))
-      boxLines = q.options.slice(start, start + QWIN).map((opt, i) => (start + i === sel ? "▸ " : "  ") + opt)
+      boxLines = q.options.slice(start, start + QWIN).map((opt, i) =>
+        (start + i === sel ? "▸ " : "  ") + (opt === QUESTION_CUSTOM ? "✍ Custom answer…" : opt))
     } else {
       boxLines = ["▸ " + (q.answer ?? "")]
     }

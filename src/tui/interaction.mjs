@@ -4,6 +4,11 @@ import { detectDanger } from "../tools/shared.mjs"
 /** Interaction primitives: permission approval + question input.
  *  Extracted from index.mjs, receives closure dependencies via createInteraction(ctx).
  *  ctx: { agent, state, pushLine, pushLabel, render, summarize } */
+
+/** Sentinel appended to question option lists — selecting it switches to free-text
+ *  answer mode (the user supplements/corrects the AI's preset choices). */
+export const QUESTION_CUSTOM = "\u0001custom-answer"
+
 export function createInteraction(ctx) {
   const { agent, state, pushLine, pushLabel, render, summarize } = ctx
 
@@ -74,11 +79,13 @@ export function createInteraction(ctx) {
         render()
       })
     }
-    // options mode: show list in input box, arrow keys to select, Enter to confirm
+    // options mode: show list in input box, arrow keys to select, Enter to confirm.
+    // A "custom answer" sentinel is appended so the user can always type their own
+    // answer instead of picking a preset — the AI's options are never exhaustive.
     pushLabel(`❯ Question`, ansi.bold + C.tool)
     for (const line of text.split("\n")) pushLine(`  ${line}`, C.text)
     return new Promise((resolve) => {
-      state.question = { text, options, selected: 0, resolve }
+      state.question = { text, options: [...options, QUESTION_CUSTOM], selected: 0, resolve }
       state.status = "Waiting for choice..."
       render()
     })
