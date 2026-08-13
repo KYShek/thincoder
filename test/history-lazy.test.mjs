@@ -65,6 +65,34 @@ test("historyToLines restores reasoning and full tool results (fidelity vs the l
   assert.equal(lines.find((l) => l.text.includes("thinking line 1"))?.color, C.dim, "reasoning is dim")
 })
 
+test("historyToLines emits ONE assistant label per turn (multi-segment turns)", () => {
+  const history = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "working…", tool_calls: [{ id: "t1", function: { name: "bash" } }] },
+    { role: "tool", tool_call_id: "t1", content: "out1" },
+    { role: "assistant", content: "", tool_calls: [{ id: "t2", function: { name: "read" } }] }, // empty-content segment
+    { role: "tool", tool_call_id: "t2", content: "out2" },
+    { role: "assistant", content: "final answer" },
+  ]
+  const lines = historyToLines(history, 0, 6)
+  const labels = lines.filter((l) => l.text === "❯ ThinCoder:")
+  assert.equal(labels.length, 1, "one label per turn, not per LLM-call segment")
+  assert.ok(lines.some((l) => l.text === "final answer"), "all segments still restored")
+})
+
+test("historyToLines starts mid-turn without re-emitting the label (page edge)", () => {
+  const history = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "first", tool_calls: [{ id: "t1", function: { name: "bash" } }] },
+    { role: "tool", tool_call_id: "t1", content: "out" },
+    { role: "assistant", content: "second" },
+  ]
+  // Page starts at index 2 (mid-turn) — the previous message is an assistant segment.
+  const lines = historyToLines(history, 2, 4)
+  assert.ok(!lines.some((l) => l.text === "❯ ThinCoder:"), "mid-turn page does not re-emit the label")
+  assert.ok(lines.some((l) => l.text === "second"), "segment content still restored")
+})
+
 test("page constants align with VS Code parity (initial window > page size)", () => {
   assert.ok(INITIAL_HISTORY_MESSAGES > HISTORY_PAGE_MESSAGES)
   assert.equal(HISTORY_PAGE_MESSAGES, 50) // VS Code HISTORY_PAGE_SIZE parity

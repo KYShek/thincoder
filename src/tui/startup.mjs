@@ -14,6 +14,16 @@ export const HISTORY_PAGE_MESSAGES = 50
  */
 export function historyToLines(history, startIdx, endIdx) {
   const lines = []
+  // Cross-page turn state: if the message BEFORE this page is a tool/assistant,
+  // the page starts mid-turn and must NOT emit a fresh "❯ ThinCoder:" label
+  // (a turn gets ONE label in the live run; history stores one assistant
+  // message per LLM call, so a multi-call turn would otherwise paint a label
+  // on every segment — the reported "why so many ❯ ThinCoder:" bug).
+  let inTurn = false
+  if (startIdx > 0) {
+    const prev = history[startIdx - 1]
+    inTurn = prev?.role === "assistant" || prev?.role === "tool"
+  }
   for (let i = startIdx; i < endIdx; i++) {
     const m = history[i]
     if (m.role === "user") {
@@ -21,9 +31,14 @@ export function historyToLines(history, startIdx, endIdx) {
       if (lines.length > 0) lines.push({ text: "", color: C.dim })
       lines.push({ text: "❯ You:", color: ansi.bold + C.user })
       if (typeof m.content === "string" && m.content) lines.push({ text: m.content, color: C.text })
+      inTurn = false
     } else if (m.role === "assistant") {
-      if (lines.length > 0) lines.push({ text: "", color: C.dim })
-      lines.push({ text: "❯ ThinCoder:", color: ansi.bold + C.assistant })
+      if (!inTurn) {
+        // Turn start — the only place the assistant label is emitted.
+        if (lines.length > 0) lines.push({ text: "", color: C.dim })
+        lines.push({ text: "❯ ThinCoder:", color: ansi.bold + C.assistant })
+      }
+      inTurn = true
       // Reasoning restored as dim lines (folded by the consecutive-dim rule when
       // long) — matches the live thinking stream instead of vanishing on restore.
       const reasoning = m.reasoning_content ?? m.reasoning
