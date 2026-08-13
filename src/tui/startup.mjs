@@ -1,5 +1,4 @@
 import { listSlots } from "../session.mjs"
-import { sliceByWidth } from "./render.mjs"
 import { ansi, C } from "./ansi.mjs"
 
 /** Lazy history window (parity with VS Code HISTORY_PAGE_SIZE): first paint loads
@@ -25,12 +24,22 @@ export function historyToLines(history, startIdx, endIdx) {
     } else if (m.role === "assistant") {
       if (lines.length > 0) lines.push({ text: "", color: C.dim })
       lines.push({ text: "❯ ThinCoder:", color: ansi.bold + C.assistant })
+      // Reasoning restored as dim lines (folded by the consecutive-dim rule when
+      // long) — matches the live thinking stream instead of vanishing on restore.
+      const reasoning = m.reasoning_content ?? m.reasoning
+      if (typeof reasoning === "string" && reasoning.trim()) {
+        for (const line of reasoning.split("\n")) lines.push({ text: "  " + line, color: C.dim })
+      }
       if (typeof m.content === "string" && m.content) lines.push({ text: m.content, color: C.text })
       for (const tc of m.tool_calls ?? []) {
         const toolResult = history[i + 1]
         const hasResult = toolResult?.role === "tool" && toolResult?.tool_call_id === tc.id
-        const summary = hasResult ? " → " + sliceByWidth(String(toolResult.content).split("\n")[0], 80) : ""
-        lines.push({ text: `  [tool] ${tc.function?.name ?? "?"}${summary}`, color: C.tool })
+        lines.push({ text: `  [tool] ${tc.function?.name ?? "?"}`, color: C.tool })
+        if (hasResult && String(toolResult.content).trim()) {
+          // FULL tool result as dim lines (auto-folded when > 8) — the old
+          // first-line-only summary made restore feel nothing like the live run.
+          for (const line of String(toolResult.content).split("\n")) lines.push({ text: "  " + line, color: C.dim })
+        }
       }
     }
   }

@@ -6,6 +6,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { historyToLines, INITIAL_HISTORY_MESSAGES, HISTORY_PAGE_MESSAGES } from "../src/tui/startup.mjs"
+import { C } from "../src/tui/ansi.mjs"
 
 test("historyToLines materializes user/assistant/tool lines with summaries", () => {
   const history = [
@@ -44,7 +45,24 @@ test("historyToLines slices a page and lookahead works across the page edge", ()
   const lines = historyToLines(history, 0, 2)
   const toolLine = lines.find((l) => l.text.includes("[tool] read"))
   assert.ok(toolLine, "tool call line present")
-  assert.ok(toolLine.text.includes("file content line"), "summary resolved from the NEXT page (full-array lookahead)")
+  assert.ok(
+    lines.some((l) => l.text.includes("file content line")),
+    "FULL tool result restored (dim lines) from the NEXT page (full-array lookahead)",
+  )
+})
+
+test("historyToLines restores reasoning and full tool results (fidelity vs the live run)", () => {
+  const history = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "done", reasoning_content: "thinking line 1\nthinking line 2", tool_calls: [{ id: "t1", function: { name: "bash" } }] },
+    { role: "tool", tool_call_id: "t1", content: "line1\nline2\nline3" },
+  ]
+  const lines = historyToLines(history, 0, 3)
+  const texts = lines.map((l) => l.text)
+  assert.ok(texts.includes("  thinking line 1"), "reasoning restored as dim lines")
+  assert.ok(texts.includes("  thinking line 2"), "all reasoning lines restored")
+  assert.ok(texts.includes("  line1") && texts.includes("  line2") && texts.includes("  line3"), "FULL tool result restored (not a one-line summary)")
+  assert.equal(lines.find((l) => l.text.includes("thinking line 1"))?.color, C.dim, "reasoning is dim")
 })
 
 test("page constants align with VS Code parity (initial window > page size)", () => {
