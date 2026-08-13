@@ -139,3 +139,21 @@ describe("multi-provider 集成", () => {
     assert.equal(activeProvider, "kimi") // 不变
   })
 })
+
+describe("usage cache 归一化（normalizeUsageCache）", () => {
+  test("Kimi/OpenAI 风格 cached_tokens → prompt_cache_hit/miss_tokens", async () => {
+    const { normalizeUsageCache } = await import("../src/provider/sse.mjs")
+    const kimi = { prompt_tokens: 1000, completion_tokens: 10, total_tokens: 1010, prompt_tokens_details: { cached_tokens: 800 } }
+    const n = normalizeUsageCache({ ...kimi })
+    assert.equal(n.prompt_cache_hit_tokens, 800)
+    assert.equal(n.prompt_cache_miss_tokens, 200) // 1000 - 800
+  })
+
+  test("DeepSeek 风格字段不动；无缓存字段不动", async () => {
+    const { normalizeUsageCache } = await import("../src/provider/sse.mjs")
+    const ds = { prompt_cache_hit_tokens: 500, prompt_cache_miss_tokens: 500 }
+    assert.deepEqual(normalizeUsageCache({ ...ds }), ds)
+    const plain = { prompt_tokens: 100, completion_tokens: 10 }
+    assert.equal(normalizeUsageCache({ ...plain }).prompt_cache_hit_tokens, undefined)
+  })
+})

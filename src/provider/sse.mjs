@@ -2,6 +2,24 @@
  * provider/sse.mjs — SSE stream reader
  * Extracted from core.mjs. Parses Server-Sent Events for LLM chat responses.
  */
+
+/**
+ * Normalize provider cache fields into DeepSeek-style prompt_cache_hit/miss_tokens.
+ * DeepSeek already returns these; OpenAI/Kimi report the cache hit as
+ * prompt_tokens_details.cached_tokens; a few providers put cached_tokens at the
+ * usage top level. Miss is derived as prompt_tokens - hit when not reported.
+ */
+export function normalizeUsageCache(u) {
+  if (!u || u.prompt_cache_hit_tokens !== undefined) return u
+  const cached = u.prompt_tokens_details?.cached_tokens ?? u.cached_tokens
+  if (cached === undefined) return u
+  u.prompt_cache_hit_tokens = cached
+  if (u.prompt_cache_miss_tokens === undefined && typeof u.prompt_tokens === "number") {
+    u.prompt_cache_miss_tokens = Math.max(0, u.prompt_tokens - cached)
+  }
+  return u
+}
+
 export async function readSSE(response, { onToken, onReasoning, rules, signal, firedPatterns: sharedFired }) {
   // Early intercept: non-SSE responses — either error bodies (HTTP >= 400) or
   // valid single-chunk JSON completions (some APIs return JSON despite stream:true).
@@ -28,7 +46,7 @@ export async function readSSE(response, { onToken, onReasoning, rules, signal, f
       const parsed = JSON.parse(body)
       const choice = parsed.choices?.[0]
       if (choice) {
-        const result = { content: "", reasoning: "", toolCalls: [], usage: parsed.usage ?? null, finishReason: null }
+        const result = { content: "", reasoning: "", toolCalls: [], usage: normalizeUsageCache(parsed.usage ?? null), finishReason: null }
         const delta = choice.delta ?? {}
         result.content = delta.content ?? ""
         result.reasoning = delta.reasoning_content ?? ""
@@ -63,7 +81,7 @@ export async function readSSE(response, { onToken, onReasoning, rules, signal, f
       let json
       try { json = JSON.parse(data) } catch { continue }
 
-      if (json.usage) result.usage = json.usage
+      if (json.usage) result.usage = normalizeUsageCache(json.usage)
       const choice = json.choices?.[0]
       if (!choice) continue
       hasChoices = true
