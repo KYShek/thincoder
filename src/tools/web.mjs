@@ -115,6 +115,17 @@ function headerOf(res, name) {
   return h[name.toLowerCase()] ?? null
 }
 
+/** Validate a redirect target: resolve relative → absolute, http/https only, and
+ *  SSRF-checked. Returns { target } on success or { error } (never follows into a
+ *  private host — the redirect SSRF bypass). */
+export function resolveRedirectTarget(loc, baseUrl) {
+  let target
+  try { target = new URL(loc, baseUrl).toString() } catch { return { error: "invalid redirect location" } }
+  if (!/^https?:\/\//.test(target)) return { error: "redirect target must be http/https" }
+  if (isPrivateUrl(target)) return { error: "redirect target is internal/private/metadata" }
+  return { target }
+}
+
 export const fetchTool = {
   name: "fetch",
   description: DESC("fetch"),
@@ -130,7 +141,11 @@ export const fetchTool = {
         if ([301, 302, 307, 308].includes(response.status)) {
           const loc = headerOf(response, "location")
           if (loc) {
-            const r2 = await proxyFetch(loc, { headers: { "User-Agent": UA } }, proxyUri)
+            // SSRF-check the redirect target (resolve relative → absolute) before
+            // following — a 3xx must not bounce a public URL into a private host.
+            const r = resolveRedirectTarget(loc, args.url)
+            if (r.error) throw new Error(`fetch failed: ${r.error}`)
+            const r2 = await proxyFetch(r.target, { headers: { "User-Agent": UA } }, proxyUri)
             if (!r2.ok) throw new Error(`fetch failed: HTTP ${r2.status}`)
             const ct2 = headerOf(r2, "content-type") ?? ""
             const b2 = await r2.text()

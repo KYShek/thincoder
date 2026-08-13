@@ -272,6 +272,24 @@ test("fetch: HTML 转文本（直接测转换函数——本地服务器被 SSRF
   assert.ok(!out.includes("color:red")) // style 已剥除
 })
 
+test("fetch: 重定向目标做 SSRF 检查（302 跳内网被拦截，相对 URL 正确解析）", async () => {
+  const { resolveRedirectTarget } = await import("../src/tools/web.mjs")
+  const base = "https://public.example.com/a/b"
+
+  // 相对重定向 → 解析为绝对
+  assert.deepEqual(resolveRedirectTarget("/next", base), { target: "https://public.example.com/next" })
+  // 绝对公网目标 → 放行
+  assert.deepEqual(resolveRedirectTarget("https://cdn.example.com/x", base), { target: "https://cdn.example.com/x" })
+  // 内网 / 元数据 / loopback → 拦截
+  assert.ok(resolveRedirectTarget("http://127.0.0.1:8000/secret", base).error)
+  assert.ok(resolveRedirectTarget("http://169.254.169.254/latest", base).error)
+  assert.ok(resolveRedirectTarget("http://192.168.1.1/", base).error)
+  // 非 http(s) → 拦截
+  assert.ok(resolveRedirectTarget("file:///etc/passwd", base).error)
+  // 非法 location → 报错
+  assert.ok(resolveRedirectTarget("http://[", base).error)
+})
+
 // ---------------------------------------------------------------- bash 流式
 
 test("bash: 流式输出实时透传（onOutput 分块到达）", async () => {
