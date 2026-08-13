@@ -2,6 +2,14 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.20] - 2026-08-13
+
+- **修复** TUI 恢复旧 display 快照导致"看不到最新消息"——display 字段彻底废弃（saveSession 不再写、loadSession 不再读），恢复永远从 history 重建；配合 VS Code 端 0.1.5 的清空，跨端会话漂移根治
+- **新增** TUI 懒加载历史恢复：启动只物化最近 200 条消息（8000+ 条会话不再冻结启动），PgUp 到顶按 50 条/页加载更早历史，scroll 补偿保持视觉位置
+- **新增** question 选项列表末尾追加"✍ Custom answer…"——选中切自由输入，用户可补充/修正 AI 的预设选项
+- **重构** execute 工具移除假沙箱：require()/process 全可用（bash 本就能触达任意 Node API，拦 require 只会误导模型）；移除动态 import 拦截与 SSRF 私网拒绝；保留 timeout / cwd 约束 / 输出上限等工程保护
+- **改进** 工程模式 prompt：新增提问风格指引（默认开放式自由文本，选项仅用于有限枚举）；审查修复 5 处（需求优先步骤、designToken 仅走参数、用户审批呈现 advisor 发现、澄清完成判据、advisor 重试 3 轮上限）
+
 ## [0.12.19] - 2026-08-11
 
 - **重构** bash 工具安全模型：移除全部破坏性命令文本拦截（rm -rf / DROP TABLE 等）——文本匹配是安全剧场（恶意模型可绕过、误伤正常操作），真实防线 = 审批层（autoApprove）+ 快照（gitGuardSnapshot / checkpoint），与 env 透传、git"快照后放行永不拦截"统一
