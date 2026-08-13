@@ -2,6 +2,12 @@
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.22] - 2026-08-13
+
+- **修复** 缓存命中率对 Kimi 显示——usage 缓存字段归一化：Kimi/OpenAI 风格 `prompt_tokens_details.cached_tokens` 映射为 DeepSeek 风格 `prompt_cache_hit_tokens`，miss 由 prompt_tokens − hit 推导（此前 Kimi 的命中率永不显示）
+- **安全** fetch 重定向目标做 SSRF 检查——3xx 可把公网 URL 跳进内网（重定向绕过）；相对 URL 正确解析、仅 http/https、私网/元数据拦截
+- **新增** Tavily 结构化搜索（可选）——config 配 `websearch.apiKey` 后 `websearch` 走 Tavily API（稳定 JSON，不再依赖 Bing 页面结构）；无 key 回退 Bing 抓取，零门槛不破坏
+
 ## [0.12.21] - 2026-08-13
 
 - **修复** 恢复会话大量重复 "❯ ThinCoder:" 标签——history 按每次 LLM 调用存一条 assistant 消息（一个 turn 多段），恢复时每段都渲染了标签；现在只在 turn 开始渲染一次，跨页懒加载边界状态正确保留
