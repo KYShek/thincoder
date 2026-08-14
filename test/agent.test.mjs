@@ -329,8 +329,8 @@ test("config: 上下文窗口映射与压缩阈值推导", async () => {
   assert.deepEqual(resolveCompactThreshold(50000, "deepseek-v4-pro"), { value: 50000, auto: false })
   // 未配置时按模型推导：1M 窗口 × 0.6 = 60万
   assert.deepEqual(resolveCompactThreshold(null, "deepseek-v4-pro"), { value: 600000, auto: true })
-  // 256K 窗口 × 0.6 = 153,600
-  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 153600, auto: true })
+  // 未知/下线模型 → 128K 兜底 × 0.6 = 76,800
+  assert.deepEqual(resolveCompactThreshold(undefined, "deepseek-chat"), { value: 76800, auto: true })
 })
 
 test("config: Kimi For Coding 短 ID \"k3\" 命中 kimi-k3 规格（IK5VGJ）", async () => {
