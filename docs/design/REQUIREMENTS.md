@@ -54,7 +54,7 @@
 - 基础工具集：read / write / edit / bash / glob / grep
 - 上下文压缩：对话过长时自动摘要，撑住长任务（学 kimi-code）
 - TUI：对话流 + 流式输出 + 输入框 + 状态栏（裸 ANSI）
-- ~~轻量个人记忆：sqlite 单机版，接口与团队记忆兼容~~ → **三层记忆体系全部实现**（personal/project/team，FTS5 + 向量 RRF，markdown 条目 git 同步）
+- 个人记忆 → **三层记忆体系全部实现**（personal/project/team，FTS5 + 向量 RRF，markdown 条目 git 同步）——超出原计划（原仅规划 sqlite 单机轻量版）
 - Agent 自律工具链 ✅：`task` / `plan` / `goal` / `verify`（跑真实测试 + 修复-验证循环）+ recent_changes / question / checkpoint
 - 额外提前交付 ✅：子 agent 并行、MCP、checkpoint 断点恢复、团队记忆三层体系
 
