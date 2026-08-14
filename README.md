@@ -19,7 +19,7 @@ Design philosophy (the entire meaning of the name): if the Node standard library
 - **Toolset**: `read` / `write` / `edit` / `bash` / `glob` (supports `**`) / `grep` / `websearch` / `ls` / `fetch` + `read_image` (image/video paste) + three retrieval tools + MCP — all zero-dependency, file tools confined to the working directory
 - **Memory system**: three layers (personal/project/team), FTS5 + vector RRF hybrid retrieval, git-friendly markdown format
 - **Two-phase tool scheduling**: permission prompts serialized, read-only tools parallelized, side-effect tools serialized
-- **Session persistence** ⭐0.5.0: up to 5 archive slots, `/session` to switch anytime, tool results visible after restore. Process-level isolation — multiple instances in the same directory each get their own session slot
+- **Session persistence** ⭐0.5.0: unlimited archive slots, `/session` to switch anytime, tool results visible after restore. Process-level isolation — multiple instances in the same directory each get their own session slot
 - **Concurrent subagents**: three roles — `explore`/`plan`/`coder` — dispatched in parallel, streaming output visible, reports land in the conversation; per-subagent model override (`subagent` tool `model` arg or `agent.subagentModel` config — e.g. discuss with `glm-5.2`, let `deepseek-v4-flash` implement)
 - **Plan Mode**: read-only exploration + design, implement after user approval
 - **AUTO mode**: `/auto` full authorization, no confirmations on long tasks
@@ -183,7 +183,7 @@ src/
   memory/           three-layer memory — schema.mjs (DDL/constants), core.mjs (CRUD + retrieval),
                     code-index.mjs + code-sync.mjs (code_chunks), docs.mjs (doc_chunks)
   memory.mjs        re-export shim → src/memory/*
-  session.mjs       session persistence (up to 5 archive slots, isolated by project cwd, process-level isolation via sessionId + slotSessions)
+  session.mjs       session persistence (unlimited archive slots, isolated by project cwd, process-level isolation via sessionId + slotSessions)
   skills.mjs        skill discovery/loading (.thincoder/skills/*.md)
   markdown.mjs      entry format (frontmatter parse/serialize)
   git/              checkpoint.mjs (git patch snapshots / rewind), gitmem.mjs (Team layer git sync)
