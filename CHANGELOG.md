@@ -1,3 +1,18 @@
+## [0.12.24] — 2026-08-14
+
+### Added
+
+- **glm-code provider preset** — the Zhipu GLM Coding Plan endpoint (`https://open.bigmodel.cn/api/coding/paas/v4`, glm-5.2, same key as GLM; server-side forced thinking).
+
+### Fixed
+
+- **Model specs synced with official vendor docs (verified 2026-08)** — DeepSeek v4 duals effort enum +low and cacheMode→auto; qwen3.x/max/plus maxOutput→131072 (qwen-plus was 32K).
+- **Retired models dropped** — deepseek-chat/reasoner, kimi-k2, moonshot v1 (vendor shutdowns; unknown IDs fall back to the 128K default spec).
+
+### Changed
+
+- Repository URL → github.com/xinbo-tech/thincoder.
+
 # Changelog
 
 本文件记录 ThinCoder CLI 的发布历史。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
