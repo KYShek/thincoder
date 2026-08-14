@@ -346,7 +346,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           const parsed = JSON.parse(result)
           if (parsed.images?.length) {
             // tool message first — closes the tool_call pairing (OpenAI API requires tool result immediately after assistant with tool_calls)
-            pushReal(agent, { role: "tool", tool_call_id: toolCall.id, content: parsed.text })
+            pushReal(agent, { role: "tool", tool_call_id: toolCall.id, name: toolCall.name, content: parsed.text })
             if (specForModel(agent.provider.model).multimodal) {
               // then inject multimodal user message with base64 images for the model to actually "see" them on the next turn
               deferredUserMsgs.push({
@@ -371,7 +371,7 @@ export async function runAgent(agent, input, callbacks = {}, { depth = 0, signal
           }
         } catch { /* Parse failure doesn't affect normal tool messages */ }
       }
-      pushReal(agent, { role: "tool", tool_call_id: toolCall.id, content: result })
+      pushReal(agent, { role: "tool", tool_call_id: toolCall.id, name: toolCall.name, content: result })
       if (tool && ok) {
         if (FILE_MUTATORS.has(toolCall.name)) {
           // Direct file edit — code was changed. The prior advisor review and
