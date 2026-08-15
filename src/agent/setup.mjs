@@ -221,6 +221,11 @@ export async function prepareRun(agent, input, callbacks, {
       ? `${base}\n\n${mainOverlay}`
       : base
 
+  // Local time + timezone on every agent (main, subagent, consult) — without it "today"/
+  // "just now"/"recent" in user messages and search freshness are ungrounded.
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local"
+  systemPrompt += `\n\nCurrent time: ${new Date().toLocaleString("sv-SE")} (${timeZone}).`
+
   const projectRules = await loadProjectInstructions(agent.cwd)
   if (projectRules) {
     systemPrompt += `\n\nProject instructions (follow these as project conventions):\n<untrusted_project_instructions>\n${escapeXml(projectRules)}\n</untrusted_project_instructions>`
