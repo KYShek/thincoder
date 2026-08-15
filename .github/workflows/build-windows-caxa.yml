@@ -18,18 +18,24 @@ jobs:
         with:
           node-version: '24'
 
-      - name: 安装项目依赖（其实无依赖）
-        run: npm install --omit=dev
+      - name: 获取 package.json 版本
+        id: get_version
+        shell: pwsh
+        run: |
+          $json = Get-Content package.json -Raw | ConvertFrom-Json
+          echo "version=$($json.version)" >> $env:GITHUB_OUTPUT
 
-      - name: 全局安装 caxa
+      - name: 安装项目依赖（使用 npm ci）
+        run: npm ci
+
+      - name: 全局安装 caxa（可替换为 npx caxa）
         run: npm install -g caxa
 
-      - name: 用 caxa 打包成 exe
-        run: |
-          caxa --input . --output thincoder.exe -- "{{caxa}}/node_modules/.bin/node" "{{caxa}}/bin/thincoder.cjs"
+      - name: 用 caxa 打包成 exe（带版本号，Windows）
+        run: caxa --input . --output "thincoder-${{ steps.get_version.outputs.version }}-win.exe" --command "node bin/thincoder.cjs"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: thincoder-windows-caxa
-          path: thincoder.exe
+          path: "thincoder-${{ steps.get_version.outputs.version }}-win.exe"
