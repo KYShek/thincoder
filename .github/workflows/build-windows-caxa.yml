@@ -2,12 +2,12 @@ name: Build ThinCoder Windows EXE (caxa)
 
 on:
   push:
-    branches: [ main, master ]   # 推送到主分支时自动构建
-  workflow_dispatch:             # 也支持手动点击运行
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest      # 使用 Windows 环境
+    runs-on: windows-latest
 
     steps:
       - name: 检出代码
@@ -16,26 +16,20 @@ jobs:
       - name: 安装 Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: '24'     # ThinCoder 要求 Node >= 24
+          node-version: '24'
 
-      - name: 获取 package.json 版本
-        id: get_version
-        shell: pwsh
-        run: |
-          $json = Get-Content package.json -Raw | ConvertFrom-Json
-          echo "version=$($json.version)" >> $env:GITHUB_OUTPUT
-
-      - name: 安装项目依赖（其实没有依赖，但保留习惯）
+      - name: 安装项目依赖（其实无依赖）
         run: npm install --omit=dev
 
       - name: 全局安装 caxa
         run: npm install -g caxa
 
-      - name: 用 caxa 打包成 exe（带版本号）
-        run: caxa --input . --output "thincoder-${{ steps.get_version.outputs.version }}.exe" --command "node bin/thincoder.cjs"
+      - name: 用 caxa 打包成 exe
+        run: |
+          caxa --input . --output thincoder.exe -- "{{caxa}}/node_modules/.bin/node" "{{caxa}}/bin/thincoder.cjs"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: thincoder-windows-caxa
-          path: "thincoder-${{ steps.get_version.outputs.version }}.exe"
+          path: thincoder.exe
