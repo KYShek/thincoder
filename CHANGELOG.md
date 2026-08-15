@@ -1,3 +1,7 @@
+## [0.12.27] — 2026-08-15
+
+- Time injection moved OUT of the system prompt into a transient per-run user reminder — system prompts fully static again (prefix caches hit across hours, not minutes); local time + IANA timezone at second precision; now covers ALL agent depths (subagents previously had no time grounding at all)
+
 ## [0.12.26] — 2026-08-15
 
 ### ACP extensions for thincoder-desktop (proposals ①②③④, all implemented)
