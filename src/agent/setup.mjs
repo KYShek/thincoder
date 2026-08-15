@@ -1,6 +1,11 @@
 /**
  * agent/setup.mjs — runAgent pre-flight setup: context injection, system prompt construction, tool injection
  */
+/** Local time, second precision, for the per-run transient reminder. */
+function timeNowLocal() {
+  return new Date().toLocaleString("sv-SE")
+}
+
 import { search as memorySearch, docSearch } from "../memory.mjs"
 import { pushReal } from "../context.mjs"
 import { toOpenAISchema } from "../tools/index.mjs"
@@ -119,12 +124,14 @@ export async function prepareRun(agent, input, callbacks, {
         })
       }
     }
+    // Time grounding for EVERY agent depth (subagents are short-lived; they also need
+    // to know "now"). Transient — dropped on persist, fresh at every run start.
+    agent.history.push({
+      role: "user",
+      content: `[System reminder: current time is ${timeNowLocal()} (local; timezone ${Intl.DateTimeFormat().resolvedOptions().timeZone || "local"}).]`,
+      transient: true,
+    })
     if (depth === 0) {
-      agent.history.push({
-        role: "user",
-        content: `[System reminder: current time is ${new Date().toISOString()}.]`,
-        transient: true,
-      })
       // Checklist injection: inject pending + in_progress items from .thincoder/checklist.md
       try {
         const { pendingItems } = await import("../tools/checklist.mjs")
@@ -221,14 +228,10 @@ export async function prepareRun(agent, input, callbacks, {
       ? `${base}\n\n${mainOverlay}`
       : base
 
-  // Local time + timezone on every agent (main, subagent, consult) — without it "today"/
-  // "just now"/"recent" in user messages and search freshness are ungrounded.
-  // MINUTE precision, deliberately: system prompts must stay byte-identical across runs
-  // within the same minute or provider prefix caches (DeepSeek cache_hit) never hit.
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local"
-  const now = new Date()
-  const mins = String(now.getMinutes()).padStart(2, "0")
-  systemPrompt += `\n\nCurrent time: ${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${mins} (${timeZone}).`
+  // Time injection deliberately does NOT live here: system prompts must be byte-identical
+  // across runs (provider prefix caches). The time rides a transient user reminder per turn
+  // (see the current-time injection below) — variable content belongs in the history, not
+  // the cached prefix.
 
   const projectRules = await loadProjectInstructions(agent.cwd)
   if (projectRules) {
