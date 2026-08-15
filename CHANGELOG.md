@@ -1,3 +1,8 @@
+## [0.12.25] — 2026-08-15
+
+- Local time + timezone injected into every system prompt (main agent, subagents, advisor) — prepareRun appends `Current time: <local> (<IANA zone>)`; sessionStart was ISO/UTC and session-scoped, subagents had nothing
+- bash.md Windows guidance corrected: the shell is cmd.exe (NOT Git Bash) — &&/|| work, cmd built-ins, NUL not /dev/null, prefer node -e for complex logic
+
 ## [0.12.24] — 2026-08-14
 
 ### Added
