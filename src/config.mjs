@@ -198,6 +198,20 @@ export function normalizeProxy(proxy) {
  * THINCODER_ACTIVE_MODEL overrides the active model (wins over THINCODER_MODEL — see loadConfig)
  * Provider-specific key fallbacks (when providers[] lacks a key): DEEPSEEK_API_KEY / OPENAI_API_KEY
  */
+/** Keep only { header: "string value" } pairs from a provider's headers field — anything
+ *  else (null, arrays, nested objects) is dropped so it can never reach a fetch call.
+ *  Authorization is built-in and cannot be overridden from headers (core.mjs spreads first). */
+function sanitizeProviderHeaders(p) {
+  if (p.headers == null || typeof p.headers !== "object" || Array.isArray(p.headers)) { delete p.headers; return p }
+  const clean = {}
+  for (const [k, v] of Object.entries(p.headers)) {
+    if (typeof v === "string" && k.toLowerCase() !== "authorization") clean[k] = v
+  }
+  if (Object.keys(clean).length > 0) p.headers = clean
+  else delete p.headers
+  return p
+}
+
 export function loadConfig() {
   let config = {}
   if (existsSync(configPath)) {
@@ -211,7 +225,9 @@ export function loadConfig() {
   const merged = {
     ...DEFAULTS,
     ...config,
-    providers: Array.isArray(config.providers) && config.providers.length ? config.providers.map((p) => ({ ...p })) : DEFAULTS.providers.map((p) => ({ ...p })),
+    providers: Array.isArray(config.providers) && config.providers.length
+      ? config.providers.map((p) => sanitizeProviderHeaders({ ...p }))
+      : DEFAULTS.providers.map((p) => ({ ...p })),
     activeProvider: config.activeProvider ?? DEFAULTS.activeProvider,
     agent: { ...DEFAULTS.agent, ...config.agent },
     memory: { ...DEFAULTS.memory, ...config.memory },

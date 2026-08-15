@@ -223,8 +223,12 @@ export async function prepareRun(agent, input, callbacks, {
 
   // Local time + timezone on every agent (main, subagent, consult) — without it "today"/
   // "just now"/"recent" in user messages and search freshness are ungrounded.
+  // MINUTE precision, deliberately: system prompts must stay byte-identical across runs
+  // within the same minute or provider prefix caches (DeepSeek cache_hit) never hit.
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local"
-  systemPrompt += `\n\nCurrent time: ${new Date().toLocaleString("sv-SE")} (${timeZone}).`
+  const now = new Date()
+  const mins = String(now.getMinutes()).padStart(2, "0")
+  systemPrompt += `\n\nCurrent time: ${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${mins} (${timeZone}).`
 
   const projectRules = await loadProjectInstructions(agent.cwd)
   if (projectRules) {

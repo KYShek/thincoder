@@ -1,3 +1,16 @@
+## [0.12.26] — 2026-08-15
+
+### ACP extensions for thincoder-desktop (proposals ①②③④, all implemented)
+
+- **① Session persistence**: every ACP turn end (success/cancel/failure — finally semantics) writes the session archive via saveSession; session/list / load / resume now have a real data source. Save is injectable and failures never break the queue
+- **② Checkpoints**: checkpoint/create / checkpoint/list / checkpoint/restore ACP handlers; NON-git cwds now snapshot by full-directory copy (v2 layout, nongit meta) instead of silently returning null
+- **③ Memory**: memory/list / memory/remove ACP handlers over the shared ~/.thincoder store
+- **④ Custom provider headers**: provider.headers object in config.json merges into every LLM request (chat + /models); Authorization cannot be overridden; non-string values sanitized out
+
+### Fixed
+
+- Time injection vs prefix-cache conflict: system-prompt "Current time" is now MINUTE precision — byte-identical within the same minute so DeepSeek prefix caches still hit (was: seconds precision broke the cache every run)
+
 ## [0.12.25] — 2026-08-15
 
 - Local time + timezone injected into every system prompt (main agent, subagents, advisor) — prepareRun appends `Current time: <local> (<IANA zone>)`; sessionStart was ISO/UTC and session-scoped, subagents had nothing

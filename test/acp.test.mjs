@@ -15,7 +15,9 @@ import { createAcpServer, ACP_ERRORS } from "../src/acp/transport.mjs"
 import { buildAcpCallbacks, replayHistory } from "../src/acp/bridge.mjs"
 import { createAcpSession } from "../src/acp/session.mjs"
 import { buildAcpHandlers } from "../src/acp.mjs"
-import { saveSession, loadSession, sessionPath } from "../src/session.mjs"
+import { saveSession, loadSession, sessionPath, listSlots } from "../src/session.mjs"
+import { readFileSync } from "node:fs"
+function loadSlotFileForTest(cwd, slot) { return JSON.parse(readFileSync(`${sessionPath(cwd)}.${slot}`, "utf8")) }
 
 describe("M2 — tools, permissions, fs routing (bridge callbacks)", () => {
   it("onToolCall/onToolResult emit tool_call + tool_call_update with matching ids", () => {
@@ -216,6 +218,64 @@ describe("session — FIFO queue + cancel", () => {
     assert.equal(s.agent !== undefined, true)
     s.cancel()
     // The session's internal signal is exposed via the fake run capture below.
+  })
+})
+
+describe("session persistence — ACP turn-end saveSession (desktop proposal ①)", () => {
+  // sandbox tmpCwd + injected deps + fake agent + controllable fake run (proposal §2.3)
+  let tmpCwd
+  beforeEach(() => {
+    tmpCwd = mkdtempSync(join(tmpdir(), "acp-save-")) // unique cwd = unique session slot namespace (M3 pattern)
+  })
+  afterEach(() => rmSync(tmpCwd, { recursive: true, force: true }))
+  const fakeAgent = (cwd) => ({ cwd, history: [{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }], tasks: [] })
+
+  it("saves on a successful turn (list sees the slot)", async () => {
+    const s = createAcpSession({ id: "s1", agent: fakeAgent(tmpCwd), notify: () => {}, run: async () => "ok", save: saveSession })
+    await s.run("hello")
+    const slots = listSlots(tmpCwd)
+    assert.equal(slots.length, 1, "one slot written")
+    assert.equal(slots[0].messageCount, 2, "messageCount matches fake history")
+  })
+
+  it("saves on a cancelled turn (AbortError — finally semantics)", async () => {
+    const s = createAcpSession({ id: "s1", agent: fakeAgent(tmpCwd), notify: () => {}, run: async () => { throw new DOMException("Aborted", "AbortError") }, save: saveSession })
+    await assert.rejects(() => s.run("x"), /Aborted/)
+    assert.equal(listSlots(tmpCwd).length, 1, "progress persisted despite cancel")
+  })
+
+  it("saves on a failed turn (plain Error)", async () => {
+    const s = createAcpSession({ id: "s1", agent: fakeAgent(tmpCwd), notify: () => {}, run: async () => { throw new Error("LLM down") }, save: saveSession })
+    await assert.rejects(() => s.run("x"), /LLM down/)
+    assert.equal(listSlots(tmpCwd).length, 1, "progress persisted despite failure")
+  })
+
+  it("a save failure never blocks the turn or the queue", async () => {
+    const boom = () => { throw new Error("disk full") }
+    const logs = []
+    const s = createAcpSession({ id: "s1", agent: fakeAgent(tmpCwd), notify: () => {}, log: (m) => logs.push(m), run: async () => "ok", save: boom })
+    assert.equal(await s.run("fine"), "ok", "turn result unaffected")
+    assert.ok(logs.some((m) => m.includes("save failed")), "failure logged, not thrown")
+    assert.equal(await s.run("again"), "ok", "queue chain alive")
+  })
+
+  it("save is called exactly once per turn, after run completes", async () => {
+    const events = []
+    const s = createAcpSession({ id: "s1", agent: fakeAgent(tmpCwd), notify: () => {},
+      run: async () => { events.push("run-end"); return "ok" },
+      save: () => { events.push("save") } })
+    await s.run("a")
+    await s.run("b")
+    assert.deepEqual(events, ["run-end", "save", "run-end", "save"], "save follows each run exactly once")
+  })
+
+  it("restore chain: save → new-process session/list → load replays → resume restores", async () => {
+    const s = createAcpSession({ id: "s1", agent: fakeAgent(tmpCwd), notify: () => {}, run: async () => "ok", save: saveSession })
+    await s.run("turn 1")
+    const slots = listSlots(tmpCwd)
+    assert.ok(slots.length === 1 && slots[0].messageCount === 2)
+    const data = loadSlotFileForTest(tmpCwd, slots[0].slot)
+    assert.ok(Array.isArray(data.history) && data.history.length === 2, "slot readable")
   })
 })
 

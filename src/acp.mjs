@@ -13,13 +13,15 @@
  * `isConfigured` / `createSession` are injectable for tests.
  */
 import { readFileSync } from "node:fs"
-import { resolve } from "node:path"
-import { loadConfig } from "./config.mjs"
+import { resolve, join } from "node:path"
+import { loadConfig, configDir } from "./config.mjs"
 import { assembleAgent } from "./cli/make-agent.mjs"
 import { createAcpServer, ACP_ERRORS } from "./acp/transport.mjs"
 import { createAcpSession } from "./acp/session.mjs"
 import { replayHistory } from "./acp/bridge.mjs"
 import { listSlots, applySession, deleteSlot, sessionPath, normalizeCwd, isLegacyTransient } from "./session.mjs"
+import { createCheckpoint, listCheckpoints, rewind, isGitRepo } from "./git/checkpoint.mjs"
+import { createMemory, list as memList, remove as memRemove } from "./memory.mjs"
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
 
@@ -314,10 +316,73 @@ export function buildAcpHandlers({
         })
         return {}
       },
+
+      // ─── M5-pull-forward: checkpoints (desktop proposal ②) + memory (③) ───
+      // Checkpoints are cwd-scoped (same store the TUI git tool uses); non-git cwds
+      // now snapshot by full-directory copy instead of returning null.
+
+      "checkpoint/create": async () => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const cp = await createCheckpoint(getCwd())
+        if (!cp) return { error: { ...ACP_ERRORS.INTERNAL, message: "checkpoint creation failed" } }
+        return { checkpoint: { id: cp.id, time: cp.time, files: cp.files, git: isGitRepo(getCwd()) } }
+      },
+
+      "checkpoint/list": async () => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const cps = await listCheckpoints(getCwd())
+        return { checkpoints: cps.map((c) => ({ id: c.id, time: c.time, files: (c.tracked?.length ?? 0) + (c.untracked?.length ?? 0), trackedCount: c.tracked?.length ?? 0, untrackedCount: c.untracked?.length ?? 0 })) }
+      },
+
+      "checkpoint/restore": async (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        if (!params.checkpointId || !params.path) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: "checkpoint/restore requires checkpointId and path (single-file restore; full rewind is disabled)" } }
+        }
+        try {
+          await rewind(getCwd(), String(params.checkpointId), { path: String(params.path) })
+          return { restored: String(params.path) }
+        } catch (e) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: e?.message ?? String(e) } }
+        }
+      },
+
+      "memory/list": async (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const mem = ensureAcpMemory()
+        if (!mem) return { error: { ...ACP_ERRORS.INTERNAL, message: "memory unavailable" } }
+        const entries = await memList(mem, { type: params.type })
+        return { entries: entries.map((e) => ({ id: e.id, type: e.type, title: e.title, tags: e.tags ?? "", updatedAt: e.updatedAt ?? null })) }
+      },
+
+      "memory/remove": async (params) => {
+        if (!authenticated) return { error: ACP_ERRORS.AUTH_REQUIRED }
+        const id = Number(params.id)
+        if (!Number.isInteger(id) || id < 1) {
+          return { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `memory/remove requires a numeric id (got ${params.id})` } }
+        }
+        const mem = ensureAcpMemory()
+        if (!mem) return { error: { ...ACP_ERRORS.INTERNAL, message: "memory unavailable" } }
+        const ok = await memRemove(mem, id)
+        return ok ? { removed: id } : { error: { ...ACP_ERRORS.INVALID_PARAMS, message: `no memory entry #${id}` } }
+      },
     },
     sessions,
     notifyRef,
     requestRef,
+  }
+}
+
+/** Shared memory handle for ACP handlers (same ~/.thincoder store the TUI uses).
+ *  dbPath mirrors the TUI default (see cli/make-agent.mjs). */
+let _acpMemory = null
+function ensureAcpMemory() {
+  if (_acpMemory) return _acpMemory
+  try {
+    _acpMemory = createMemory({ dbPath: join(configDir, "memory.db") })
+    return _acpMemory
+  } catch {
+    return null // memory subsystem unavailable — handlers report it
   }
 }
 

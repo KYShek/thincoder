@@ -12,9 +12,10 @@
  * - `run` is injectable for tests (defaults to the real runAgent).
  */
 import { runAgent } from "../agent.mjs"
+import { saveSession } from "../session.mjs"
 import { buildAcpCallbacks } from "./bridge.mjs"
 
-export function createAcpSession({ id, agent, notify, request = async () => { throw new Error("no request channel") }, log = () => {}, run = runAgent }) {
+export function createAcpSession({ id, agent, notify, request = async () => { throw new Error("no request channel") }, log = () => {}, run = runAgent, save = saveSession }) {
   let controller = new AbortController()
   const callbacks = buildAcpCallbacks({ sessionId: id, notify, request, log })
   let queue = Promise.resolve()
@@ -33,6 +34,11 @@ export function createAcpSession({ id, agent, notify, request = async () => { th
           busy = false
           // Fresh controller per turn: cancel() only affects the in-flight turn.
           controller = new AbortController()
+          // Persist the session archive at EVERY turn end (success/cancel/failure —
+          // finally semantics, desktop proposal ACP-SESSION-PERSISTENCE §2.1 US-E4):
+          // session/list / load / resume get a real data source; a save failure must
+          // never break the queue chain.
+          try { save(agent) } catch (e) { log(`[session] save failed: ${e?.message ?? e}`) }
         }
       })
       // Keep the chain alive even when a turn rejects (the next prompt still runs).

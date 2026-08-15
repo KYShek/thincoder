@@ -267,7 +267,7 @@ export function normalizeToolPairing(messages) {
 /** List available model IDs from the provider's /models endpoint */
 export async function listModels(provider, { signal } = {}) {
   const response = await fetch(`${provider.baseURL}/models`, {
-    headers: { Authorization: `Bearer ${provider.apiKey}` },
+    headers: { ...(provider.headers ?? {}), Authorization: `Bearer ${provider.apiKey}` },
     signal,
   })
   if (!response.ok) {
@@ -294,6 +294,7 @@ async function requestWithRetry(provider, body, signal, onWait) {
       const opts = {
         method: "POST",
         headers: {
+          ...(provider.headers ?? {}), // custom per-provider headers (desktop proposal ④: X-Device-Id etc.)
           "Content-Type": "application/json",
           Authorization: `Bearer ${provider.apiKey}`,
         },

@@ -88,8 +88,53 @@ async function copyInto(dir, rel, src, skipped) {
  * Per-file metadata ({ size, sha } per copied file) is stored in meta.json — this powers
  * listFileVersions (per-file history across snapshots) without rescanning copies.
  */
+/** Full-directory snapshot for NON-git cwds (desktop proposal ②: createCheckpoint used to
+ *  return null here, silently disabling checkpoints for non-git projects). Every file is
+ *  copied under files/ (v2 layout, same rewind code path); meta carries nongit:true so
+ *  rewind knows to skip git plumbing. Respects .gitignore-like skips via SKIP set only. */
+async function createNonGitCheckpoint(cwd) {
+  const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6)
+  const dir = join(checkpointRoot(cwd), id)
+  await mkdir(join(dir, "files"), { recursive: true })
+  await mkdir(join(dir, "untracked"), { recursive: true })
+
+  const skipped = []
+  const fileMeta = {}
+  const all = await collectFiles(cwd)
+  for (const rel of all) {
+    const m = await copyInto(join(dir, "files"), rel, join(cwd, rel), skipped)
+    if (m) fileMeta[rel] = m
+  }
+  await writeFile(join(dir, "patch.diff"), "", "utf8") // no patch in nongit mode (layout compat)
+  await writeFile(join(dir, "meta.json"), JSON.stringify({
+    version: META_VERSION, id, time: Date.now(), nongit: true,
+    untracked: [], tracked: all, trackedAll: all, skipped, head: "", fileMeta, untrackedMeta: {},
+  }, null, 2), "utf8")
+  await pruneCheckpoints(cwd)
+  return { id, time: Date.now(), files: all.length, tracked: all, untracked: [], skipped }
+}
+
+/** Walk a non-git cwd collecting every file (relative paths), skipping heavy/irrelevant dirs. */
+async function collectFiles(cwd) {
+  const SKIP = new Set(["node_modules", ".git", "dist", "build", ".turbo", "coverage", ".next", "target", "__pycache__", ".venv"])
+  const out = []
+  async function walk(rel) {
+    const abs = rel ? join(cwd, rel) : cwd
+    let entries
+    try { entries = await readdir(abs, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (e.name.startsWith(".thincoder")) continue
+      const child = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) { if (!SKIP.has(e.name)) await walk(child) }
+      else out.push(child)
+    }
+  }
+  await walk("")
+  return out
+}
+
 export async function createCheckpoint(cwd) {
-  if (!isGitRepo(cwd)) return null
+  if (!isGitRepo(cwd)) return createNonGitCheckpoint(cwd)
 
   // Random suffix: prevents id collisions for two snapshots in the same millisecond (sorting stays ordered by timestamp prefix)
   const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6)
