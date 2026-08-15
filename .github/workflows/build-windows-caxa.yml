@@ -25,14 +25,20 @@ jobs:
           $json = Get-Content package.json -Raw | ConvertFrom-Json
           echo "version=$($json.version)" >> $env:GITHUB_OUTPUT
 
-      - name: 安装项目依赖（使用 npm ci）
-        run: npm ci
+      - name: 清理环境（删除 .git 防止打包体积过大）
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force .git -ErrorAction SilentlyContinue
 
-      - name: 全局安装 caxa（可替换为 npx caxa）
+      - name: 全局安装 caxa
         run: npm install -g caxa
 
-      - name: 用 caxa 打包成 exe（带版本号，Windows）
-        run: caxa --input . --output "thincoder-${{ steps.get_version.outputs.version }}-win.exe" --command "node bin/thincoder.cjs"
+      - name: 用 caxa 打包成 exe
+        shell: pwsh
+        run: |
+          $version = "${{ steps.get_version.outputs.version }}"
+          $outputName = "thincoder-$version-win.exe"
+          caxa --input . --output $outputName -- "{{caxa}}/node_modules/.bin/node" "{{caxa}}/bin/thincoder.cjs"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
